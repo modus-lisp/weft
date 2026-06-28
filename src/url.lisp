@@ -310,7 +310,7 @@ Returns a URL record or :failure."
         (let* ((cps (coerce clean 'vector)) (len (length cps))
                (u (%make-url)) (state :scheme-start)
                (buf (make-array 16 :element-type 'character :adjustable t :fill-pointer 0))
-               (ptr 0) (at-sign nil) (brackets nil) (pw-seen nil) (guard 0))
+               (ptr 0) (at-sign nil) (brackets nil) (pw-seen nil) (guard 0) (pending-spaces 0))
           (labels ((c () (when (< ptr len) (aref cps ptr)))
                    (cc () (let ((x (c))) (and x (char-code x))))
                    (rest-str () (if (< ptr len) (subseq clean ptr) ""))
@@ -494,9 +494,28 @@ Returns a URL record or :failure."
                      (t (bappend (enc (char-code ch) #'s-path)))))
                   (:opaque-path
                    (cond
-                     ((eql ch #\?) (setf (url-query u) "" state :query))
-                     ((eql ch #\#) (setf (url-fragment u) "" state :fragment))
-                     ((c) (setf (url-path u) (concatenate 'string (url-path u) (enc (char-code ch) #'s-c0))))))
+                     ((null ch) nil)                     ; drop pending spaces at EOF
+                     ((eql ch #\?)
+                      (loop repeat (max 0 (1- pending-spaces))
+                            do (setf (url-path u) (concatenate 'string (url-path u) " ")))
+                      (when (> pending-spaces 0)
+                        (setf (url-path u) (concatenate 'string (url-path u) "%20")))
+                      (setf pending-spaces 0)
+                      (setf (url-query u) "" state :query))
+                     ((eql ch #\#)
+                      (loop repeat (max 0 (1- pending-spaces))
+                            do (setf (url-path u) (concatenate 'string (url-path u) " ")))
+                      (when (> pending-spaces 0)
+                        (setf (url-path u) (concatenate 'string (url-path u) "%20")))
+                      (setf pending-spaces 0)
+                      (setf (url-fragment u) "" state :fragment))
+                     ((char= ch #\Space)
+                      (incf pending-spaces))
+                     ((c)
+                      (loop repeat pending-spaces
+                            do (setf (url-path u) (concatenate 'string (url-path u) " ")))
+                      (setf pending-spaces 0)
+                      (setf (url-path u) (concatenate 'string (url-path u) (enc (char-code ch) #'s-c0))))))
                   (:query
                    (cond
                      ((and (eql ch #\#)) (setf (url-fragment u) "" state :fragment))

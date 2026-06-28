@@ -17,15 +17,13 @@ opaque), IDNA ToASCII via punycode, percent-encoding sets, and URL serialization
 (the `href` / `protocol` / `host` / `pathname` / `search` / `origin` … getters).
 
 **Differential-tested against the Web Platform Tests url corpus**
-(`inspect/vectors/urltestdata.json`, 888 cases): **863 pass (97.2%)**, comparing
+(`inspect/vectors/urltestdata.json`, 888 cases): **868 pass (97.7%)**, comparing
 every serialized component (or requiring a parse failure) against the reference.
 
-Known tail (the remaining ~3%):
-- **Full UTS#46 IDNA mapping** — fullwidth→ASCII folding, soft-hyphen removal,
-  noncharacter/disallowed validation. Punycode is in; the Unicode IDNA *mapping
-  tables* are the scoped follow-up. (Plain ASCII, punycode, and invalid-UTF-8 /
-  U+FFFD domain rejection already work.)
-- A handful of opaque-path trailing-space encoding edge cases.
+Known tail (the remaining ~2.3%): **full UTS#46 IDNA mapping** — fullwidth→ASCII
+folding, soft-hyphen removal, noncharacter/disallowed validation. Punycode is in;
+the Unicode IDNA *mapping tables* are the scoped follow-up. (Plain ASCII,
+punycode, and invalid-UTF-8 / U+FFFD domain rejection already work.)
 
 ## Roadmap
 

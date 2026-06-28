@@ -49,11 +49,13 @@ inspect/
 
 ### P0 encoding decoders — built by a parallel agent swarm
 
-**11/11 charsets pass** their ~1290-case differential suites (14,198 cases total).
+**36 charsets pass** their differential suites (37,923 cases total) — effectively
+the whole WHATWG Encoding decoder set (UTF-8/16, every single-byte family, and the
+CJK multi-byte: Shift_JIS, EUC-JP, EUC-KR, Big5, GBK, GB18030).
 The decoder kernel + vendored oracle were laid by hand; the decoders were then
 built **in parallel by a fleet of cheap-model coding agents** (`operandi` on
 DeepSeek-Flash, one worker per charset in an isolated copy of the tree, each
-looping its per-charset gate until green). Two waves, ~$0.65 total:
+looping its per-charset gate until green). Three waves, **~$0.74 total**:
 
 - **Wave 1** (10 workers, ~$0.55): the wide/uniform units landed first try —
   UTF-16 LE/BE, windows-1252/1251, ISO-8859-2, KOI8-R, Big5 — verified to
@@ -65,6 +67,10 @@ looping its per-charset gate until green). Two waves, ~$0.65 total:
   writes only the ~15-line dispatch. Shift_JIS and EUC-KR then passed cleanly;
   EUC-JP reached 1291/1293, and the strong tier finished its 2-case SS3
   (`0x8F`) error-handling residue by hand.
+- **Wave 3** (24 workers, ~$0.06): the rest of the single-byte families + GBK,
+  all green first try (~$0.0025 each — single-byte converges in 1–2 iterations).
+  Only GB18030's 4-byte algorithmic mapping was left to the strong tier (its
+  207-entry linear-range table + the error rule, derived from the reference codec).
 
 The lesson — and the operating model for the whole engine: a cheap swarm carries
 the wide, oracle-pinned units for cents *once the strong tier carves the

@@ -23,7 +23,21 @@
                                            (:file "shift_jis-table") (:file "shift_jis")
                                            (:file "euc-jp-table") (:file "euc-jp")
                                            (:file "big5")
-                                           (:file "euc-kr-table") (:file "euc-kr"))))))
+                                           (:file "euc-kr-table") (:file "euc-kr")
+                                           ;; wider single-byte set
+                                           (:file "ibm866")
+                                           (:file "iso-8859-3") (:file "iso-8859-4") (:file "iso-8859-5")
+                                           (:file "iso-8859-6") (:file "iso-8859-7") (:file "iso-8859-8")
+                                           (:file "iso-8859-10") (:file "iso-8859-13") (:file "iso-8859-14")
+                                           (:file "iso-8859-15") (:file "iso-8859-16")
+                                           (:file "koi8-u") (:file "macintosh") (:file "windows-874")
+                                           (:file "windows-1250") (:file "windows-1253") (:file "windows-1254")
+                                           (:file "windows-1255") (:file "windows-1256") (:file "windows-1257")
+                                           (:file "windows-1258") (:file "x-mac-cyrillic")
+                                           ;; wider multi-byte set
+                                           (:file "gbk-table") (:file "gbk")
+                                           (:file "gb18030-table") (:file "gb18030-ranges")
+                                           (:file "gb18030"))))))
   :in-order-to ((test-op (test-op "weft/test"))))
 
 (defsystem "weft/test"

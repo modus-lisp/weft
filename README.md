@@ -49,14 +49,26 @@ inspect/
 
 ### P0 encoding decoders — built by a parallel agent swarm
 
-The decoder kernel + oracle were laid by hand; the decoders themselves were then
+**11/11 charsets pass** their ~1290-case differential suites (14,198 cases total).
+The decoder kernel + vendored oracle were laid by hand; the decoders were then
 built **in parallel by a fleet of cheap-model coding agents** (`operandi` on
-DeepSeek-Flash, one worker per charset in an isolated tree, each looping the
-per-charset gate until green). First wave: **8/10 charsets passing** — UTF-8 (ref),
-UTF-16 LE/BE, windows-1252/1251, ISO-8859-2, KOI8-R, and Big5 — verified to
-generalize beyond the test vectors. The three hardest multi-byte CJK encodings
-(Shift_JIS, EUC-JP, EUC-KR) are deferred to a stronger model: the cheap swarm
-nailed the wide/uniform units and stalled exactly on the tall-pole ones.
+DeepSeek-Flash, one worker per charset in an isolated copy of the tree, each
+looping its per-charset gate until green). Two waves, ~$0.65 total:
+
+- **Wave 1** (10 workers, ~$0.55): the wide/uniform units landed first try —
+  UTF-16 LE/BE, windows-1252/1251, ISO-8859-2, KOI8-R, Big5 — verified to
+  generalize beyond the vectors. The three hardest multi-byte CJK encodings
+  (Shift_JIS, EUC-JP, EUC-KR) failed: the cheap model stalled when asked to
+  *both* generate a ~10k-entry table *and* hand-bake it as a literal.
+- **Wave 2** (~$0.10): the fix was decomposition, not a bigger model — the strong
+  tier pre-generates the byte→codepoint tables as vendored data and the worker
+  writes only the ~15-line dispatch. Shift_JIS and EUC-KR then passed cleanly;
+  EUC-JP reached 1291/1293, and the strong tier finished its 2-case SS3
+  (`0x8F`) error-handling residue by hand.
+
+The lesson — and the operating model for the whole engine: a cheap swarm carries
+the wide, oracle-pinned units for cents *once the strong tier carves the
+data/logic boundary*; the strong tier owns the genuinely coupled residue.
 
 ## Use
 

@@ -13,7 +13,15 @@
   :serial t
   :components ((:module "src" :serial t
                 :components ((:file "packages")
-                             (:file "url"))))     ; WHATWG URL parser
+                             (:file "url")        ; WHATWG URL parser
+                             (:module "encoding" :serial t
+                              :components ((:file "kernel")
+                                           (:file "utf-8")
+                                           (:file "utf-16le") (:file "utf-16be")
+                                           (:file "windows-1252") (:file "windows-1251")
+                                           (:file "iso-8859-2") (:file "koi8-r")
+                                           (:file "shift_jis") (:file "euc-jp")
+                                           (:file "big5") (:file "euc-kr"))))))
   :in-order-to ((test-op (test-op "weft/test"))))
 
 (defsystem "weft/test"

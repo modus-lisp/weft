@@ -11,3 +11,9 @@
    #:href #:protocol #:username #:password #:host-str #:hostname
    #:port-str #:pathname-str #:search-str #:hash-str #:origin
    #:serialize-host))
+
+(defpackage #:weft.encoding
+  (:use #:cl)
+  (:export
+   #:decode #:get-decoder #:register-decoder #:define-decoder
+   #:normalize-label #:+replacement+ #:*decoders*))

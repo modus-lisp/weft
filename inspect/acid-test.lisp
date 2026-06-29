@@ -1,7 +1,8 @@
 ;;;; inspect/acid-test.lisp — Acid2/Acid3 as permanent regression + progress tests.
 ;;;;
-;;;; weft does NOT pass Acid2 (it needs generated content, data-URI image
-;;;; decoding, and pixel-exact positioning) and CANNOT run Acid3 (no JS engine).
+;;;; weft does NOT pass Acid2 (generated content + data-URI images now exist, but
+;;;; pixel-exact positioning/clipping does not, so the parts don't assemble into
+;;;; the face) and CANNOT run Acid3 (no JS engine).
 ;;;; So this is NOT a pass/fail conformance claim — it is:
 ;;;;   (1) a robustness guard: rendering the vendored test pages must not error;
 ;;;;   (2) a progress tracker: it reports each render's ink coverage (fraction of

@@ -21,7 +21,8 @@
   (flex-wrap "nowrap") (flex-grow 0.0) (flex-shrink 1.0) (flex-basis "auto") (gap 0.0)
   (top :auto) (left :auto) (right :auto) (bottom :auto) (z-index 0)
   (bg-gradient nil)   ; (dir from-rgba to-rgba), dir :vertical | :horizontal
-  (min-height 0.0) (max-height :none))
+  (min-height 0.0) (max-height :none)
+  (content nil))      ; generated-content string for ::before/::after (NIL = no box)
 
 (defparameter *inherited* '(:color :font-size :font-weight :line-height :text-align :white-space))
 
@@ -139,12 +140,34 @@
         (#\, (when (zerop depth) (push (subseq s start i) out) (setf start (1+ i))))))
     (push (subseq s start) out) (nreverse out)))
 
+(defun parse-content (value)
+  "Parse a 'content' value into a generated string, or NIL (none/normal/no box).
+Handles 'string' / \"string\" (incl. an empty string -> an empty but present
+box, marked by the empty string) and concatenated string tokens; non-string
+values (attr(), counters, images) yield an empty box."
+  (let ((v (string-trim '(#\Space #\Tab #\Newline) value)))
+    (cond ((or (string-equal v "none") (string-equal v "normal")) nil)
+          ((and (plusp (length v)) (member (char v 0) '(#\' #\")))
+           (with-output-to-string (out)
+             (let ((i 0) (n (length v)))
+               (loop while (< i n) do
+                 (let ((q (char v i)))
+                   (if (member q '(#\' #\"))
+                       (let ((j (1+ i)))
+                         (loop while (and (< j n) (char/= (char v j) q)) do
+                           (when (and (char= (char v j) #\\) (< (1+ j) n)) (incf j))
+                           (write-char (char v j) out) (incf j))
+                         (setf i (1+ j)))
+                       (incf i)))))))
+          (t ""))))   ; attr()/counter()/url() -> present-but-empty box
+
 (defun apply-decl (cs prop value parent-cs)
   "Apply one declaration to CSTYLE CS (best-effort)."
   (let ((fs (cstyle-font-size cs)))
     (macrolet ((len (&optional auto) `(resolve-len value fs ,auto)))
       (cond
         ((string= prop "display") (setf (cstyle-display cs) (string-downcase (string-trim '(#\Space) value))))
+        ((string= prop "content") (setf (cstyle-content cs) (parse-content value)))
         ((string= prop "color") (let ((c (resolve-color value))) (when c (setf (cstyle-color cs) c))))
         ((member prop '("background-color" "background" "background-image") :test #'string=)
          (let ((grad (parse-linear-gradient value)))
@@ -254,33 +277,50 @@
 (defun compute-styles (document stylesheet)
   "Compute a CSTYLE for every element under DOCUMENT, applying STYLESHEET (a list
 of CSS-RULEs).  Returns a hash-table element->CSTYLE."
-  (let ((styles (make-hash-table :test 'eq))
-        ;; pre-parse selectors once, tagging rules with (specificity order decls)
+  (let ((styles (make-hash-table :test 'equal))
+        ;; pre-parse selectors once, tagging rules with (match-cx pseudo spec order decls).
+        ;; pseudo = NIL | :before | :after; match-cx is the cx to match (pseudo-element stripped).
         (rules (loop for r in stylesheet for order from 0
                      append (loop for cx in (parse-selector-list (css-rule-selector r))
-                                  collect (list cx (specificity cx) order (css-rule-decls r))))))
-    (labels ((walk (n parent-cs)
+                                  collect (multiple-value-bind (pe mcx) (cx-pseudo-element cx)
+                                            (list mcx pe (specificity cx) order (css-rule-decls r)))))))
+    (labels ((sort-matched (matched)
+               (stable-sort (nreverse matched)
+                            (lambda (x y) (or (spec< (first x) (first y))
+                                              (and (equal (first x) (first y)) (< (second x) (second y)))))))
+             (pseudo-style (parent-cs matched)
+               "Build a CSTYLE for a ::before/::after box, or NIL if no content."
+               (when matched
+                 (let ((cs (make-cstyle :color (cstyle-color parent-cs) :font-size (cstyle-font-size parent-cs)
+                                        :font-weight (cstyle-font-weight parent-cs) :line-height (cstyle-line-height parent-cs))))
+                   (dolist (m (sort-matched matched))
+                     (dolist (d (third m)) (apply-decl cs (css-decl-prop d) (css-decl-value d) parent-cs)))
+                   (and (cstyle-content cs) cs))))
+             (walk (n parent-cs)
                (when (eq (weft.html:dnode-kind n) :element)
                  (let* ((tag (string-downcase (weft.html:dnode-name n)))
                         (cs (ua-style tag parent-cs)))
-                   ;; collect matching author rules
-                   (let ((matched '()))
+                   ;; collect matching author rules, splitting element vs pseudo-element
+                   (let ((matched '()) (m-before '()) (m-after '()))
                      (dolist (ru rules)
-                       (destructuring-bind (cx spec order decls) ru
+                       (destructuring-bind (cx pe spec order decls) ru
                          (when (match-complex (cx-compounds cx) (cx-combs cx) (1- (length (cx-compounds cx))) n)
-                           (push (list spec order decls) matched))))
-                     ;; sort by specificity then source order (ascending => later wins)
-                     (setf matched (stable-sort (nreverse matched)
-                                                (lambda (x y) (or (spec< (first x) (first y))
-                                                                  (and (equal (first x) (first y)) (< (second x) (second y)))))))
-                     (dolist (m matched)
-                       (dolist (d (third m)) (apply-decl cs (css-decl-prop d) (css-decl-value d) parent-cs))))
-                   ;; inline style attribute (wins)
-                   (let ((inline (el-attr n "style")))
-                     (when inline
-                       (dolist (pv (parse-inline inline))
-                         (apply-decl cs (car pv) (cdr pv) parent-cs))))
-                   (setf (gethash n styles) cs)
+                           (case pe
+                             (:before (push (list spec order decls) m-before))
+                             (:after  (push (list spec order decls) m-after))
+                             (t       (push (list spec order decls) matched))))))
+                     (dolist (m (sort-matched matched))
+                       (dolist (d (third m)) (apply-decl cs (css-decl-prop d) (css-decl-value d) parent-cs)))
+                     ;; inline style attribute (wins)
+                     (let ((inline (el-attr n "style")))
+                       (when inline
+                         (dolist (pv (parse-inline inline))
+                           (apply-decl cs (car pv) (cdr pv) parent-cs))))
+                     (setf (gethash n styles) cs)
+                     ;; generated content (computed after the element's own style is known)
+                     (let ((bs (pseudo-style cs m-before)) (as (pseudo-style cs m-after)))
+                       (when bs (setf (gethash (cons n :before) styles) bs))
+                       (when as (setf (gethash (cons n :after) styles) as))))
                    (loop for c across (weft.html:dnode-children n) do (walk c cs))))))
       (loop for c across (weft.html:dnode-children document) do (walk c nil)))
     styles))

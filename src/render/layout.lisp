@@ -167,11 +167,16 @@ text-align.  Returns (values line-boxes total-height)."
         (loop for c across (h:dnode-children node) collect c)))
 
 ;;; ---- block layout -------------------------------------------------------
+(defvar *layout-debug* nil)
 (defun layout-node (node styles x y avail-w)
+  "Resilient wrapper: a failing subtree degrades to an empty box, not a crash."
+  (handler-case (%layout-node node styles x y avail-w)
+    (error (e) (if *layout-debug* (error e) (values nil 0)))))
+(defun %layout-node (node styles x y avail-w)
   "Lay out block-level NODE at (X,Y); AVAIL-W is the containing content width.
 Returns (values lbox advance-height)."
   (let ((cs (st styles node)))
-    (when (or (null cs) (string= (cdisplay cs) "none")) (return-from layout-node (values nil 0)))
+    (when (or (null cs) (string= (cdisplay cs) "none")) (return-from %layout-node (values nil 0)))
     (let* ((mt (css:cstyle-margin-top cs)) (mb (css:cstyle-margin-bottom cs))
            (ml (css:cstyle-margin-left cs)) (mr (css:cstyle-margin-right cs))
            (pt (css:cstyle-padding-top cs)) (pb (css:cstyle-padding-bottom cs))
@@ -211,7 +216,7 @@ Returns (values lbox advance-height)."
         (let* ((box-h (+ content-h pt pb bt bb))
                (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                               :kind :block :children (nreverse children))))
-          (return-from layout-node (values lb (+ mt box-h mb)))))
+          (return-from %layout-node (values lb (+ mt box-h mb)))))
       ;; flex / table containers
       (when (member (cdisplay cs) '("flex" "table") :test #'string=)
         (multiple-value-bind (boxes ch)
@@ -221,7 +226,7 @@ Returns (values lbox advance-height)."
           (let* ((box-h (+ ch pt pb bt bb))
                  (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                                 :kind :block :children boxes)))
-            (return-from layout-node (values lb (+ mt box-h mb))))))
+            (return-from %layout-node (values lb (+ mt box-h mb))))))
       ;; classify children: anonymous-group consecutive inline-level nodes
       (let ((kids (coerce (h:dnode-children node) 'list)) (group '()) (yy cy))
         (flet ((flush-inline ()
@@ -414,6 +419,8 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
                                  ((string= kind "none") "") (t "•")))
 
 (defun paint-box (cv lb)
+  (handler-case (%paint-box cv lb) (error () nil)))
+(defun %paint-box (cv lb)
   (when lb
     (case (lbox-kind lb)
       (:block

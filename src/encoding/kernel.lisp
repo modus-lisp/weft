@@ -24,7 +24,15 @@ octets; the body returns a string."
   (string-downcase
    (string-trim '(#\Tab #\Newline #\Return #\Page #\Space) label)))
 
-(defun get-decoder (label) (gethash (normalize-label label) *decoders*))
+(defvar *label->name* nil "WHATWG label -> canonical encoding name (set in labels.lisp).")
+
+(defun get-decoder (label)
+  "Resolve a decoder by label: a directly-registered name wins; otherwise the
+WHATWG label alias map (e.g. iso-8859-1/latin1 -> windows-1252)."
+  (let ((n (normalize-label label)))
+    (or (gethash n *decoders*)
+        (let ((canon (and *label->name* (gethash n *label->name*))))
+          (and canon (gethash canon *decoders*))))))
 
 (defun decode (label bytes)
   "Decode BYTES (a sequence of octets) per encoding LABEL.  Returns a string."

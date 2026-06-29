@@ -9,7 +9,13 @@ This is the start of a long program, not a toy. The goal is an independent
 engine in the spirit of [Ladybird](https://ladybird.org/): own your entire view
 of the web, top to bottom, auditable.
 
-## Status — P0 begun: WHATWG URL parser ✅
+## Status — P0 complete: URL + Encoding + Fetch ✅
+
+`weft.fetch:fetch-text` already loads a real resource end-to-end — it decoded
+`https://example.com`'s **live Brotli** with our own pure-CL decoder and pulled
+the `<title>`, and `https://www.google.com` (gzip + ISO-8859-1, 81k chars).
+
+### URL — WHATWG parser
 
 `weft.url:parse` implements the [WHATWG URL Standard](https://url.spec.whatwg.org/)
 basic URL parser: the full state machine, host parsing (domain / IPv4 / IPv6 /
@@ -25,6 +31,17 @@ folding, soft-hyphen removal, noncharacter/disallowed validation. Punycode is in
 the Unicode IDNA *mapping tables* are the scoped follow-up. (Plain ASCII,
 punycode, and invalid-UTF-8 / U+FFFD domain rejection already work.)
 
+### Fetch — resource loader (closes P0)
+
+`weft.fetch` ties it together: parse URL → fetch via a **pluggable transport**
+(default a curl backend; rebind `*http-transport*` for the real TLS/HTTP stack) →
+strip **Content-Encoding** with the pure-CL codecs (`brotli-pure`, `zstd-pure`,
+`chipz` for gzip/deflate) → **charset-decode** the body (Content-Type charset /
+BOM sniff / UTF-8 default) through the 36 encoding decoders. The full WHATWG
+**label alias** table (228 labels → 40 names, e.g. `latin1`/`iso-8859-1` →
+windows-1252) is wired in. Offline gate: decodes real gzip/deflate/br/zstd bodies
+and windows-1252 / Shift_JIS / UTF-16LE / UTF-8-BOM bodies, 10/10.
+
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md). In dependency order, each phase backed by its
@@ -39,8 +56,9 @@ conformance oracle: **P0** URL + encoding + fetch glue (reusing the `br`/`zstd`/
 src/
   packages   package definitions
   url        WHATWG URL parser + host/IPv4/IPv6/punycode + serialization
-  encoding/  character decoders (WHATWG Encoding): kernel + UTF-8/16, single-byte,
-             and CJK (built in parallel by an agent swarm — see below)
+  encoding/  character decoders (WHATWG Encoding): kernel + label aliases +
+             UTF-8/16, single-byte, and CJK (built in parallel by an agent swarm)
+  fetch      resource loader: URL -> transport -> content-decode -> charset
 inspect/
   vectors/           urltestdata.json + encoding/*.json (vendored oracles)
   offline-test.lisp  URL gate (self-contained JSON reader + WPT differential)

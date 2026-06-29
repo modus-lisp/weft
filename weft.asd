@@ -16,6 +16,7 @@
                              (:file "url")        ; WHATWG URL parser
                              (:module "encoding" :serial t
                               :components ((:file "kernel")
+                                           (:file "labels")   ; WHATWG label aliases
                                            (:file "utf-8")
                                            (:file "utf-16le") (:file "utf-16be")
                                            (:file "windows-1252") (:file "windows-1251")
@@ -40,10 +41,18 @@
                                            (:file "gb18030"))))))
   :in-order-to ((test-op (test-op "weft/test"))))
 
+;; The resource loader depends on the pure-CL codecs (sibling systems) + chipz
+;; for gzip/deflate; kept separate so the core engine stays dependency-light.
+(defsystem "weft/fetch"
+  :depends-on ("weft" "brotli-pure" "zstd-pure" "chipz")
+  :components ((:module "src" :components ((:file "fetch")))))
+
 (defsystem "weft/test"
-  :depends-on ("weft")
-  :components ((:module "inspect" :components ((:file "offline-test") (:file "encoding-test"))))
+  :depends-on ("weft" "weft/fetch")
+  :components ((:module "inspect" :components ((:file "offline-test") (:file "encoding-test")
+                                              (:file "fetch-test"))))
   :perform (test-op (o c)
              (let ((url-ok (uiop:symbol-call :weft.test :run))
-                   (enc-ok (zerop (nth-value 1 (uiop:symbol-call :weft.encoding.test :run)))))
-               (unless (and url-ok enc-ok) (error "weft: gate failures")))))
+                   (enc-ok (zerop (nth-value 1 (uiop:symbol-call :weft.encoding.test :run))))
+                   (fetch-ok (zerop (nth-value 1 (uiop:symbol-call :weft.fetch.test :run)))))
+               (unless (and url-ok enc-ok fetch-ok) (error "weft: gate failures")))))

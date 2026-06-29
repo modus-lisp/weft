@@ -71,11 +71,11 @@
   :components ((:module "src" :components ((:file "fetch")))))
 
 (defsystem "weft/render"
-  :depends-on ("weft")
+  :depends-on ("weft" "chipz")
   :components ((:module "src" :components
                 ((:module "render" :serial t
                   :components ((:file "packages") (:file "font") (:file "font-bold")
-                               (:file "canvas") (:file "layout")))))))
+                               (:file "canvas") (:file "image") (:file "layout")))))))
 
 (defsystem "weft/test"
   :depends-on ("weft" "weft/fetch" "weft/render")

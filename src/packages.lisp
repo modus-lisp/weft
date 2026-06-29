@@ -17,3 +17,9 @@
   (:export
    #:decode #:get-decoder #:register-decoder #:define-decoder
    #:normalize-label #:+replacement+ #:*decoders*))
+
+(defpackage #:weft.html
+  (:use #:cl)
+  (:export #:tokenize #:*entities*
+           #:tok-type #:tok-name #:tok-data #:tok-attrs #:tok-self-closing
+           #:tok-public #:tok-system #:tok-force-quirks))

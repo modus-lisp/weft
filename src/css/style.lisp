@@ -13,7 +13,8 @@
   (margin-top 0.0) (margin-right 0.0) (margin-bottom 0.0) (margin-left 0.0)
   (padding-top 0.0) (padding-right 0.0) (padding-bottom 0.0) (padding-left 0.0)
   (border-top-width 0.0) (border-right-width 0.0) (border-bottom-width 0.0) (border-left-width 0.0)
-  (border-color '(0 0 0 1.0)) (text-align "left") (white-space "normal"))
+  (border-color '(0 0 0 1.0)) (text-align "left") (white-space "normal")
+  (text-decoration nil) (list-style "disc"))
 
 (defparameter *inherited* '(:color :font-size :font-weight :line-height :text-align :white-space))
 
@@ -36,6 +37,7 @@
             (cstyle-text-align cs) (cstyle-text-align parent-cs)
             (cstyle-white-space cs) (cstyle-white-space parent-cs)))
     (cond ((member tag *none-tags* :test #'string=) (setf (cstyle-display cs) "none"))
+          ((string= tag "li") (setf (cstyle-display cs) "list-item"))
           ((member tag *block-tags* :test #'string=) (setf (cstyle-display cs) "block"))
           (t (setf (cstyle-display cs) "inline")))
     ;; a few UA margins / sizes
@@ -47,7 +49,7 @@
       ((string= tag "h3") (setf (cstyle-font-size cs) 19.0 (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 18.0 (cstyle-margin-bottom cs) 18.0))
       ((member tag '("h4" "h5" "h6") :test #'string=) (setf (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 16.0 (cstyle-margin-bottom cs) 16.0))
       ((member tag '("b" "strong") :test #'string=) (setf (cstyle-font-weight cs) 700))
-      ((member tag '("a") :test #'string=) (setf (cstyle-color cs) '(0 0 238 1.0)))
+      ((member tag '("a") :test #'string=) (setf (cstyle-color cs) '(0 0 238 1.0) (cstyle-text-decoration cs) '("underline")))
       ((string= tag "li") (setf (cstyle-margin-left cs) 24.0))
       ((string= tag "pre") (setf (cstyle-white-space cs) "pre")))
     cs))
@@ -95,6 +97,10 @@
                      ((ignore-errors (parse-integer (string-trim '(#\Space) value)))) (t 400))))
         ((string= prop "line-height") (let ((n (ignore-errors (read-from-string value)))) (when (numberp n) (setf (cstyle-line-height cs) (float n)))))
         ((string= prop "text-align") (setf (cstyle-text-align cs) (string-downcase (string-trim '(#\Space) value))))
+        ((member prop '("text-decoration" "text-decoration-line") :test #'string=)
+         (let ((v (parse-value "text-decoration" value))) (when (listp v) (setf (cstyle-text-decoration cs) v))))
+        ((string= prop "list-style-type")
+         (let ((v (parse-value "list-style-type" value))) (when (stringp v) (setf (cstyle-list-style cs) v))))
         ((string= prop "white-space") (setf (cstyle-white-space cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "width") (let ((w (len t))) (when w (setf (cstyle-width cs) w))))
         ((string= prop "height") (let ((h (len t))) (when h (setf (cstyle-height cs) h))))

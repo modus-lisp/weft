@@ -18,4 +18,5 @@
            #:cstyle-margin-bottom #:cstyle-margin-left #:cstyle-padding-top
            #:cstyle-padding-right #:cstyle-padding-bottom #:cstyle-padding-left
            #:cstyle-border-top-width #:cstyle-border-right-width #:cstyle-border-bottom-width
-           #:cstyle-border-left-width #:cstyle-border-color #:cstyle-text-align #:cstyle-white-space))
+           #:cstyle-border-left-width #:cstyle-border-color #:cstyle-text-align #:cstyle-white-space
+           #:cstyle-text-decoration #:cstyle-list-style))

@@ -55,6 +55,7 @@
                                            (:file "number") (:file "angle")
                                            (:file "percentage") (:file "integer") (:file "time")
                                            (:file "resolution") (:file "url") (:file "css-string")
+                                           (:file "font-family") (:file "text-decoration") (:file "list-style-type") (:file "line-height")
                                            (:file "tokenizer") (:file "parser") (:file "selector") (:file "style"))))))
   :in-order-to ((test-op (test-op "weft/test"))))
 
@@ -68,7 +69,7 @@
   :depends-on ("weft")
   :components ((:module "src" :components
                 ((:module "render" :serial t
-                  :components ((:file "packages") (:file "font")
+                  :components ((:file "packages") (:file "font") (:file "font-bold")
                                (:file "canvas") (:file "layout")))))))
 
 (defsystem "weft/test"

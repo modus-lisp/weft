@@ -1,0 +1,1 @@
+{"type": "list-style-type", "cases": [["disc", "disc"], ["circle", "circle"], ["square", "square"], ["decimal", "decimal"], ["none", "none"], ["DISC", "disc"], ["foobar", null], ["lower-roman", "lower-roman"]]}

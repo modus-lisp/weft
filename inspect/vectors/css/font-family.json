@@ -1,0 +1,1 @@
+{"type": "font-family", "cases": [["Arial", ["arial"]], ["\"Times New Roman\", serif", ["times new roman", "serif"]], ["'Courier', monospace", ["courier", "monospace"]], ["  Helvetica  ,Arial", ["helvetica", "arial"]], ["", null], ["a , b , c", ["a", "b", "c"]]]}

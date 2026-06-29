@@ -702,6 +702,11 @@
                ((eq ty :start-tag)
                 (let ((name (tok-name tk)))
                   (cond
+                    ;; in-select-in-table: table tags close the select and reprocess
+                    ((and (member name '("caption" "table" "tbody" "tfoot" "thead" "tr" "td" "th") :test #'equal)
+                          (in-table-scope "table"))
+                     (loop while (and open (not (equal (top-name) "select"))) do (pop open))
+                     (when open (pop open)) (reset-mode) (reproc))
                     ((equal name "option")
                      (when (equal (top-name) "option") (pop open))
                      (insert-element "option" (tok-attrs tk)))
@@ -722,6 +727,10 @@
                ((eq ty :end-tag)
                 (let ((name (tok-name tk)))
                   (cond
+                    ((and (member name '("caption" "table" "tbody" "tfoot" "thead" "tr" "td" "th") :test #'equal)
+                          (in-table-scope "table") (in-table-scope name))
+                     (loop while (and open (not (equal (top-name) "select"))) do (pop open))
+                     (when open (pop open)) (reset-mode) (reproc))
                     ((equal name "optgroup")
                      (when (and (equal (top-name) "option")
                                 (>= (length open) 2) (equal (dnode-name (second open)) "optgroup"))

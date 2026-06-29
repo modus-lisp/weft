@@ -62,6 +62,10 @@
       ((member tag '("h4" "h5" "h6") :test #'string=) (setf (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 16.0 (cstyle-margin-bottom cs) 16.0))
       ((member tag '("b" "strong") :test #'string=) (setf (cstyle-font-weight cs) 700))
       ((member tag '("a") :test #'string=) (setf (cstyle-color cs) '(0 0 238 1.0) (cstyle-text-decoration cs) '("underline")))
+      ((string= tag "img") (setf (cstyle-display cs) "inline-block" (cstyle-background cs) '(228 228 232 1.0)
+                                 (cstyle-border-top-width cs) 1.0 (cstyle-border-right-width cs) 1.0
+                                 (cstyle-border-bottom-width cs) 1.0 (cstyle-border-left-width cs) 1.0
+                                 (cstyle-border-color cs) '(170 170 180 1.0) (cstyle-color cs) '(110 110 120 1.0)))
       ((string= tag "li") (setf (cstyle-margin-left cs) 24.0))
       ((string= tag "pre") (setf (cstyle-white-space cs) "pre")))
     cs))
@@ -88,6 +92,21 @@
                        ((member unit '("" ) :test #'string=) num)
                        (t num)))   ; treat unknown abs units as px-ish
                nil))))))
+
+(defun parse-size (text font-size auto-ok)
+  "Parse a width/height value -> px number | :auto | (:percent N) | NIL."
+  (let ((tt (string-downcase (string-trim '(#\Space) text))))
+    (cond
+      ((and auto-ok (string= tt "auto")) :auto)
+      ((and (plusp (length tt)) (char= (char tt (1- (length tt))) #\%))
+       (let ((n (ignore-errors (read-from-string (subseq tt 0 (1- (length tt))))))) (when (numberp n) (list :percent (float n)))))
+      (t (resolve-len tt font-size)))))
+
+(defun resolve-size (spec avail)
+  "Resolve a parse-size result against AVAIL (containing-block px).  :auto/NIL -> NIL."
+  (cond ((numberp spec) spec)
+        ((and (consp spec) (eq (first spec) :percent)) (* avail (/ (second spec) 100.0)))
+        (t nil)))
 
 (defun resolve-color (text)
   (let ((v (parse-value "color" text))) (if (and (listp v) (>= (length v) 3)) v nil)))
@@ -145,11 +164,11 @@
         ((string= prop "list-style-type")
          (let ((v (parse-value "list-style-type" value))) (when (stringp v) (setf (cstyle-list-style cs) v))))
         ((string= prop "white-space") (setf (cstyle-white-space cs) (string-downcase (string-trim '(#\Space) value))))
-        ((string= prop "width") (let ((w (len t))) (when w (setf (cstyle-width cs) w))))
-        ((string= prop "height") (let ((h (len t))) (when h (setf (cstyle-height cs) h))))
+        ((string= prop "width") (let ((w (parse-size value fs t))) (when w (setf (cstyle-width cs) w))))
+        ((string= prop "height") (let ((h (parse-size value fs t))) (when h (setf (cstyle-height cs) h))))
         ((string= prop "max-width") (if (string-equal (string-trim '(#\Space) value) "none") (setf (cstyle-max-width cs) :none)
-                                        (let ((w (len))) (when w (setf (cstyle-max-width cs) w)))))
-        ((string= prop "min-width") (let ((w (len))) (when w (setf (cstyle-min-width cs) w))))
+                                        (let ((w (parse-size value fs nil))) (when w (setf (cstyle-max-width cs) w)))))
+        ((string= prop "min-width") (let ((w (parse-size value fs nil))) (when w (setf (cstyle-min-width cs) w))))
         ((string= prop "float") (let ((v (parse-value "float" value))) (when (stringp v) (setf (cstyle-float cs) v))))
         ((string= prop "clear") (setf (cstyle-clear cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "position") (let ((v (parse-value "position" value))) (when (stringp v) (setf (cstyle-position cs) v))))

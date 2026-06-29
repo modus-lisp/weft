@@ -125,6 +125,9 @@
                         ((member name '("dd" "dt") :test #'equal)
                          (when (in-scope "p" '("html" "button")) (close-p))
                          (insert-element name (tok-attrs tk)))
+                        ((equal name "hr")        ; closes an open <p>, then a void
+                         (when (in-scope "p" '("html" "button")) (close-p))
+                         (insert-void "hr" (tok-attrs tk)))
                         ((member name *void* :test #'equal) (insert-void name (tok-attrs tk)))
                         ((member name *block-closes-p* :test #'equal)
                          (when (in-scope "p" '("html" "button")) (close-p))

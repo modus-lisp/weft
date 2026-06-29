@@ -1,0 +1,71 @@
+;;;; inspect/dom-test.lisp — DOM query differential gate.
+;;;;
+;;;; Oracle (inspect/vectors/dom/*.json) was produced from Python html5lib's DOM
+;;;; (text nodes are children, matching our model).  For each case we PARSE-HTML
+;;;; the fixture and run the DOM method; matched elements are compared by their
+;;;; node path (child indices from the document), text by string.
+(defpackage #:weft.dom.test (:use #:cl) (:local-nicknames (#:d #:weft.dom) (#:h #:weft.html)) (:export #:run))
+(in-package #:weft.dom.test)
+
+(defun json-parse (string)
+  (let ((i 0) (n (length string)))
+    (labels
+        ((peek () (when (< i n) (char string i)))
+         (next () (prog1 (char string i) (incf i)))
+         (ws () (loop while (and (< i n) (member (char string i) '(#\Space #\Tab #\Newline #\Return))) do (incf i)))
+         (value () (ws) (let ((c (peek)))
+                          (cond ((char= c #\{) (object)) ((char= c #\[) (array)) ((char= c #\") (jstring))
+                                ((or (digit-char-p c) (char= c #\-)) (number))
+                                ((char= c #\t) (incf i 4) :true) ((char= c #\f) (incf i 5) :false)
+                                ((char= c #\n) (incf i 4) :null))))
+         (object () (next) (ws) (let ((al '())) (when (char= (peek) #\}) (next) (return-from object '()))
+                                  (loop (ws) (let ((k (jstring))) (ws) (next) (push (cons k (value)) al)) (ws)
+                                        (if (char= (peek) #\,) (next) (progn (next) (return)))) (nreverse al)))
+         (array () (next) (ws) (let ((items '())) (when (char= (peek) #\]) (next) (return-from array '()))
+                                 (loop (push (value) items) (ws) (if (char= (peek) #\,) (next) (progn (next) (return)))) (nreverse items)))
+         (jstring () (next) (with-output-to-string (o)
+                              (loop for c = (next) until (char= c #\") do
+                                (if (char= c #\\)
+                                    (let ((e (next))) (case e (#\n (write-char #\Newline o)) (#\t (write-char #\Tab o))
+                                                        (#\r (write-char #\Return o)) (#\/ (write-char #\/ o)) (#\\ (write-char #\\ o)) (#\" (write-char #\" o))
+                                                        (#\u (let ((cp (parse-integer string :start i :end (+ i 4) :radix 16))) (incf i 4) (write-char (code-char cp) o)))
+                                                        (t (write-char e o))))
+                                    (write-char c o)))))
+         (number () (let ((s i)) (loop while (and (< i n) (or (digit-char-p (char string i)) (member (char string i) '(#\- #\+ #\. #\e #\E)))) do (incf i))
+                      (read-from-string (subseq string s i)))))
+      (value))))
+(defun slurp (p) (with-open-file (s p :external-format :utf-8) (let ((str (make-string (file-length s)))) (subseq str 0 (read-sequence str s)))))
+(defun field (o k) (cdr (assoc k o :test #'string=)))
+
+(defun node-path (node)
+  "Child-index path from the document down to NODE (as a list of ints)."
+  (let ((p '()) (n node))
+    (loop for par = (h:dnode-parent n) while par do
+      (push (position n (h:dnode-children par)) p) (setf n par))
+    p))
+(defun doc-of (node) (loop for n = node then (h:dnode-parent n) while (h:dnode-parent n) finally (return n)))
+(defun first-element (doc) (find :element (h:dnode-children doc) :key #'h:dnode-kind))
+
+(defun run (&optional only)
+  (let ((pass 0) (fail 0) (fails '()))
+    (format t "~&=== weft DOM query gate (vs html5lib) ===~%")
+    (flet ((check (file fn)
+             (when (and only (not (string= only file))) (return-from check))
+             (let ((fp 0) (ff 0))
+               (dolist (c (field (json-parse (slurp (asdf:system-relative-pathname "weft" (format nil "inspect/vectors/dom/~a.json" file)))) "cases"))
+                 (let* ((doc (handler-case (h:parse-html (field c "html")) (error () nil)))
+                        (got (and doc (ignore-errors (funcall fn doc (field c "arg")))))
+                        (want (field c "expected")))
+                   (if (equal got want) (incf fp)
+                       (progn (incf ff) (when (< (length fails) 10)
+                                          (push (format nil "[~a ~s] arg=~s want=~s got=~s" file (field c "html") (field c "arg") want got) fails))))))
+               (incf pass fp) (incf fail ff)
+               (format t "  ~a ~14a ~4d/~d~%" (if (zerop ff) "ok  " "FAIL") file fp (+ fp ff)))))
+      ;; convert results to comparable form (paths / list-of-paths / string)
+      (check "by-id" (lambda (doc arg) (let ((e (d:get-element-by-id doc arg))) (if e (node-path e) :null))))
+      (check "by-tag" (lambda (doc arg) (mapcar #'node-path (d:get-elements-by-tag-name doc arg))))
+      (check "by-class" (lambda (doc arg) (mapcar #'node-path (d:get-elements-by-class-name doc arg))))
+      (check "text-content" (lambda (doc arg) (declare (ignore arg)) (d:text-content (first-element doc)))))
+    (format t "~%~d passed, ~d failed~%" pass fail)
+    (when fails (format t "~%sample:~%~{  ~a~%~}" (reverse fails)))
+    (values pass fail)))

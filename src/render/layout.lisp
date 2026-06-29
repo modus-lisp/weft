@@ -191,21 +191,40 @@ Returns (values lbox advance-height)."
                          (incf yy lh-total) (incf content-h lh-total))))
                    (setf group '()))))
           (dolist (k kids)
-            (cond
-              ((float-p styles k)                      ; out-of-flow float
-               (let ((lb (place-float k styles cx (+ cx content-w) yy content-w)))
-                 (when lb (push lb children))))
-              ((block-level-p styles k)
-               (flush-inline)
-               (let ((kcs (st styles k)))              ; clear advances past floats
+            (let* ((kcs (st styles k))
+                   (pos (and kcs (css:cstyle-position kcs))))
+              (cond
+                ((and kcs (member pos '("absolute" "fixed") :test #'string=))   ; out of flow
+                 (multiple-value-bind (lb adv) (layout-node k styles cx yy content-w)
+                   (declare (ignore adv))
+                   (when lb
+                     (let ((nx (cond ((numberp (css:cstyle-left kcs)) (css:cstyle-left kcs))
+                                     ((numberp (css:cstyle-right kcs)) (- (+ cx content-w) (lbox-w lb) (css:cstyle-right kcs)))
+                                     (t (lbox-x lb))))
+                           (ny (cond ((numberp (css:cstyle-top kcs)) (css:cstyle-top kcs))
+                                     (t (lbox-y lb)))))
+                       (shift-box lb (round (- nx (lbox-x lb))) (round (- ny (lbox-y lb)))))
+                     (push lb children))))
+                ((float-p styles k)                                              ; float
+                 (let ((lb (place-float k styles cx (+ cx content-w) yy content-w)))
+                   (when lb (push lb children))))
+                ((block-level-p styles k)
+                 (flush-inline)
                  (when (and kcs (member (css:cstyle-clear kcs) '("left" "right" "both") :test #'string=))
                    (let ((ny (clear-y yy cx (+ cx content-w)
                                      (case (intern (string-upcase (css:cstyle-clear kcs)) :keyword)
                                        (:left '(:left)) (:right '(:right)) (t '(:left :right))))))
-                     (when (> ny yy) (incf content-h (- ny yy)) (setf yy ny)))))
-               (multiple-value-bind (lb adv) (layout-node k styles cx yy content-w)
-                 (when lb (push lb children)) (incf yy adv) (incf content-h adv)))
-              ((or (eq (h:dnode-kind k) :text) (inline-level-p styles k)) (push k group))))
+                     (when (> ny yy) (incf content-h (- ny yy)) (setf yy ny))))
+                 (multiple-value-bind (lb adv) (layout-node k styles cx yy content-w)
+                   (when lb
+                     (when (and kcs (string= pos "relative"))                    ; visual shift, flow unchanged
+                       (shift-box lb (round (cond ((numberp (css:cstyle-left kcs)) (css:cstyle-left kcs))
+                                                  ((numberp (css:cstyle-right kcs)) (- (css:cstyle-right kcs))) (t 0)))
+                                  (round (cond ((numberp (css:cstyle-top kcs)) (css:cstyle-top kcs))
+                                               ((numberp (css:cstyle-bottom kcs)) (- (css:cstyle-bottom kcs))) (t 0)))))
+                     (push lb children))
+                   (incf yy adv) (incf content-h adv)))
+                ((or (eq (h:dnode-kind k) :text) (inline-level-p styles k)) (push k group)))))
           (flush-inline)))
       (let* ((box-h (+ content-h pt pb bt bb))
              (lb (make-lbox :x box-x :y box-y :w width :h (max box-h (if list-item *font-h* 0))

@@ -52,7 +52,10 @@
                              (:module "css" :serial t
                               :components ((:file "packages") (:file "kernel")
                                            (:file "color-names") (:file "color") (:file "length")
-                                           (:file "number") (:file "angle"))))))
+                                           (:file "number") (:file "angle")
+                                           (:file "percentage") (:file "integer") (:file "time")
+                                           (:file "resolution") (:file "url") (:file "css-string")
+                                           (:file "tokenizer") (:file "parser"))))))
   :in-order-to ((test-op (test-op "weft/test"))))
 
 ;; The resource loader depends on the pure-CL codecs (sibling systems) + chipz

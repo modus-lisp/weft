@@ -10,4 +10,12 @@
            #:ctok #:ctok-type #:ctok-value #:ctok-unit
            ;; selectors
            #:parse-selector-list #:selector-matches-p #:specificity
-           #:query-select #:query-select-all))
+           #:query-select #:query-select-all
+           ;; computed style
+           #:compute-styles #:cstyle #:cstyle-display #:cstyle-color #:cstyle-background
+           #:cstyle-font-size #:cstyle-font-weight #:cstyle-line-height
+           #:cstyle-width #:cstyle-height #:cstyle-margin-top #:cstyle-margin-right
+           #:cstyle-margin-bottom #:cstyle-margin-left #:cstyle-padding-top
+           #:cstyle-padding-right #:cstyle-padding-bottom #:cstyle-padding-left
+           #:cstyle-border-top-width #:cstyle-border-right-width #:cstyle-border-bottom-width
+           #:cstyle-border-left-width #:cstyle-border-color #:cstyle-text-align #:cstyle-white-space))

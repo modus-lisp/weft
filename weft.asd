@@ -55,7 +55,7 @@
                                            (:file "number") (:file "angle")
                                            (:file "percentage") (:file "integer") (:file "time")
                                            (:file "resolution") (:file "url") (:file "css-string")
-                                           (:file "tokenizer") (:file "parser") (:file "selector"))))))
+                                           (:file "tokenizer") (:file "parser") (:file "selector") (:file "style"))))))
   :in-order-to ((test-op (test-op "weft/test"))))
 
 ;; The resource loader depends on the pure-CL codecs (sibling systems) + chipz

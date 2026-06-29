@@ -34,7 +34,7 @@ ORACLE (run after EVERY edit; loop until it prints "0 failed"):
   cd $WD && rm -rf $WAVE/.cache-$unit && XDG_CACHE_HOME=$WAVE/.cache-$unit CL_SOURCE_REGISTRY='(:source-registry (:tree "$WD") :ignore-inherited-configuration)' sbcl --non-interactive --eval '(asdf:load-system "weft")' --load inspect/css-test.lisp --eval '(weft.css.test:run "$unit")' 2>&1 | tail -8
 Success = "0 failed". Stop then, or after 8 cycles (report closest + an example).
 TASK
-done
+done < "$MANIFEST"
 echo "[wave] ${#units[@]} units, $PAR concurrent"
 printf '%s\n' "${units[@]}" | xargs -P "$PAR" -I{} bash "$SELF/worker.sh" {} "$WAVE"
 echo "=== WAVE COMPLETE ==="

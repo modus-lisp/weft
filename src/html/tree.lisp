@@ -23,6 +23,19 @@
 (defparameter *scope-bounds* '("applet" "caption" "html" "table" "td" "th" "marquee" "object" "template"))
 (defparameter *button-scope* (cons "button" *scope-bounds*))
 (defparameter *implied-end* '("dd" "dt" "li" "optgroup" "option" "p" "rb" "rp" "rt" "rtc"))
+(defparameter *formatting* '("a" "b" "big" "code" "em" "font" "i" "nobr" "s"
+                             "small" "strike" "strong" "tt" "u"))
+;; "special" category (subset relevant to the adoption agency furthest-block search)
+(defparameter *special*
+  '("address" "applet" "area" "article" "aside" "base" "basefont" "bgsound"
+    "blockquote" "body" "br" "button" "caption" "center" "col" "colgroup" "dd"
+    "details" "dir" "div" "dl" "dt" "embed" "fieldset" "figcaption" "figure"
+    "footer" "form" "frame" "frameset" "h1" "h2" "h3" "h4" "h5" "h6" "head"
+    "header" "hgroup" "hr" "html" "iframe" "img" "input" "li" "link" "listing"
+    "main" "marquee" "menu" "meta" "nav" "noembed" "noframes" "noscript"
+    "object" "ol" "p" "param" "plaintext" "pre" "script" "section" "select"
+    "source" "style" "summary" "table" "tbody" "td" "template" "textarea"
+    "tfoot" "th" "thead" "title" "tr" "track" "ul" "wbr" "xmp"))
 (defparameter *ws* '(#\Tab #\Newline #\Page #\Return #\Space))
 ;; start tags ignored in "in body" (they belong to table/frame/head contexts)
 (defparameter *in-body-ignored-starts*
@@ -41,7 +54,8 @@
    (let* ((toks (coerce tklist 'vector)) (ntok (length toks)) (s src)
           (doc (make-document)) (open '()) (mode :initial) (orig-mode nil)
           (head nil) (i 0) (reconsume nil) (fostering nil) (pending nil) (drop-nl nil)
-          (form-ptr nil))
+          (form-ptr nil)
+          (afe (make-array 0 :adjustable t :fill-pointer 0)))   ; active formatting elements
     (labels
         ((current () (car open))
          (top-name () (and open (dnode-name (current))))
@@ -133,7 +147,120 @@
                      ((equal n "head") (return (switch :in-body)))
                      ((equal n "body") (return (switch :in-body)))
                      ((equal n "html") (return (switch :in-body)))))))
+         ;; ---- active formatting elements (AFE) ----
+         (push-marker () (vector-push-extend :marker afe))
+         (clear-afe-to-marker ()
+           (loop while (plusp (length afe))
+                 for top = (aref afe (1- (length afe)))
+                 do (decf (fill-pointer afe))
+                 until (eq top :marker)))
+         (same-fmt (a b)                            ; same name + attributes
+           (and (equal (dnode-name a) (dnode-name b))
+                (null (set-exclusive-or (dnode-attrs a) (dnode-attrs b) :test #'equal))))
+         (push-afe (el)
+           ;; Noah's Ark: at most 3 equal entries since the last marker
+           (let ((count 0))
+             (loop for k from (1- (length afe)) downto 0
+                   for e = (aref afe k)
+                   until (eq e :marker)
+                   when (and (not (eq e :marker)) (same-fmt e el)) do (incf count))
+             (when (>= count 3)
+               (loop for k from 0 below (length afe)
+                     for e = (aref afe k)
+                     when (and (not (eq e :marker)) (same-fmt e el))
+                       do (loop for j from k below (1- (length afe)) do (setf (aref afe j) (aref afe (1+ j))))
+                          (decf (fill-pointer afe))
+                          (return))))
+           (vector-push-extend el afe))
+         (afe-remove (el)
+           (let ((k (position el afe)))
+             (when k (loop for j from k below (1- (length afe)) do (setf (aref afe j) (aref afe (1+ j))))
+                   (decf (fill-pointer afe)))))
+         (reconstruct-afe ()
+           (when (plusp (length afe))
+             (let ((idx (1- (length afe))))
+               (unless (or (eq (aref afe idx) :marker) (member (aref afe idx) open))
+                 (loop                                ; rewind to an entry that is a marker / open / first
+                   (if (zerop idx) (return))
+                   (decf idx)
+                   (when (or (eq (aref afe idx) :marker) (member (aref afe idx) open))
+                     (incf idx) (return)))
+                 (loop                                ; create clones forward
+                   (let* ((old (aref afe idx))
+                          (new (insert-element (dnode-name old) (dnode-attrs old))))
+                     (setf (aref afe idx) new)
+                     (when (= idx (1- (length afe))) (return))
+                     (incf idx)))))))
+         (last-fmt (name)                            ; last AFE element named NAME after last marker
+           (loop for k from (1- (length afe)) downto 0
+                 for e = (aref afe k)
+                 when (eq e :marker) do (return nil)
+                 when (and (not (eq e :marker)) (equal (dnode-name e) name)) do (return e)))
+         ;; ---- the adoption agency algorithm (WHATWG §13.2.6.4.7) ----
+         (adoption-agency (subject)
+           (let ((cur (current)))
+             (when (and cur (equal (dnode-name cur) subject) (not (position cur afe)))
+               (pop open) (return-from adoption-agency)))
+           (dotimes (outer 8)
+             (let ((fmt (last-fmt subject)))
+               (when (null fmt) (body-end-generic subject) (return-from adoption-agency))
+               (unless (member fmt open) (afe-remove fmt) (return-from adoption-agency))
+               (unless (in-scope (dnode-name fmt)) (return-from adoption-agency))
+               (let* ((fmt-open-pos (position fmt open))   ; 0 = newest
+                      (furthest nil))
+                 ;; furthest block: the special element newer than fmt closest to it
+                 ;; (newer = lower index; take the first match scanning toward 0)
+                 (loop for k from (1- fmt-open-pos) downto 0
+                       for el = (nth k open)
+                       when (member (dnode-name el) *special* :test #'equal)
+                         do (setf furthest el) (return))
+                 (when (null furthest)
+                   (loop while (and open (not (eq (current) fmt))) do (pop open))
+                   (pop open) (afe-remove fmt) (return-from adoption-agency))
+                 (let* ((ca (nth (1+ fmt-open-pos) open))   ; common ancestor (above fmt)
+                        (bookmark (position fmt afe))
+                        (node furthest) (last-node furthest) (inner 0))
+                   (loop
+                     (incf inner)
+                     (setf node (nth (1+ (position node open)) open))   ; element above node
+                     (when (eq node fmt) (return))
+                     (let ((in-afe (position node afe)))
+                       (when (and (> inner 3) in-afe) (afe-remove node) (setf in-afe nil))
+                       (if (null in-afe)
+                           (progn (setf open (remove node open)))
+                           (let ((clone (make-element (dnode-name node) (dnode-attrs node))))
+                             (setf (aref afe (position node afe)) clone)
+                             (setf open (substitute clone node open))
+                             (setf node clone)
+                             (when (eq last-node furthest) (setf bookmark (1+ (position node afe))))
+                             (dom-remove last-node) (dom-append node last-node)
+                             (setf last-node node)))))
+                   ;; place last-node into the common ancestor (foster-aware)
+                   (dom-remove last-node)
+                   (if (member (dnode-name ca) '("table" "tbody" "tfoot" "thead" "tr") :test #'equal)
+                       (let ((lt (find "table" open :key #'dnode-name :test #'equal)))
+                         (if (and lt (dnode-parent lt)) (dom-insert-before (dnode-parent lt) last-node lt)
+                             (dom-append ca last-node)))
+                       (dom-append ca last-node))
+                   ;; clone fmt, move furthest's children into it, append to furthest
+                   (let ((clone (make-element (dnode-name fmt) (dnode-attrs fmt))))
+                     (dom-move-children furthest clone)
+                     (dom-append furthest clone)
+                     ;; AFE: remove fmt, insert clone at bookmark
+                     (afe-remove fmt)
+                     (let ((bm (min (or bookmark (length afe)) (length afe))))
+                       (vector-push-extend nil afe)
+                       (loop for k from (1- (length afe)) above bm do (setf (aref afe k) (aref afe (1- k))))
+                       (setf (aref afe bm) clone))
+                     ;; open: remove fmt, insert clone immediately newer than furthest
+                     ;; (newer = lower index, i.e. just before furthest in the list)
+                     (setf open (remove fmt open))
+                     (let ((fp (position furthest open)))
+                       (setf open (append (subseq open 0 fp) (list clone)
+                                          (subseq open fp))))))))))
          ;; ---- "in body" start/end, reusable from table fallthroughs ----
+         (body-end-generic (name)
+           (when (in-scope name) (pop-until name)))
          (body-start (tk name)
            (cond
              ((equal name "html"))
@@ -157,8 +284,24 @@
               (when (in-scope "dt") (pop-until "dt"))
               (when (in-scope "p" *button-scope*) (close-p))
               (insert-element name (tok-attrs tk)))
+             ((equal name "a")
+              (let ((existing (last-fmt "a")))
+                (when existing (adoption-agency "a") (afe-remove existing)))
+              (reconstruct-afe)
+              (push-afe (insert-element "a" (tok-attrs tk))))
+             ((equal name "nobr")
+              (reconstruct-afe)
+              (when (in-scope "nobr") (adoption-agency "nobr") (reconstruct-afe))
+              (push-afe (insert-element "nobr" (tok-attrs tk))))
+             ((member name *formatting* :test #'equal)
+              (reconstruct-afe)
+              (push-afe (insert-element name (tok-attrs tk))))
+             ((member name '("applet" "marquee" "object") :test #'equal)
+              (reconstruct-afe)
+              (insert-element name (tok-attrs tk)) (push-marker))
              ((equal name "button")
               (when (in-scope "button") (pop-until "button"))
+              (reconstruct-afe)
               (insert-element "button" (tok-attrs tk)))
              ((equal name "form")
               (unless form-ptr
@@ -177,7 +320,7 @@
              ((member name *block-closes-p* :test #'equal)
               (when (in-scope "p" *button-scope*) (close-p))
               (insert-element name (tok-attrs tk)))
-             (t (insert-element name (tok-attrs tk)))))
+             (t (reconstruct-afe) (insert-element name (tok-attrs tk)))))
          (body-end (name)
            (cond
              ((equal name "body") (switch :after-body))
@@ -196,7 +339,10 @@
                 (gen-implied)
                 (loop while (and open (not (member (top-name) *headings* :test #'equal))) do (pop open))
                 (when open (pop open))))
-             (t (when (in-scope name) (pop-until name)))))
+             ((member name '("applet" "marquee" "object") :test #'equal)
+              (when (in-scope name) (gen-implied) (pop-until name) (clear-afe-to-marker)))
+             ((member name *formatting* :test #'equal) (adoption-agency name))
+             (t (body-end-generic name))))
          ;; ---- table cell helpers ----
          (close-cell ()
            (gen-implied)
@@ -265,7 +411,7 @@
                 (let ((data (tok-data tk)))
                   (when (and drop-nl (string= data (string #\Newline))) (setf data ""))
                   (setf drop-nl nil)
-                  (when (plusp (length data)) (insert-text data))))
+                  (when (plusp (length data)) (reconstruct-afe) (insert-text data))))
                ((eq ty :comment) (dom-append (current) (make-comment (tok-data tk))))
                ((eq ty :doctype))
                ((eq ty :start-tag) (setf drop-nl nil) (body-start tk (tok-name tk)))

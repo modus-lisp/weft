@@ -35,6 +35,21 @@ If REF is NIL, append.  Used for foster parenting."
         (setf (aref ch idx) node)
         node)))
 
+(defun dom-remove (node)
+  "Detach NODE from its parent's children."
+  (let ((parent (dnode-parent node)))
+    (when parent
+      (let* ((ch (dnode-children parent)) (idx (position node ch)))
+        (when idx
+          (loop for k from idx below (1- (length ch)) do (setf (aref ch k) (aref ch (1+ k))))
+          (decf (fill-pointer ch))))
+      (setf (dnode-parent node) nil)))
+  node)
+
+(defun dom-move-children (from to)
+  "Move all children of FROM to TO (appended in order)."
+  (loop for c across (copy-seq (dnode-children from)) do (dom-remove c) (dom-append to c)))
+
 (defun dom-prev-sibling (parent ref)
   "The child of PARENT immediately before REF, or the last child if REF is NIL."
   (let* ((ch (dnode-children parent)) (idx (and ref (position ref ch))))

@@ -7,7 +7,8 @@
 ;;;; consumes these tokens (next P1 step).
 (in-package #:weft.html)
 
-(defstruct tok type name data attrs self-closing public system force-quirks)
+(defstruct tok type name data attrs self-closing public system force-quirks
+  pos cend)   ; pos = source index of the tag's '<'; cend = index of its '>'
 
 ;;; numeric character reference: C1 overrides + invalid -> U+FFFD
 (defparameter *c1-table*
@@ -68,7 +69,8 @@ LAST-START-TAG sets the appropriate-end-tag name for the content-model states."
          (mk (lambda () (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
          (tname nil) (tattrs nil) (aname nil) (aval nil) (end-tag nil) (self-close nil)
          (comment nil) (dname nil) (dpublic nil) (dsystem nil) (fquirks nil)
-         (temp nil) (return-state :data) (last-tag (and last-start-tag (string last-start-tag))))
+         (temp nil) (return-state :data) (tagstart 0)
+         (last-tag (and last-start-tag (string last-start-tag))))
     (labels ((emit (tk) (push tk tokens))
              (emit-char (c) (push (make-tok :type :char :data (string c)) tokens))
              (emit-str (str) (loop for c across str do (emit-char c)))
@@ -85,9 +87,9 @@ LAST-START-TAG sets the appropriate-end-tag name for the content-model states."
                (finish-attr)
                (let ((nm (coerce tname 'simple-string)))
                  (if end-tag
-                     (emit (make-tok :type :end-tag :name nm))
+                     (emit (make-tok :type :end-tag :name nm :pos tagstart :cend i))
                      (progn (setf last-tag nm)
-                            (emit (make-tok :type :start-tag :name nm
+                            (emit (make-tok :type :start-tag :name nm :pos tagstart :cend i
                                             :attrs (reverse tattrs) :self-closing self-close))))))
              (emit-doctype ()
                (emit (make-tok :type :doctype
@@ -108,7 +110,7 @@ LAST-START-TAG sets the appropriate-end-tag name for the content-model states."
               (:data
                (cond ((eq c :eof) (emit (make-tok :type :eof)) (return))
                      ((char= c #\&) (adv) (setf return-state :data) (go-to :char-ref))
-                     ((char= c #\<) (consume-go :tag-open))
+                     ((char= c #\<) (setf tagstart i) (consume-go :tag-open))
                      (t (emit-char c) (adv))))
               (:plaintext
                (if (eq c :eof) (progn (emit (make-tok :type :eof)) (return))
@@ -353,4 +355,4 @@ LAST-START-TAG sets the appropriate-end-tag name for the content-model states."
                      (loop for ch across str do (vector-push-extend ch aval))
                      (emit-str str))
                  (go-to return-state))))))))
-    (nreverse tokens)))
+    (values (nreverse tokens) s)))   ; 2nd value: preprocessed source (for raw-text extraction)

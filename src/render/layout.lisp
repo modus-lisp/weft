@@ -102,6 +102,26 @@ intrinsic size (or CSS/HTML override); else an alt-text placeholder."
                                :children (list (make-frag :x 2 :w (* (length alt) *font-w*) :text alt :style cs)))))))
     lb))
 
+(defun make-pseudo-node (content)
+  "A synthetic inline element carrying generated CONTENT as its only text child,
+used to materialise a ::before/::after box in the normal layout flow."
+  (let* ((v (make-array 1 :adjustable t :fill-pointer 0))
+         (el (h::%dnode :kind :element :name "span" :children v)))
+    (when (and content (plusp (length content)))
+      (let ((txt (h::%dnode :kind :text :data content)))
+        (setf (h:dnode-parent txt) el) (vector-push-extend txt v)))
+    el))
+
+(defun pseudo-kids (node styles)
+  "Return (values before-node-or-nil after-node-or-nil), registering each
+synthetic node's style in STYLES so the normal classifier handles it."
+  (flet ((mk (which)
+           (let ((pcs (gethash (cons node which) styles)))
+             (when pcs
+               (let ((pn (make-pseudo-node (css:cstyle-content pcs))))
+                 (setf (gethash pn styles) pcs) pn)))))
+    (values (mk :before) (mk :after))))
+
 (defun word-w (word) (* (length word) *font-w*))
 (defun space-w () *font-w*)
 
@@ -233,8 +253,13 @@ Returns (values lbox advance-height)."
                  (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                                 :kind :block :children boxes)))
             (return-from %layout-node (values lb (+ mt box-h mb))))))
-      ;; classify children: anonymous-group consecutive inline-level nodes
-      (let ((kids (coerce (h:dnode-children node) 'list)) (group '()) (yy cy))
+      ;; classify children: anonymous-group consecutive inline-level nodes.
+      ;; ::before / ::after generated boxes bracket the real children.
+      (let ((kids (multiple-value-bind (before after) (pseudo-kids node styles)
+                    (append (when before (list before))
+                            (coerce (h:dnode-children node) 'list)
+                            (when after (list after)))))
+            (group '()) (yy cy))
         (flet ((flush-inline ()
                  (when group
                    (let ((words (loop for g in (nreverse group) append (collect-words g styles cs content-w))))

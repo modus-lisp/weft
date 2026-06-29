@@ -120,6 +120,22 @@
 ;;; ---- complex selector (compounds + combinators), matched right-to-left -
 (defstruct cx compounds combs)   ; compounds: vector; combs: vector len-1 (combinator BEFORE each compound)
 
+(defun cx-pseudo-element (cx)
+  "If CX's final compound names a ::before/::after pseudo-element, return
+(values :before|:after stripped-cx) where stripped-cx has that simple removed;
+else (values NIL CX).  first-line/first-letter are treated as NIL (no box)."
+  (let* ((comps (cx-compounds cx)) (n (length comps)))
+    (if (zerop n) (values nil cx)
+        (let* ((last (aref comps (1- n)))
+               (pe (find-if (lambda (s) (and (eq (first s) :pseudo)
+                                             (member (string-downcase (second s)) '("before" "after") :test #'string=)))
+                            last)))
+          (if (null pe) (values nil cx)
+              (let ((new (copy-seq comps)))
+                (setf (aref new (1- n)) (or (remove pe last) (list '(:universal))))
+                (values (if (string-equal (second pe) "before") :before :after)
+                        (make-cx :compounds new :combs (cx-combs cx)))))))))
+
 (defun match-complex (compounds combs k n)
   (and (match-compound (aref compounds k) n)
        (or (zerop k)

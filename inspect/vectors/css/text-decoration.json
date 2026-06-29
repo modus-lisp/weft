@@ -1,0 +1,1 @@
+{"type": "text-decoration", "cases": [["none", ["none"]], ["underline", ["underline"]], ["underline overline", ["underline", "overline"]], ["line-through", ["line-through"]], ["UNDERLINE", ["underline"]], ["bogus", null], ["underline blink", ["underline", "blink"]]]}

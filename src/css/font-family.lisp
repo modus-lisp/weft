@@ -1,0 +1,47 @@
+;;;; src/css/font-family.lisp — <font-family> value parser.
+(in-package #:weft.css)
+
+(define-value-parser "font-family" (s)
+  (block nil
+    (let* ((s (css-trim s))
+           (len (length s)))
+      (when (zerop len) (return :invalid))
+      ;; Split on commas, respecting quoted strings
+      (let ((parts '())
+            (start 0)
+            (i 0)
+            (in-quote nil)
+            (quote-char nil))
+        (loop while (< i len)
+              do (let ((ch (char s i)))
+                   (cond
+                     ((and (not in-quote) (member ch '(#\" #\')))
+                      (setf in-quote t quote-char ch)
+                      (incf i))
+                     ((and in-quote (char= ch quote-char))
+                      (setf in-quote nil)
+                      (incf i))
+                     ((and (not in-quote) (char= ch #\,))
+                      (push (subseq s start i) parts)
+                      (setf start (1+ i))
+                      (incf i))
+                     (t (incf i)))))
+        ;; Last part
+        (push (subseq s start) parts)
+        (setf parts (nreverse parts))
+        ;; Process each part: trim, strip quotes, lowercase
+        (let ((result '()))
+          (dolist (part parts)
+            (let ((trimmed (css-trim part)))
+              (when (zerop (length trimmed)) (return :invalid))
+              ;; Strip matching surrounding quotes
+              (let ((fl (char trimmed 0))
+                    (ll (char trimmed (1- (length trimmed)))))
+                (when (and (>= (length trimmed) 2)
+                           (member fl '(#\" #\'))
+                           (char= fl ll))
+                  (setf trimmed (subseq trimmed 1 (1- (length trimmed))))))
+              (push (ascii-downcase trimmed) result)))
+          (setf result (nreverse result))
+          (when (null result) (return :invalid))
+          result)))))

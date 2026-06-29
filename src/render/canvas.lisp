@@ -27,20 +27,23 @@
     (loop for yy from y0 below y1 do
       (loop for xx from x0 below x1 do (put cv xx yy r g b)))))
 
-(defun draw-char (cv ch x y color)
+(defun draw-char (cv ch x y color &optional bold)
   "Draw one ASCII char at (x,y) top-left.  Returns the advance width."
   (let ((code (char-code ch)))
     (when (and (>= code 32) (<= code 126))
-      (let ((glyph (aref *font* (- code 32))) (r (first color)) (g (second color)) (b (third color)))
+      (let ((glyph (aref (if bold *font-bold* *font*) (- code 32)))
+            (r (first color)) (g (second color)) (b (third color)))
         (dotimes (row *font-h*)
           (let ((bits (aref glyph row)))
             (dotimes (col *font-w*)
               (when (logbitp col bits) (put cv (+ x col) (+ y row) r g b)))))))
     *font-w*))
 
-(defun draw-text (cv text x y color)
+(defun draw-text (cv text x y color &key bold underline)
   (let ((cx x))
-    (loop for ch across text do (incf cx (draw-char cv ch cx y color)))
+    (loop for ch across text do (incf cx (draw-char cv ch cx y color bold)))
+    (when underline
+      (fill-rect cv x (+ y *font-h* -1) (- cx x) 1 color))
     cx))
 
 ;;; ---- CRC32 / Adler32 ---------------------------------------------------

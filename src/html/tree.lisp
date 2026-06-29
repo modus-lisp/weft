@@ -19,6 +19,11 @@
     "menu" "nav" "ol" "p" "section" "summary" "ul" "pre" "listing"
     "form" "fieldset"))
 (defparameter *headings* '("h1" "h2" "h3" "h4" "h5" "h6"))
+;; block container end tags: generate implied end tags, then pop to the element
+(defparameter *block-end-tags*
+  '("address" "article" "aside" "blockquote" "button" "center" "details" "dialog"
+    "dir" "div" "dl" "fieldset" "figcaption" "figure" "footer" "header" "hgroup"
+    "listing" "main" "menu" "nav" "ol" "pre" "section" "summary" "ul"))
 ;; "has an element in scope" boundary sets (WHATWG §13.2.4.2)
 (defparameter *scope-bounds* '("applet" "caption" "html" "table" "td" "th" "marquee" "object" "template"))
 (defparameter *button-scope* (cons "button" *scope-bounds*))
@@ -408,6 +413,18 @@
              ((equal name "p")
               (if (in-scope "p" *button-scope*) (pop-until "p")
                   (progn (insert-element "p") (pop open))))
+             ((member name *block-end-tags* :test #'equal)
+              (when (in-scope name)
+                (gen-implied)
+                (loop while (and open (not (equal (top-name) name))) do (pop open))
+                (when open (pop open))))
+             ((member name '("li" "dd" "dt") :test #'equal)
+              (let ((bounds (if (equal name "li") '("ol" "ul" "html" "table" "td" "th" "caption" "template")
+                                *scope-bounds*)))
+                (when (in-scope name bounds)
+                  (gen-implied name)
+                  (loop while (and open (not (equal (top-name) name))) do (pop open))
+                  (when open (pop open)))))
              ((member name *headings* :test #'equal)
               (when (loop for el in open thereis (member (dnode-name el) *headings* :test #'equal))
                 (gen-implied)

@@ -55,7 +55,7 @@
                                            (:file "number") (:file "angle")
                                            (:file "percentage") (:file "integer") (:file "time")
                                            (:file "resolution") (:file "url") (:file "css-string")
-                                           (:file "tokenizer") (:file "parser"))))))
+                                           (:file "tokenizer") (:file "parser") (:file "selector"))))))
   :in-order-to ((test-op (test-op "weft/test"))))
 
 ;; The resource loader depends on the pure-CL codecs (sibling systems) + chipz
@@ -69,7 +69,7 @@
   :components ((:module "inspect" :components ((:file "offline-test") (:file "encoding-test")
                                               (:file "fetch-test") (:file "html-test")
                                               (:file "tree-test")
-                                              (:file "dom-test") (:file "css-test"))))
+                                              (:file "dom-test") (:file "css-test") (:file "selector-test"))))
   :perform (test-op (o c)
              (let ((url-ok (uiop:symbol-call :weft.test :run))
                    (enc-ok (zerop (nth-value 1 (uiop:symbol-call :weft.encoding.test :run))))
@@ -77,7 +77,8 @@
                    (html-ok (zerop (nth-value 1 (uiop:symbol-call :weft.html.test :run))))
                    (dom-ok (and (zerop (nth-value 1 (uiop:symbol-call :weft.dom.test :run)))
                                 (zerop (nth-value 1 (uiop:symbol-call :weft.dom.test :run-traversal)))))
-                   (css-ok (zerop (nth-value 1 (uiop:symbol-call :weft.css.test :run)))))
+                   (css-ok (zerop (nth-value 1 (uiop:symbol-call :weft.css.test :run))))
+                   (sel-ok (zerop (nth-value 1 (uiop:symbol-call :weft.css.select-test :run)))))
                ;; tree construction is in progress — run for visibility, don't gate on it yet
                (uiop:symbol-call :weft.html.tree-test :run)
-               (unless (and url-ok enc-ok fetch-ok html-ok dom-ok css-ok) (error "weft: gate failures")))))
+               (unless (and url-ok enc-ok fetch-ok html-ok dom-ok css-ok sel-ok) (error "weft: gate failures")))))

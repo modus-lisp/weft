@@ -7,4 +7,7 @@
            #:css-tokenize #:parse-stylesheet
            #:css-rule #:css-rule-selector #:css-rule-decls
            #:css-decl #:css-decl-prop #:css-decl-value #:css-decl-important
-           #:ctok #:ctok-type #:ctok-value #:ctok-unit))
+           #:ctok #:ctok-type #:ctok-value #:ctok-unit
+           ;; selectors
+           #:parse-selector-list #:selector-matches-p #:specificity
+           #:query-select #:query-select-all))

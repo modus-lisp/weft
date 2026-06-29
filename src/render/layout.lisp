@@ -12,6 +12,12 @@
 (defstruct frag x w text style)                            ; a positioned styled text run on a line
 
 (defvar *floats* nil "Page-scoped float list: each (side left right top bottom).")
+(defvar *abs-pending* nil
+  "Out-of-flow absolutely-positioned boxes awaiting resolution against the
+nearest positioned ancestor: a list of (lbox . cstyle).  Rebound fresh by every
+positioned element; the top-level binding (layout-tree) is the initial CB.")
+(defvar *fixed-pending* nil
+  "Out-of-flow fixed boxes awaiting resolution against the viewport: (lbox . cstyle).")
 
 (defun float-band (y h cleft cright)
   "Available (values left right) at the vertical band [y, y+h) after floats."
@@ -198,11 +204,52 @@ text-align.  Returns (values line-boxes total-height)."
   "Resilient wrapper: a failing subtree degrades to an empty box, not a crash."
   (handler-case (%layout-node node styles x y avail-w)
     (error (e) (if *layout-debug* (error e) (values nil 0)))))
+
+(defun pad-box (lb cs)
+  "Padding box (px py pw ph) of LB — the border-box minus borders.  This is the
+containing block that absolutely-positioned descendants resolve against."
+  (let ((bl (css:cstyle-border-left-width cs)) (br (css:cstyle-border-right-width cs))
+        (bt (css:cstyle-border-top-width cs)) (bb (css:cstyle-border-bottom-width cs)))
+    (list (+ (lbox-x lb) bl) (+ (lbox-y lb) bt)
+          (max 0 (- (lbox-w lb) bl br)) (max 0 (- (lbox-h lb) bt bb)))))
+
+(defun resolve-positioned (lb cb cs)
+  "Shift out-of-flow box LB to its final position within containing block
+CB=(px py pw ph) using top/left/right/bottom from CS.  When top (or left) is
+:auto and so is bottom (right), the box keeps its static-flow position."
+  (when (and lb cb)
+    (destructuring-bind (px py pw ph) cb
+      (let* ((left (css:cstyle-left cs)) (right (css:cstyle-right cs))
+             (top (css:cstyle-top cs)) (bottom (css:cstyle-bottom cs))
+             (nx (cond ((numberp left)  (+ px left))
+                       ((numberp right) (+ px (- pw (lbox-w lb) right)))
+                       (t (lbox-x lb))))
+             (ny (cond ((numberp top)    (+ py top))
+                       ((numberp bottom) (+ py (- ph (lbox-h lb) bottom)))
+                       (t (lbox-y lb)))))
+        (shift-box lb (round (- nx (lbox-x lb))) (round (- ny (lbox-y lb))))))))
+
 (defun %layout-node (node styles x y avail-w)
+  "Establish an absolute containing block for positioned elements, then lay the
+node out.  A positioned element (relative/absolute/fixed) is the containing block
+for its absolutely-positioned descendants; we collect those during subtree layout
+and resolve them once this box's geometry is known (then a later unit-shift of
+this box, if any, carries them along correctly)."
+  (let ((cs (st styles node)))
+    (if (and cs (member (css:cstyle-position cs) '("relative" "absolute" "fixed") :test #'string=))
+        (let ((*abs-pending* nil))
+          (multiple-value-bind (lb adv) (%layout-core node styles x y avail-w)
+            (when (and lb *abs-pending*)
+              (let ((cb (pad-box lb cs)))
+                (dolist (p *abs-pending*) (resolve-positioned (car p) cb (cdr p)))))
+            (values lb adv)))
+        (%layout-core node styles x y avail-w))))
+
+(defun %layout-core (node styles x y avail-w)
   "Lay out block-level NODE at (X,Y); AVAIL-W is the containing content width.
 Returns (values lbox advance-height)."
   (let ((cs (st styles node)))
-    (when (or (null cs) (string= (cdisplay cs) "none")) (return-from %layout-node (values nil 0)))
+    (when (or (null cs) (string= (cdisplay cs) "none")) (return-from %layout-core (values nil 0)))
     (let* ((mt (css:cstyle-margin-top cs)) (mb (css:cstyle-margin-bottom cs))
            (ml (css:cstyle-margin-left cs)) (mr (css:cstyle-margin-right cs))
            (pt (css:cstyle-padding-top cs)) (pb (css:cstyle-padding-bottom cs))
@@ -242,7 +289,7 @@ Returns (values lbox advance-height)."
         (let* ((box-h (+ content-h pt pb bt bb))
                (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                               :kind :block :children (nreverse children))))
-          (return-from %layout-node (values lb (+ mt box-h mb)))))
+          (return-from %layout-core (values lb (+ mt box-h mb)))))
       ;; flex / table containers
       (when (member (cdisplay cs) '("flex" "table") :test #'string=)
         (multiple-value-bind (boxes ch)
@@ -252,7 +299,7 @@ Returns (values lbox advance-height)."
           (let* ((box-h (+ ch pt pb bt bb))
                  (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                                 :kind :block :children boxes)))
-            (return-from %layout-node (values lb (+ mt box-h mb))))))
+            (return-from %layout-core (values lb (+ mt box-h mb))))))
       ;; classify children: anonymous-group consecutive inline-level nodes.
       ;; ::before / ::after generated boxes bracket the real children.
       (let ((kids (multiple-value-bind (before after) (pseudo-kids node styles)
@@ -273,15 +320,16 @@ Returns (values lbox advance-height)."
                    (pos (and kcs (css:cstyle-position kcs))))
               (cond
                 ((and kcs (member pos '("absolute" "fixed") :test #'string=))   ; out of flow
+                 ;; Lay out at the static-flow point (this is the position used
+                 ;; when top/left are auto), then defer final placement: collect
+                 ;; against the nearest positioned ancestor (absolute) or the
+                 ;; viewport (fixed).  Out-of-flow boxes never affect content-h.
                  (multiple-value-bind (lb adv) (layout-node k styles cx yy content-w)
                    (declare (ignore adv))
                    (when lb
-                     (let ((nx (cond ((numberp (css:cstyle-left kcs)) (css:cstyle-left kcs))
-                                     ((numberp (css:cstyle-right kcs)) (- (+ cx content-w) (lbox-w lb) (css:cstyle-right kcs)))
-                                     (t (lbox-x lb))))
-                           (ny (cond ((numberp (css:cstyle-top kcs)) (css:cstyle-top kcs))
-                                     (t (lbox-y lb)))))
-                       (shift-box lb (round (- nx (lbox-x lb))) (round (- ny (lbox-y lb)))))
+                     (if (string= pos "fixed")
+                         (push (cons lb kcs) *fixed-pending*)
+                         (push (cons lb kcs) *abs-pending*))
                      (push lb children))))
                 ((float-p styles k)                                              ; float
                  (let ((lb (place-float k styles cx (+ cx content-w) yy content-w)))
@@ -450,9 +498,18 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
           lb)))))
 
 (defun layout-tree (document styles width)
-  (let ((*floats* nil)
+  (let ((*floats* nil) (*abs-pending* nil) (*fixed-pending* nil)
         (body (css:query-select document "body")))
-    (when body (layout-node body styles 0 0 width))))
+    (when body
+      (multiple-value-bind (root adv) (layout-node body styles 0 0 width)
+        ;; Initial containing block / viewport: origin (0,0), width=WIDTH,
+        ;; height = laid-out page height.  Absolutely-positioned boxes with no
+        ;; positioned ancestor, and all fixed boxes, resolve against it.
+        (let* ((ph (if root (max 0 (+ (lbox-y root) (lbox-h root))) 0))
+               (vp (list 0 0 width ph)))
+          (dolist (p *abs-pending*)   (resolve-positioned (car p) vp (cdr p)))
+          (dolist (p *fixed-pending*) (resolve-positioned (car p) vp (cdr p))))
+        (values root adv)))))
 
 ;;; ---- paint --------------------------------------------------------------
 (defun rgb (color) (list (first color) (second color) (third color)))

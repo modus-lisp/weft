@@ -290,6 +290,7 @@
              (setf toks (concatenate 'vector (subseq toks 0 (1+ i)) (vector (make-tok :type :eof)))
                    ntok (length toks) s "")))
          (body-start (tk name)
+           (when (equal name "image") (setf name "img"))   ; legacy alias
            (cond
              ((equal name "html")
               (merge-attrs (find "html" open :key #'dnode-name :test #'equal) (tok-attrs tk)))
@@ -449,6 +450,10 @@
                          (member (tok-name tk) '("style" "script" "noframes" "noscript" "noembed") :test #'equal))
                     (raw-element tk nil))
                    ((and (eq ty :end-tag) (equal (tok-name tk) "head")) (pop open) (switch :after-head))
+                   ;; body/html/br leave head; any other stray end tag is ignored
+                   ((and (eq ty :end-tag) (member (tok-name tk) '("body" "html" "br") :test #'equal))
+                    (pop open) (switch :after-head) (reproc))
+                   ((eq ty :end-tag))                    ; ignore other end tags in head
                    (t (pop open) (switch :after-head) (reproc))))
             (:after-head
              (cond ((ws-char-tok-p tk) (insert-text (tok-data tk)))

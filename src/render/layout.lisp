@@ -11,8 +11,32 @@
 (defstruct lbox x y w h style node kind children marker)   ; kind :block | :line
 (defstruct frag x w text style)                            ; a positioned styled text run on a line
 
+(defvar *floats* nil "Page-scoped float list: each (side left right top bottom).")
+
+(defun float-band (y h cleft cright)
+  "Available (values left right) at the vertical band [y, y+h) after floats."
+  (let ((left cleft) (right cright))
+    (dolist (f *floats*)
+      (destructuring-bind (side fl fr ft fb) f
+        (when (and (< y fb) (> (+ y h) ft))            ; vertical overlap
+          (if (eq side :left) (setf left (max left fr)) (setf right (min right fl))))))
+    (values left right)))
+
+(defun clear-y (y cleft cright sides)
+  "Lowest y at or below Y clear of floats on SIDES (:left/:right list)."
+  (declare (ignore cleft cright))
+  (let ((yy y))
+    (dolist (f *floats*)
+      (destructuring-bind (side fl fr ft fb) f
+        (declare (ignore fl fr ft))
+        (when (member side sides) (setf yy (max yy fb)))))
+    yy))
+
 (defun st (styles node) (gethash node styles))
 (defun cdisplay (cs) (if cs (css:cstyle-display cs) "inline"))
+(defun float-p (styles node)
+  (and (eq (h:dnode-kind node) :element)
+       (let ((cs (st styles node))) (and cs (member (css:cstyle-float cs) '("left" "right") :test #'string=)))))
 (defun inline-level-p (styles node)
   (case (h:dnode-kind node)
     (:text t)
@@ -47,31 +71,46 @@
 (defun word-w (word) (* (length word) *font-w*))
 (defun space-w () *font-w*)
 
+(defun next-float-bottom (y)
+  "Smallest float bottom strictly greater than Y, or NIL."
+  (let ((best nil))
+    (dolist (f *floats*)
+      (let ((fb (fifth f))) (when (> fb y) (setf best (if best (min best fb) fb)))))
+    best))
+
 (defun layout-inline (words content-x start-y content-w base-cs)
-  "Greedy-wrap WORDS (list of (word . style)) into line boxes.  Returns
-(values line-boxes total-height).  Honors text-align (center/right)."
+  "Greedy-wrap WORDS into line boxes, flowing around active floats and honoring
+text-align.  Returns (values line-boxes total-height)."
   (let* ((lh (max *font-h* (round (* (css:cstyle-font-size base-cs) (css:cstyle-line-height base-cs)))))
          (align (css:cstyle-text-align base-cs))
-         (lines '()) (cur '()) (cx content-x) (y start-y) (h 0))
-    (flet ((flush ()
-             (when cur
-               (let* ((frags (nreverse cur))
-                      (used (- (+ (frag-x (car (last frags))) (frag-w (car (last frags)))) content-x))
-                      (shift (cond ((string= align "center") (max 0 (floor (- content-w used) 2)))
-                                   ((string= align "right") (max 0 (- content-w used)))
-                                   (t 0))))
-                 (when (plusp shift) (dolist (fr frags) (incf (frag-x fr) shift)))
-                 (push (make-lbox :x content-x :y y :w content-w :h lh :kind :line :children frags) lines))
-               (incf y lh) (incf h lh) (setf cur '() cx content-x))))
-      (dolist (wd words)
-        (let* ((word (car wd)) (style (cdr wd)) (ww (word-w word))
-               (need (if cur (+ (space-w) ww) ww)))
-          (when (and cur (> (+ (- cx content-x) need) content-w)) (flush))
-          (when (> (- cx content-x) 0) (incf cx (space-w)))
-          (push (make-frag :x cx :w ww :text word :style style) cur)
-          (incf cx ww)))
-      (flush))
-    (values (nreverse lines) (if (zerop h) 0 h))))
+         (cright (+ content-x content-w))
+         (ws (coerce words 'vector)) (n (length ws)) (i 0)
+         (lines '()) (y start-y) (h 0))
+    (loop while (< i n) do
+      ;; available band for this line; drop below a float if too narrow
+      (multiple-value-bind (lx rx) (float-band y lh content-x cright)
+        (loop while (and (< (- rx lx) (* 3 *font-w*)) (next-float-bottom y)) do
+          (let ((ny (next-float-bottom y))) (incf h (- ny y)) (setf y ny)
+            (multiple-value-setq (lx rx) (float-band y lh content-x cright))))
+        (let* ((avail (- rx lx)) (cur '()) (cx lx))
+          (loop while (< i n) do
+            (let* ((wd (aref ws i)) (word (car wd)) (ww (word-w word))
+                   (need (if cur (+ (space-w) ww) ww)))
+              (when (and cur (> (+ (- cx lx) need) avail)) (return))
+              (when (> (- cx lx) 0) (incf cx (space-w)))
+              (push (make-frag :x cx :w ww :text word :style (cdr wd)) cur)
+              (incf cx ww) (incf i)))
+          (when (null cur)                       ; one word too wide for the band: force it
+            (let* ((wd (aref ws i)) (word (car wd)))
+              (push (make-frag :x lx :w (word-w word) :text word :style (cdr wd)) cur) (incf i)))
+          (let* ((frags (nreverse cur))
+                 (used (- (+ (frag-x (car (last frags))) (frag-w (car (last frags)))) lx))
+                 (shift (cond ((string= align "center") (max 0 (floor (- avail used) 2)))
+                              ((string= align "right") (max 0 (- avail used))) (t 0))))
+            (when (plusp shift) (dolist (fr frags) (incf (frag-x fr) shift)))
+            (push (make-lbox :x lx :y y :w avail :h lh :kind :line :children frags) lines))
+          (incf y lh) (incf h lh))))
+    (values (nreverse lines) h)))
 
 (defun collect-raw (node)
   "Raw text of NODE preserving whitespace (for <pre>)."
@@ -140,8 +179,17 @@ Returns (values lbox advance-height)."
                    (setf group '()))))
           (dolist (k kids)
             (cond
+              ((float-p styles k)                      ; out-of-flow float
+               (let ((lb (place-float k styles cx (+ cx content-w) yy content-w)))
+                 (when lb (push lb children))))
               ((block-level-p styles k)
                (flush-inline)
+               (let ((kcs (st styles k)))              ; clear advances past floats
+                 (when (and kcs (member (css:cstyle-clear kcs) '("left" "right" "both") :test #'string=))
+                   (let ((ny (clear-y yy cx (+ cx content-w)
+                                     (case (intern (string-upcase (css:cstyle-clear kcs)) :keyword)
+                                       (:left '(:left)) (:right '(:right)) (t '(:left :right))))))
+                     (when (> ny yy) (incf content-h (- ny yy)) (setf yy ny)))))
                (multiple-value-bind (lb adv) (layout-node k styles cx yy content-w)
                  (when lb (push lb children)) (incf yy adv) (incf content-h adv)))
               ((or (eq (h:dnode-kind k) :text) (inline-level-p styles k)) (push k group))))
@@ -152,8 +200,33 @@ Returns (values lbox advance-height)."
                             :marker (when list-item (css:cstyle-list-style cs)))))
         (values lb (+ mt (lbox-h lb) mb))))))
 
+(defun place-float (node styles cleft cright top content-w)
+  "Position a floated NODE at the left/right edge within [CLEFT,CRIGHT], dropping
+below existing floats if it does not fit.  Records it in *FLOATS*; returns its lbox."
+  (let* ((cs (st styles node))
+         (side (if (string= (css:cstyle-float cs) "left") :left :right))
+         (avail-w (let ((w (css:cstyle-width cs)))
+                    (if (numberp w) (+ w (css:cstyle-margin-left cs) (css:cstyle-margin-right cs)
+                                       (css:cstyle-padding-left cs) (css:cstyle-padding-right cs)
+                                       (css:cstyle-border-left-width cs) (css:cstyle-border-right-width cs))
+                        (min content-w 240))))
+         (y top))
+    (setf avail-w (min avail-w content-w))
+    ;; drop to a band wide enough for the float
+    (loop (multiple-value-bind (lx rx) (float-band y 1 cleft cright)
+            (if (>= (- rx lx) avail-w) (return)
+                (let ((ny (next-float-bottom y))) (if (and ny (> ny y)) (setf y ny) (return))))))
+    (multiple-value-bind (lx rx) (float-band y 1 cleft cright)
+      (let ((fx (if (eq side :left) lx (- rx avail-w))))
+        (multiple-value-bind (lb adv) (layout-node node styles fx y avail-w)
+          (declare (ignore adv))
+          (when lb
+            (push (list side fx (+ fx avail-w) y (+ y (lbox-h lb))) *floats*))
+          lb)))))
+
 (defun layout-tree (document styles width)
-  (let ((body (css:query-select document "body")))
+  (let ((*floats* nil)
+        (body (css:query-select document "body")))
     (when body (layout-node body styles 0 0 width))))
 
 ;;; ---- paint --------------------------------------------------------------

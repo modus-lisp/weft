@@ -25,11 +25,32 @@
   (and (eq (tok-type tk) :char) (= 1 (length (tok-data tk)))
        (member (char (tok-data tk) 0) *ws*)))
 
+(defparameter *rawtext-els* '("style" "xmp" "iframe" "noembed" "noframes" "script"))
+(defparameter *rcdata-els* '("title" "textarea"))
+
 (defun parse-html (input)
   "Parse an HTML string into a DOM document (core tree construction)."
-  (let* ((toks (coerce (tokenize input) 'vector)) (ntok (length toks))
+  (multiple-value-bind (tklist src) (tokenize input)
+   (let* ((toks (coerce tklist 'vector)) (ntok (length toks)) (s src)
          (doc (make-document)) (open '()) (mode :initial) (head nil) (i 0))
     (labels ((current () (car open))
+             (rcdata-decode (raw)
+               (with-output-to-string (o)
+                 (dolist (x (tokenize raw :state :rcdata))
+                   (when (eq (tok-type x) :char) (write-string (tok-data x) o)))))
+             (raw-element (tk rcdata-p)
+               ;; insert a raw-text/RCDATA element, fill it with the raw source up
+               ;; to the matching end tag, pop it, and skip past that end tag.
+               (let* ((name (tok-name tk)) (el (make-element name (tok-attrs tk))))
+                 (dom-append (current) el)
+                 (let* ((end-i (position-if (lambda (x) (and (eq (tok-type x) :end-tag)
+                                                             (equal (tok-name x) name)))
+                                            toks :start (1+ i)))
+                        (endtok (and end-i (aref toks end-i)))
+                        (raw (subseq s (1+ (tok-cend tk)) (if endtok (tok-pos endtok) (length s)))))
+                   (when (plusp (length raw))
+                     (dom-append el (make-text (if rcdata-p (rcdata-decode raw) raw))))
+                   (setf i (if end-i end-i (1- ntok))))))
              (top-name () (and open (dnode-name (current))))
              (push-el (el) (push el open) el)
              (insert-element (name &optional attrs (ns :html))
@@ -93,8 +114,8 @@
                         (insert-void (tok-name tk) (tok-attrs tk)))
                        ((and (eq ty :start-tag) (equal (tok-name tk) "meta"))
                         (insert-void "meta" (tok-attrs tk)))
-                       ((and (eq ty :start-tag) (member (tok-name tk) '("title" "style" "script" "noscript" "template") :test #'equal))
-                        (insert-element (tok-name tk) (tok-attrs tk)))   ; raw-text content: follow-up
+                       ((and (eq ty :start-tag) (member (tok-name tk) *rcdata-els* :test #'equal)) (raw-element tk t))
+                       ((and (eq ty :start-tag) (member (tok-name tk) *rawtext-els* :test #'equal)) (raw-element tk nil))
                        ((and (eq ty :end-tag) (equal (tok-name tk) "head")) (pop open) (switch :after-head))
                        (t (pop open) (switch :after-head) (reproc))))
                 (:after-head
@@ -114,6 +135,8 @@
                       (cond
                         ((equal name "html"))                           ; ignore (attr merge: follow-up)
                         ((equal name "body"))
+                        ((member name *rcdata-els* :test #'equal) (raw-element tk t))
+                        ((member name *rawtext-els* :test #'equal) (raw-element tk nil))
                         ((member name *headings* :test #'equal)
                          (when (in-scope "p" '("html" "button")) (close-p))
                          (when (member (top-name) *headings* :test #'equal) (pop open))
@@ -157,4 +180,4 @@
                        ((eq ty :eof) (return))
                        (t (switch :in-body) (reproc))))))
             (unless reconsume (incf i))))))
-    doc))
+    doc)))

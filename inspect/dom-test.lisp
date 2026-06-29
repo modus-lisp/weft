@@ -46,6 +46,39 @@
 (defun doc-of (node) (loop for n = node then (h:dnode-parent n) while (h:dnode-parent n) finally (return n)))
 (defun first-element (doc) (find :element (h:dnode-children doc) :key #'h:dnode-kind))
 
+(defun navigate (doc path)
+  "Follow a child-index PATH from DOC to a node."
+  (let ((n doc)) (dolist (idx path n) (setf n (aref (h:dnode-children n) idx)))))
+
+(defun run-traversal (&optional ops)
+  "Gate the traversal/attribute methods against traversal.json.  OPS (a list of
+op-name strings) restricts which methods are checked; NIL = all."
+  (let ((pass 0) (fail 0) (fails '()))
+    (format t "~&=== weft DOM traversal gate (vs html5lib) ===~%")
+    (dolist (c (field (json-parse (slurp (asdf:system-relative-pathname "weft" "inspect/vectors/dom/traversal.json"))) "cases"))
+      (let ((op (field c "op")))
+        (when (or (null ops) (member op ops :test #'string=))
+          (let* ((doc (handler-case (h:parse-html (field c "html")) (error () nil)))
+                 (el (and doc (ignore-errors (navigate doc (field c "target")))))
+                 (arg (field c "arg")) (want (field c "expected"))
+                 (got (ignore-errors
+                       (cond ((member op '("firstElementChild" "lastElementChild" "nextElementSibling" "previousElementSibling") :test #'string=)
+                              (let ((r (funcall (ecase (intern (string-upcase op) :keyword)
+                                                  (:firstelementchild #'d:first-element-child)
+                                                  (:lastelementchild #'d:last-element-child)
+                                                  (:nextelementsibling #'d:next-element-sibling)
+                                                  (:previouselementsibling #'d:previous-element-sibling)) el)))
+                                (if r (node-path r) :null)))
+                             ((string= op "childElementCount") (d:child-element-count el))
+                             ((string= op "getAttribute") (or (d:get-attribute el arg) :null))
+                             ((string= op "hasAttribute") (if (d:has-attribute el arg) :true :false))))))
+            (if (equal got want) (incf pass)
+                (progn (incf fail) (when (< (length fails) 10)
+                                     (push (format nil "[~a ~s tgt=~a~@[ ~a~]] want=~s got=~s" op (field c "html") (field c "target") arg want got) fails))))))))
+    (format t "~%~d passed, ~d failed~%" pass fail)
+    (when fails (format t "~%sample:~%~{  ~a~%~}" (reverse fails)))
+    (values pass fail)))
+
 (defun run (&optional only)
   (let ((pass 0) (fail 0) (fails '()))
     (format t "~&=== weft DOM query gate (vs html5lib) ===~%")

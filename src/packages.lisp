@@ -32,4 +32,7 @@
   (:use #:cl)
   (:local-nicknames (#:h #:weft.html))
   (:export #:get-element-by-id #:get-elements-by-tag-name
-           #:get-elements-by-class-name #:text-content))
+           #:get-elements-by-class-name #:text-content
+           #:first-element-child #:last-element-child #:child-element-count
+           #:next-element-sibling #:previous-element-sibling
+           #:get-attribute #:has-attribute))

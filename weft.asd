@@ -46,7 +46,9 @@
                                            (:file "tree")))
                              (:module "dom" :serial t
                               :components ((:file "by-id") (:file "by-tag")
-                                           (:file "by-class") (:file "text-content"))))))
+                                           (:file "by-class") (:file "text-content")
+                                           (:file "element-children") (:file "siblings")
+                                           (:file "attributes"))))))
   :in-order-to ((test-op (test-op "weft/test"))))
 
 ;; The resource loader depends on the pure-CL codecs (sibling systems) + chipz

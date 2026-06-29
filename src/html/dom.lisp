@@ -23,6 +23,24 @@
   (let ((ch (dnode-children node)))
     (when (plusp (length ch)) (aref ch (1- (length ch))))))
 
+(defun dom-insert-before (parent node ref)
+  "Insert NODE into PARENT's children immediately before REF (a current child).
+If REF is NIL, append.  Used for foster parenting."
+  (if (null ref)
+      (dom-append parent node)
+      (let* ((ch (dnode-children parent)) (idx (position ref ch)))
+        (setf (dnode-parent node) parent)
+        (vector-push-extend node ch)                 ; grow by one
+        (loop for k from (1- (length ch)) above idx do (setf (aref ch k) (aref ch (1- k))))
+        (setf (aref ch idx) node)
+        node)))
+
+(defun dom-prev-sibling (parent ref)
+  "The child of PARENT immediately before REF, or the last child if REF is NIL."
+  (let* ((ch (dnode-children parent)) (idx (and ref (position ref ch))))
+    (cond ((null ref) (when (plusp (length ch)) (aref ch (1- (length ch)))))
+          ((and idx (plusp idx)) (aref ch (1- idx))))))
+
 (defun make-document () (%dnode :kind :document))
 (defun make-element (name &optional attrs (ns :html))
   (%dnode :kind :element :name name :attrs attrs :namespace ns))

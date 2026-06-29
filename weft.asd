@@ -64,6 +64,13 @@
   :depends-on ("weft" "brotli-pure" "zstd-pure" "chipz")
   :components ((:module "src" :components ((:file "fetch")))))
 
+(defsystem "weft/render"
+  :depends-on ("weft")
+  :components ((:module "src" :components
+                ((:module "render" :serial t
+                  :components ((:file "packages") (:file "font")
+                               (:file "canvas") (:file "layout")))))))
+
 (defsystem "weft/test"
   :depends-on ("weft" "weft/fetch")
   :components ((:module "inspect" :components ((:file "offline-test") (:file "encoding-test")

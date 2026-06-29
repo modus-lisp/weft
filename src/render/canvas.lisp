@@ -1,0 +1,111 @@
+;;;; src/render/canvas.lisp — RGB pixel canvas, bitmap text, and a PNG encoder.
+;;;;
+;;;; The PNG encoder writes a truecolor (RGB8) PNG using zlib *stored* (BTYPE=00)
+;;;; deflate blocks — no compression library needed — with our own CRC32 +
+;;;; Adler32.  Enough to save a rendered page to a real .png.
+(in-package #:weft.render)
+
+(defstruct (canvas (:constructor %make-canvas))
+  width height pixels)   ; pixels: (unsigned-byte 8) vector, w*h*3, row-major RGB
+
+(defun make-canvas (w h &optional (bg '(255 255 255)))
+  (let* ((px (make-array (* w h 3) :element-type '(unsigned-byte 8))))
+    (loop for i from 0 below (length px) by 3 do
+      (setf (aref px i) (first bg) (aref px (+ i 1)) (second bg) (aref px (+ i 2)) (third bg)))
+    (%make-canvas :width w :height h :pixels px)))
+
+(declaim (inline put))
+(defun put (cv x y r g b)
+  (when (and (>= x 0) (>= y 0) (< x (canvas-width cv)) (< y (canvas-height cv)))
+    (let ((i (* 3 (+ (* y (canvas-width cv)) x))) (px (canvas-pixels cv)))
+      (setf (aref px i) r (aref px (+ i 1)) g (aref px (+ i 2)) b))))
+
+(defun fill-rect (cv x y w h color)
+  (let ((r (first color)) (g (second color)) (b (third color))
+        (x0 (max 0 (round x))) (y0 (max 0 (round y)))
+        (x1 (min (canvas-width cv) (round (+ x w)))) (y1 (min (canvas-height cv) (round (+ y h)))))
+    (loop for yy from y0 below y1 do
+      (loop for xx from x0 below x1 do (put cv xx yy r g b)))))
+
+(defun draw-char (cv ch x y color)
+  "Draw one ASCII char at (x,y) top-left.  Returns the advance width."
+  (let ((code (char-code ch)))
+    (when (and (>= code 32) (<= code 126))
+      (let ((glyph (aref *font* (- code 32))) (r (first color)) (g (second color)) (b (third color)))
+        (dotimes (row *font-h*)
+          (let ((bits (aref glyph row)))
+            (dotimes (col *font-w*)
+              (when (logbitp col bits) (put cv (+ x col) (+ y row) r g b)))))))
+    *font-w*))
+
+(defun draw-text (cv text x y color)
+  (let ((cx x))
+    (loop for ch across text do (incf cx (draw-char cv ch cx y color)))
+    cx))
+
+;;; ---- CRC32 / Adler32 ---------------------------------------------------
+(defparameter *crc-table*
+  (let ((tbl (make-array 256 :element-type '(unsigned-byte 32))))
+    (dotimes (n 256 tbl)
+      (let ((c n))
+        (dotimes (k 8) (setf c (if (logbitp 0 c) (logxor #xedb88320 (ash c -1)) (ash c -1))))
+        (setf (aref tbl n) c)))))
+
+(defun crc32 (bytes &optional (start 0) (end (length bytes)))
+  (let ((c #xffffffff))
+    (loop for i from start below end do
+      (setf c (logxor (aref *crc-table* (logand (logxor c (aref bytes i)) #xff)) (ash c -8))))
+    (logxor c #xffffffff)))
+
+(defun adler32 (bytes)
+  (let ((a 1) (b 0))
+    (loop for x across bytes do (setf a (mod (+ a x) 65521) b (mod (+ b a) 65521)))
+    (logior (ash b 16) a)))
+
+;;; ---- PNG ----------------------------------------------------------------
+(defun u32be (v) (vector (ldb (byte 8 24) v) (ldb (byte 8 16) v) (ldb (byte 8 8) v) (ldb (byte 8 0) v)))
+
+(defun zlib-store (raw)
+  "Wrap RAW bytes in a zlib stream using deflate stored blocks."
+  (let ((out (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
+        (n (length raw)))
+    (flet ((push8 (b) (vector-push-extend b out)))
+      (push8 #x78) (push8 #x01)                    ; zlib header (no compression)
+      (let ((i 0))
+        (loop while (< i n) do
+          (let* ((blk (min 65535 (- n i))) (final (if (>= (+ i blk) n) 1 0)))
+            (push8 final)                          ; BFINAL, BTYPE=00
+            (push8 (ldb (byte 8 0) blk)) (push8 (ldb (byte 8 8) blk))
+            (push8 (ldb (byte 8 0) (lognot blk))) (push8 (ldb (byte 8 8) (lognot blk)))
+            (loop for k from i below (+ i blk) do (push8 (aref raw k)))
+            (incf i blk))))
+      (let ((ad (adler32 raw))) (loop for s in '(24 16 8 0) do (push8 (ldb (byte 8 s) ad)))))
+    out))
+
+(defun png-chunk (out type data)
+  "Append a PNG chunk (type is a 4-char string) to adjustable vector OUT."
+  (let* ((tbytes (map '(vector (unsigned-byte 8)) #'char-code type))
+         (payload (concatenate '(vector (unsigned-byte 8)) tbytes data)))
+    (loop for b across (u32be (length data)) do (vector-push-extend b out))
+    (loop for b across payload do (vector-push-extend b out))
+    (loop for b across (u32be (crc32 payload)) do (vector-push-extend b out))))
+
+(defun write-png (cv path)
+  "Write CANVAS CV to PATH as a truecolor PNG."
+  (let* ((w (canvas-width cv)) (hh (canvas-height cv)) (px (canvas-pixels cv))
+         ;; scanlines: filter byte 0 + RGB row
+         (raw (make-array (* hh (1+ (* w 3))) :element-type '(unsigned-byte 8)))
+         (ri 0))
+    (dotimes (y hh)
+      (setf (aref raw ri) 0) (incf ri)
+      (let ((base (* y w 3)))
+        (dotimes (k (* w 3)) (setf (aref raw ri) (aref px (+ base k))) (incf ri))))
+    (let ((out (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0)))
+      (loop for b in '(137 80 78 71 13 10 26 10) do (vector-push-extend b out))   ; signature
+      (png-chunk out "IHDR" (concatenate '(vector (unsigned-byte 8))
+                                         (u32be w) (u32be hh) (vector 8 2 0 0 0)))
+      (png-chunk out "IDAT" (coerce (zlib-store raw) '(vector (unsigned-byte 8))))
+      (png-chunk out "IEND" (make-array 0 :element-type '(unsigned-byte 8)))
+      (with-open-file (s path :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
+        (write-sequence out s)))
+    path))

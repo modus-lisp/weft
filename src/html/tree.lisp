@@ -438,6 +438,8 @@
             (:in-head
              (cond ((ws-char-tok-p tk) (insert-text (tok-data tk)))
                    ((eq ty :comment) (dom-append (current) (make-comment (tok-data tk))))
+                   ((and (eq ty :start-tag) (equal (tok-name tk) "html"))
+                    (merge-attrs (find "html" open :key #'dnode-name :test #'equal) (tok-attrs tk)))
                    ((and (eq ty :start-tag) (member (tok-name tk) *head-void* :test #'equal))
                     (insert-void (tok-name tk) (tok-attrs tk)))
                    ((and (eq ty :start-tag) (equal (tok-name tk) "meta"))
@@ -528,7 +530,7 @@
                   (if (some (lambda (c) (not (member c *ws*))) text)
                       (progn (setf fostering t) (insert-text text) (setf fostering nil))
                       (insert-text text)))
-                (setf pending nil) (switch :in-table) (reproc))))
+                (setf pending nil) (switch (or orig-mode :in-table)) (reproc))))
             (:in-table-body
              (cond
                ((eq ty :start-tag)
@@ -553,7 +555,7 @@
                        (clear-to '("tbody" "tfoot" "thead" "html")) (pop open) (switch :in-table) (reproc)))
                     ((member name '("body" "caption" "col" "colgroup" "html" "td" "th" "tr") :test #'equal))
                     (t (switch :in-table) (reproc)))))
-               ((eq ty :char) (switch :in-table) (reproc))
+               ((eq ty :char) (setf pending '() orig-mode :in-table-body) (switch :in-table-text) (reproc))
                ((eq ty :comment) (dom-append (current) (make-comment (tok-data tk))))
                ((eq ty :eof) (return))))
             (:in-row
@@ -566,7 +568,7 @@
                     ((member name '("caption" "col" "colgroup" "tbody" "tfoot" "thead" "tr") :test #'equal)
                      (when (in-table-scope "tr")
                        (clear-to '("tr" "html")) (pop open) (switch :in-table-body) (reproc)))
-                    (t (switch :in-table) (reproc)))))
+                    (t (setf fostering t) (body-start tk name) (setf fostering nil)))))
                ((eq ty :end-tag)
                 (let ((name (tok-name tk)))
                   (cond
@@ -582,7 +584,7 @@
                        (clear-to '("tr" "html")) (pop open) (switch :in-table-body) (reproc)))
                     ((member name '("body" "caption" "col" "colgroup" "html" "td" "th") :test #'equal))
                     (t (switch :in-table) (reproc)))))
-               ((eq ty :char) (switch :in-table) (reproc))
+               ((eq ty :char) (setf pending '() orig-mode :in-row) (switch :in-table-text) (reproc))
                ((eq ty :comment) (dom-append (current) (make-comment (tok-data tk))))
                ((eq ty :eof) (return))))
             (:in-cell

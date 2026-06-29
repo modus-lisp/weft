@@ -77,7 +77,7 @@ If REF is NIL, append.  Used for foster parenting."
          (format out " \"~a\" \"~a\"" (or (dnode-public node) "") (or (dnode-system node) "")))
        (format out ">~%"))
       (:comment (format out "| ~a<!-- ~a -->~%" pad (or (dnode-data node) "")))
-      (:text (format out "| ~a~s~%" pad (or (dnode-data node) "")))
+      (:text (format out "| ~a\"~a\"~%" pad (or (dnode-data node) "")))   ; raw (no escaping)
       (:element
        (format out "| ~a<~a~a>~%" pad (%ns-prefix (dnode-namespace node)) (dnode-name node))
        (dolist (a (sort (copy-alist (dnode-attrs node)) #'string< :key #'car))

@@ -146,6 +146,8 @@
                          (when (in-scope "li") (pop-until "li"))
                          (insert-element "li" (tok-attrs tk)))
                         ((member name '("dd" "dt") :test #'equal)
+                         (when (in-scope "dd") (pop-until "dd"))
+                         (when (in-scope "dt") (pop-until "dt"))
                          (when (in-scope "p" '("html" "button")) (close-p))
                          (insert-element name (tok-attrs tk)))
                         ((equal name "hr")        ; closes an open <p>, then a void
@@ -163,7 +165,7 @@
                         ((equal name "html") (switch :after-body) (reproc))
                         ((equal name "p")
                          (if (in-scope "p" '("html" "button")) (pop-until "p")
-                             (progn (close-p))))           ; missing p: insert+close (simplified)
+                             (progn (insert-element "p") (pop open))))  ; stray </p>: empty <p>
                         ((member name *headings* :test #'equal)
                          (when (loop for el in open thereis (member (dnode-name el) *headings* :test #'equal))
                            (gen-implied) (loop while (and open (not (member (top-name) *headings* :test #'equal))) do (pop open))

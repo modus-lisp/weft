@@ -42,8 +42,14 @@
             (cstyle-white-space cs) (cstyle-white-space parent-cs)))
     (cond ((member tag *none-tags* :test #'string=) (setf (cstyle-display cs) "none"))
           ((string= tag "li") (setf (cstyle-display cs) "list-item"))
+          ((string= tag "table") (setf (cstyle-display cs) "table"))
+          ((string= tag "tr") (setf (cstyle-display cs) "table-row"))
+          ((member tag '("td" "th") :test #'string=) (setf (cstyle-display cs) "table-cell"))
+          ((member tag '("thead" "tbody" "tfoot") :test #'string=) (setf (cstyle-display cs) "table-row-group"))
           ((member tag *block-tags* :test #'string=) (setf (cstyle-display cs) "block"))
           (t (setf (cstyle-display cs) "inline")))
+    (when (string= tag "th") (setf (cstyle-font-weight cs) 700 (cstyle-text-align cs) "center"))
+    (when (member tag '("td" "th") :test #'string=) (set-padding cs 2.0))
     ;; a few UA margins / sizes
     (cond
       ((string= tag "body") (set-margin cs 8.0))
@@ -60,6 +66,8 @@
 
 (defun set-margin (cs v) (setf (cstyle-margin-top cs) v (cstyle-margin-right cs) v
                                (cstyle-margin-bottom cs) v (cstyle-margin-left cs) v))
+(defun set-padding (cs v) (setf (cstyle-padding-top cs) v (cstyle-padding-right cs) v
+                                (cstyle-padding-bottom cs) v (cstyle-padding-left cs) v))
 
 ;;; ---- value resolution ---------------------------------------------------
 (defun resolve-len (text font-size &optional (auto-ok nil))

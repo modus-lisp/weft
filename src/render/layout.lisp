@@ -170,9 +170,12 @@ Returns (values lbox advance-height)."
                (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                               :kind :block :children (nreverse children))))
           (return-from layout-node (values lb (+ mt box-h mb)))))
-      ;; flex container
-      (when (string= (cdisplay cs) "flex")
-        (multiple-value-bind (boxes ch) (layout-flex node styles cx cy content-w cs)
+      ;; flex / table containers
+      (when (member (cdisplay cs) '("flex" "table") :test #'string=)
+        (multiple-value-bind (boxes ch)
+            (if (string= (cdisplay cs) "flex")
+                (layout-flex node styles cx cy content-w cs)
+                (layout-table node styles cx cy content-w cs))
           (let* ((box-h (+ ch pt pb bt bb))
                  (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                                 :kind :block :children boxes)))
@@ -281,6 +284,38 @@ Returns (values lbox advance-height)."
                 (when lb (push lb boxes) (setf max-w (max max-w (lbox-w lb))))
                 (incf y (+ adv gap))))
             (values (nreverse boxes) (- y cy gap)))))))
+
+(defun table-rows (node styles)
+  "Collect <tr> rows directly under NODE or within row-groups."
+  (let ((rows '()))
+    (dolist (c (child-elements node))
+      (let ((d (cdisplay (st styles c))))
+        (cond ((string= d "table-row") (push c rows))
+              ((string= d "table-row-group")
+               (dolist (r (child-elements c)) (when (string= (cdisplay (st styles r)) "table-row") (push r rows)))))))
+    (nreverse rows)))
+(defun row-cells (row styles)
+  (remove-if-not (lambda (c) (string= (cdisplay (st styles c)) "table-cell")) (child-elements row)))
+
+(defun layout-table (node styles cx cy content-w base-cs)
+  "Fixed table layout: equal columns, rows stacked, cells stretched to row height.
+Returns (values cell-lboxes content-height)."
+  (declare (ignore base-cs))
+  (let* ((rows (table-rows node styles)))
+    (when (null rows) (return-from layout-table (values nil 0)))
+    (let* ((ncols (reduce #'max (mapcar (lambda (r) (length (row-cells r styles))) rows) :initial-value 1))
+           (colw (max 1 (floor content-w ncols))) (y cy) (boxes '()))
+      (dolist (row rows)
+        (let ((cells (row-cells row styles)) (rowh 0) (rowboxes '()) (col 0))
+          (dolist (cell cells)
+            (multiple-value-bind (lb adv) (layout-node cell styles (+ cx (* col colw)) y colw)
+              (declare (ignore adv))
+              (when lb (push lb rowboxes) (setf rowh (max rowh (lbox-h lb))))
+              (incf col)))
+          (dolist (lb rowboxes) (setf (lbox-h lb) rowh))   ; stretch to row height
+          (setf boxes (nconc boxes (nreverse rowboxes)))
+          (incf y rowh)))
+      (values boxes (- y cy)))))
 
 (defun place-float (node styles cleft cright top content-w)
   "Position a floated NODE at the left/right edge within [CLEFT,CRIGHT], dropping

@@ -41,7 +41,9 @@
                                            (:file "gb18030")))
                              (:module "html" :serial t
                               :components ((:file "entities")
-                                           (:file "tokenizer"))))))
+                                           (:file "tokenizer")
+                                           (:file "dom")
+                                           (:file "tree"))))))
   :in-order-to ((test-op (test-op "weft/test"))))
 
 ;; The resource loader depends on the pure-CL codecs (sibling systems) + chipz
@@ -53,10 +55,13 @@
 (defsystem "weft/test"
   :depends-on ("weft" "weft/fetch")
   :components ((:module "inspect" :components ((:file "offline-test") (:file "encoding-test")
-                                              (:file "fetch-test") (:file "html-test"))))
+                                              (:file "fetch-test") (:file "html-test")
+                                              (:file "tree-test"))))
   :perform (test-op (o c)
              (let ((url-ok (uiop:symbol-call :weft.test :run))
                    (enc-ok (zerop (nth-value 1 (uiop:symbol-call :weft.encoding.test :run))))
                    (fetch-ok (zerop (nth-value 1 (uiop:symbol-call :weft.fetch.test :run))))
                    (html-ok (zerop (nth-value 1 (uiop:symbol-call :weft.html.test :run)))))
+               ;; tree construction is in progress — run for visibility, don't gate on it yet
+               (uiop:symbol-call :weft.html.tree-test :run)
                (unless (and url-ok enc-ok fetch-ok html-ok) (error "weft: gate failures")))))

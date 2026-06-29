@@ -22,4 +22,8 @@
   (:use #:cl)
   (:export #:tokenize #:*entities*
            #:tok-type #:tok-name #:tok-data #:tok-attrs #:tok-self-closing
-           #:tok-public #:tok-system #:tok-force-quirks))
+           #:tok-public #:tok-system #:tok-force-quirks
+           ;; DOM + tree construction
+           #:parse-html #:serialize-tree #:make-document
+           #:dnode #:dnode-kind #:dnode-name #:dnode-attrs #:dnode-data
+           #:dnode-children #:dnode-parent #:dnode-namespace))

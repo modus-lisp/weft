@@ -19,7 +19,8 @@
   (float "none") (clear "none") (position "static") (box-sizing "content-box")
   (flex-direction "row") (justify-content "flex-start") (align-items "stretch")
   (flex-wrap "nowrap") (flex-grow 0.0) (flex-shrink 1.0) (flex-basis "auto") (gap 0.0)
-  (top :auto) (left :auto) (right :auto) (bottom :auto) (z-index 0))
+  (top :auto) (left :auto) (right :auto) (bottom :auto) (z-index 0)
+  (bg-gradient nil))   ; (dir from-rgba to-rgba), dir :vertical | :horizontal
 
 (defparameter *inherited* '(:color :font-size :font-weight :line-height :text-align :white-space))
 
@@ -91,6 +92,33 @@
 (defun resolve-color (text)
   (let ((v (parse-value "color" text))) (if (and (listp v) (>= (length v) 3)) v nil)))
 
+(defun parse-linear-gradient (value)
+  "Parse a simple 2-stop linear-gradient(...) -> (dir from-rgba to-rgba), or NIL."
+  (let* ((s (string-downcase (string-trim '(#\Space) value)))
+         (p (search "linear-gradient(" s)))
+    (when p
+      (let* ((open (+ p (length "linear-gradient(")))
+             (close (position #\) s :from-end t))
+             (inner (and close (> close open) (subseq s open close))))
+        (when inner
+          (let* ((parts (mapcar (lambda (x) (string-trim '(#\Space) x)) (comma-split-top inner)))
+                 (dir :vertical) (colors parts))
+            (when (and parts (or (search "deg" (first parts)) (search "to " (first parts))))
+              (let ((d (first parts)))
+                (setf dir (cond ((or (search "to right" d) (search "to left" d) (search "90deg" d) (search "270deg" d)) :horizontal)
+                                (t :vertical))))
+              (setf colors (rest parts)))
+            (let ((cs (remove nil (mapcar #'resolve-color colors))))
+              (when (>= (length cs) 2) (list dir (first cs) (car (last cs)))))))))))
+
+(defun comma-split-top (s)
+  "Split S on commas not inside parens."
+  (let ((out '()) (depth 0) (start 0))
+    (dotimes (i (length s))
+      (case (char s i) (#\( (incf depth)) (#\) (decf depth))
+        (#\, (when (zerop depth) (push (subseq s start i) out) (setf start (1+ i))))))
+    (push (subseq s start) out) (nreverse out)))
+
 (defun apply-decl (cs prop value parent-cs)
   "Apply one declaration to CSTYLE CS (best-effort)."
   (let ((fs (cstyle-font-size cs)))
@@ -98,8 +126,10 @@
       (cond
         ((string= prop "display") (setf (cstyle-display cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "color") (let ((c (resolve-color value))) (when c (setf (cstyle-color cs) c))))
-        ((member prop '("background-color" "background") :test #'string=)
-         (let ((c (resolve-color (first-token value)))) (when c (setf (cstyle-background cs) c))))
+        ((member prop '("background-color" "background" "background-image") :test #'string=)
+         (let ((grad (parse-linear-gradient value)))
+           (if grad (setf (cstyle-bg-gradient cs) grad)
+               (let ((c (resolve-color (first-token value)))) (when c (setf (cstyle-background cs) c))))))
         ((string= prop "font-size")
          (let ((base (if parent-cs (cstyle-font-size parent-cs) 16.0)))
            (cond ((search "%" value) (let ((p (parse-value "percentage" value))) (when (numberp p) (setf (cstyle-font-size cs) (* base (/ p 100.0))))))

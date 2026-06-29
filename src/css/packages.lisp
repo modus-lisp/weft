@@ -24,4 +24,4 @@
            #:cstyle-float #:cstyle-clear #:cstyle-position #:cstyle-box-sizing
            #:cstyle-flex-direction #:cstyle-justify-content #:cstyle-align-items
            #:cstyle-flex-wrap #:cstyle-flex-grow #:cstyle-flex-shrink #:cstyle-flex-basis #:cstyle-gap
-           #:cstyle-top #:cstyle-left #:cstyle-right #:cstyle-bottom #:cstyle-z-index))
+           #:cstyle-top #:cstyle-left #:cstyle-right #:cstyle-bottom #:cstyle-z-index #:cstyle-bg-gradient))

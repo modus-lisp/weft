@@ -376,8 +376,11 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
     (case (lbox-kind lb)
       (:block
        (let ((cs (lbox-style lb)))
-         (when (css:cstyle-background cs)
-           (fill-rect cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) (rgb (css:cstyle-background cs))))
+         (cond ((css:cstyle-bg-gradient cs)
+                (destructuring-bind (dir from to) (css:cstyle-bg-gradient cs)
+                  (fill-gradient cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) dir (rgb from) (rgb to))))
+               ((css:cstyle-background cs)
+                (fill-rect cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) (rgb (css:cstyle-background cs)))))
          (let ((bc (rgb (css:cstyle-border-color cs))))
            (when (plusp (css:cstyle-border-top-width cs)) (fill-rect cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (css:cstyle-border-top-width cs) bc))
            (when (plusp (css:cstyle-border-bottom-width cs)) (fill-rect cv (lbox-x lb) (- (+ (lbox-y lb) (lbox-h lb)) (css:cstyle-border-bottom-width cs)) (lbox-w lb) (css:cstyle-border-bottom-width cs) bc))

@@ -67,22 +67,30 @@
                (if (and prev (eq (dnode-kind prev) :text))
                    (setf (dnode-data prev) (concatenate 'string (dnode-data prev) data))
                    (dom-insert-before parent (make-text data) before)))))
-         ;; ---- raw text / RCDATA ----
-         (rcdata-decode (raw)
-           (with-output-to-string (o)
-             (dolist (x (tokenize raw :state :rcdata))
-               (when (eq (tok-type x) :char) (write-string (tok-data x) o)))))
+         ;; ---- raw text / RCDATA (tokenizer reentrancy) ----
+         ;; Re-tokenize the source after the start tag in the element's content
+         ;; model (RAWTEXT or RCDATA), take its leading characters as the element
+         ;; text, then splice the post-end-tag tokens back onto the main stream.
          (raw-element (tk rcdata-p)
-           (let* ((name (tok-name tk)) (el (make-element name (tok-attrs tk))))
+           (let* ((name (tok-name tk)) (el (make-element name (tok-attrs tk)))
+                  (state (if rcdata-p :rcdata :rawtext))
+                  (rest (subseq s (1+ (tok-cend tk))))
+                  (rtoks (coerce (tokenize rest :state state :last-start-tag name) 'vector))
+                  (endpos (position-if (lambda (x) (and (eq (tok-type x) :end-tag)
+                                                        (equal (tok-name x) name)))
+                                       rtoks))
+                  (text (with-output-to-string (o)
+                          (loop for k from 0 below (or endpos (length rtoks))
+                                for x = (aref rtoks k)
+                                when (eq (tok-type x) :char) do (write-string (tok-data x) o)))))
              (insert-node el)
-             (let* ((end-i (position-if (lambda (x) (and (eq (tok-type x) :end-tag)
-                                                         (equal (tok-name x) name)))
-                                        toks :start (1+ i)))
-                    (endtok (and end-i (aref toks end-i)))
-                    (raw (subseq s (1+ (tok-cend tk)) (if endtok (tok-pos endtok) (length s)))))
-               (when (plusp (length raw))
-                 (dom-append el (make-text (if rcdata-p (rcdata-decode raw) raw))))
-               (setf i (if end-i end-i (1- ntok))))))
+             (when (plusp (length text)) (dom-append el (make-text text)))
+             ;; rebase the token stream + source onto the remainder past the end tag
+             (let ((tail (if endpos (subseq rtoks (1+ endpos))
+                             (vector (make-tok :type :eof)))))
+               (setf toks (concatenate 'vector (subseq toks 0 (1+ i)) tail)
+                     ntok (length toks)
+                     s rest))))
          ;; ---- scope queries ----
          (in-scope (name &optional (bounds '("html" "table" "td" "th" "caption" "button" "marquee" "object")))
            (loop for el in open do

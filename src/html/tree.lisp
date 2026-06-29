@@ -397,6 +397,8 @@
            (cond
              ((equal name "body") (switch :after-body))
              ((equal name "html") (switch :after-body) (reproc))
+             ((equal name "br")                        ; </br> acts as <br> start tag
+              (reconstruct-afe) (insert-void "br") (setf frameset-ok nil))
              ((equal name "form")
               (let ((node form-ptr))
                 (setf form-ptr nil)

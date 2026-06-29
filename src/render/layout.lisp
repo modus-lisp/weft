@@ -49,13 +49,19 @@
 
 (defun layout-inline (words content-x start-y content-w base-cs)
   "Greedy-wrap WORDS (list of (word . style)) into line boxes.  Returns
-(values line-boxes total-height)."
+(values line-boxes total-height).  Honors text-align (center/right)."
   (let* ((lh (max *font-h* (round (* (css:cstyle-font-size base-cs) (css:cstyle-line-height base-cs)))))
+         (align (css:cstyle-text-align base-cs))
          (lines '()) (cur '()) (cx content-x) (y start-y) (h 0))
     (flet ((flush ()
              (when cur
-               (push (make-lbox :x content-x :y y :w content-w :h lh :kind :line
-                                :children (nreverse cur)) lines)
+               (let* ((frags (nreverse cur))
+                      (used (- (+ (frag-x (car (last frags))) (frag-w (car (last frags)))) content-x))
+                      (shift (cond ((string= align "center") (max 0 (floor (- content-w used) 2)))
+                                   ((string= align "right") (max 0 (- content-w used)))
+                                   (t 0))))
+                 (when (plusp shift) (dolist (fr frags) (incf (frag-x fr) shift)))
+                 (push (make-lbox :x content-x :y y :w content-w :h lh :kind :line :children frags) lines))
                (incf y lh) (incf h lh) (setf cur '() cx content-x))))
       (dolist (wd words)
         (let* ((word (car wd)) (style (cdr wd)) (ww (word-w word))
@@ -66,6 +72,20 @@
           (incf cx ww)))
       (flush))
     (values (nreverse lines) (if (zerop h) 0 h))))
+
+(defun collect-raw (node)
+  "Raw text of NODE preserving whitespace (for <pre>)."
+  (with-output-to-string (o)
+    (labels ((rec (n) (case (h:dnode-kind n) (:text (write-string (h:dnode-data n) o))
+                        (:element (loop for c across (h:dnode-children n) do (rec c))))))
+      (rec node))))
+(defun split-newlines (s)
+  (loop with start = 0 for i from 0 to (length s)
+        when (or (= i (length s)) (char= (char s i) #\Newline))
+          collect (prog1 (subseq s start i) (setf start (1+ i)))))
+(defun has-block-children (styles node)
+  (some (lambda (c) (block-level-p styles c))
+        (loop for c across (h:dnode-children node) collect c)))
 
 ;;; ---- block layout -------------------------------------------------------
 (defun layout-node (node styles x y avail-w)
@@ -85,6 +105,20 @@ Returns (values lbox advance-height)."
            (cx (+ box-x bl pl)) (cy (+ box-y bt pt))
            (list-item (string= (cdisplay cs) "list-item"))
            (children '()) (content-h 0))
+      ;; <pre>/white-space:pre — preserve newlines, no wrapping
+      (when (and (string= (css:cstyle-white-space cs) "pre") (not (has-block-children styles node)))
+        (let* ((text (collect-raw node)) (yy cy)
+               (lh (max *font-h* (round (* (css:cstyle-font-size cs) (css:cstyle-line-height cs))))))
+          (dolist (ln (split-newlines text))
+            (push (make-lbox :x cx :y yy :w content-w :h lh :kind :line
+                             :children (when (plusp (length ln))
+                                         (list (make-frag :x cx :w (word-w ln) :text ln :style cs))))
+                  children)
+            (incf yy lh) (incf content-h lh)))
+        (let* ((box-h (+ content-h pt pb bt bb))
+               (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
+                              :kind :block :children (nreverse children))))
+          (return-from layout-node (values lb (+ mt box-h mb)))))
       ;; classify children: anonymous-group consecutive inline-level nodes
       (let ((kids (coerce (h:dnode-children node) 'list)) (group '()) (yy cy))
         (flet ((flush-inline ()
@@ -165,7 +199,10 @@ WIDTH px, paint, save PNG.  Returns (values path width height)."
     (multiple-value-bind (root adv) (layout-tree doc styles width)
       (declare (ignore adv))
       (let* ((height (max min-height (if root (round (+ (lbox-y root) (lbox-h root) 8)) min-height)))
-             (cv (make-canvas width height)))
+             ;; canvas background = body's background (propagated), else white
+             (body (css:query-select doc "body"))
+             (bg (let ((cs (and body (gethash body styles)))) (and cs (css:cstyle-background cs))))
+             (cv (make-canvas width height (if bg (rgb bg) '(255 255 255)))))
         (paint-box cv root)
         (write-png cv path)
         (values path width height)))))

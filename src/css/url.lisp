@@ -1,3 +1,13 @@
-;;;; src/css/url.lisp
+;;;; src/css/url.lisp — CSS url(...) value parser.
 (in-package #:weft.css)
-(define-value-parser "url" (s) (declare (ignore s)) :invalid)
+(define-value-parser "url" (s)
+  (let ((tt (css-trim s)))
+    (if (and (>= (length tt) 5) (string= (subseq tt 0 4) "url(")
+             (char= (char tt (1- (length tt))) #\)))
+        (let ((inner (string-trim '(#\Space #\Tab #\Newline) (subseq tt 4 (1- (length tt))))))
+          (if (and (>= (length inner) 2)
+                   (member (char inner 0) '(#\" #\'))
+                   (char= (char inner (1- (length inner))) (char inner 0)))
+              (subseq inner 1 (1- (length inner)))
+              inner))
+        :invalid)))

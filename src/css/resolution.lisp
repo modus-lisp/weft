@@ -1,4 +1,4 @@
-;;;; src/css/resolution.lisp
+;;;; src/css/resolution.lisp — <resolution> value parser.
 (in-package #:weft.css)
 
 (define-value-parser "resolution" (s)
@@ -8,14 +8,13 @@
     (if (zerop len)
         :invalid
         (block nil
-          ;; parse the number — scan forward to find where numeric part ends
           (let ((pos 0))
             ;; optional sign
             (when (and (< pos len)
                        (or (char= (char lower pos) #\-)
                            (char= (char lower pos) #\+)))
               (incf pos))
-            ;; must start with digit or decimal point
+            ;; must start with a digit or dot
             (when (or (>= pos len)
                       (not (or (digit-char-p (char lower pos))
                                (char= (char lower pos) #\.))))
@@ -28,7 +27,7 @@
               (incf pos)
               (loop while (and (< pos len) (digit-char-p (char lower pos)))
                     do (incf pos)))
-            ;; optional exponent (CSS <resolution> values may have scientific notation)
+            ;; optional exponent: only consume if followed by digit or sign+digit
             (when (and (< pos len) (char= (char lower pos) #\e))
               (let ((next (1+ pos)))
                 (when (and (< next len)
@@ -37,7 +36,7 @@
                                     (or (char= (char lower next) #\-)
                                         (char= (char lower next) #\+))
                                     (digit-char-p (char lower (1+ next))))))
-                  (incf pos) ; consume 'e'
+                  (incf pos)  ; consume 'e'
                   (when (and (< pos len)
                              (or (char= (char lower pos) #\-)
                                  (char= (char lower pos) #\+)))
@@ -46,18 +45,14 @@
                     (return-from nil :invalid))
                   (loop while (and (< pos len) (digit-char-p (char lower pos)))
                         do (incf pos)))))
-            ;; now split into number and unit
+            ;; now pos is the boundary between number and unit
             (let* ((num-str (subseq lower 0 pos))
                    (unit-str (subseq lower pos))
-                   (value (read-from-string num-str)))
-              (cond
-                ;; bare number without unit -> invalid per CSS spec for <resolution>
-                ((string= unit-str "")
-                 :invalid)
-                ;; check valid <resolution> units
-                ((member unit-str '("dpi" "dpcm" "dppx" "x") :test #'string=)
-                 (when (minusp value)
-                   (return-from nil :invalid))
-                 (list (float value 0d0) unit-str))
-                (t
-                 :invalid))))))))
+                   (value (ignore-errors (read-from-string num-str))))
+              (if (or (null value) (not (numberp value)))
+                  :invalid
+                  (if (string= unit-str "")
+                      :invalid   ;; bare number -> :invalid per CSS spec for <resolution>
+                      (if (member unit-str '("dpi" "dpcm" "dppx" "x") :test #'string=)
+                          (list (float value 0d0) unit-str)
+                          :invalid)))))))))

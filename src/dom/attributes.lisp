@@ -1,4 +1,4 @@
-;;;; src/dom/attributes.lisp — getAttribute/hasAttribute (STUBS).
+;;;; src/dom/attributes.lisp — getAttribute/hasAttribute.
 (in-package #:weft.dom)
-(defun get-attribute (el name) (declare (ignore el name)) nil)
-(defun has-attribute (el name) (declare (ignore el name)) nil)
+(defun get-attribute (el name) (cdr (assoc name (h:dnode-attrs el) :test #'string=)))
+(defun has-attribute (el name) (and (assoc name (h:dnode-attrs el) :test #'string=) t))

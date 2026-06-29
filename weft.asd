@@ -68,7 +68,8 @@
                    (enc-ok (zerop (nth-value 1 (uiop:symbol-call :weft.encoding.test :run))))
                    (fetch-ok (zerop (nth-value 1 (uiop:symbol-call :weft.fetch.test :run))))
                    (html-ok (zerop (nth-value 1 (uiop:symbol-call :weft.html.test :run))))
-                   (dom-ok (zerop (nth-value 1 (uiop:symbol-call :weft.dom.test :run)))))
+                   (dom-ok (and (zerop (nth-value 1 (uiop:symbol-call :weft.dom.test :run)))
+                                (zerop (nth-value 1 (uiop:symbol-call :weft.dom.test :run-traversal))))))
                ;; tree construction is in progress — run for visibility, don't gate on it yet
                (uiop:symbol-call :weft.html.tree-test :run)
                (unless (and url-ok enc-ok fetch-ok html-ok dom-ok) (error "weft: gate failures")))))

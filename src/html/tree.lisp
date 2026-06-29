@@ -223,22 +223,27 @@
                    (pop open) (afe-remove fmt) (return-from adoption-agency))
                  (let* ((ca (nth (1+ fmt-open-pos) open))   ; common ancestor (above fmt)
                         (bookmark (position fmt afe))
-                        (node furthest) (last-node furthest) (inner 0))
+                        (node nil) (last-node furthest) (inner 0)
+                        (node-idx (position furthest open)))   ; track position across removals
                    (loop
                      (incf inner)
-                     (setf node (nth (1+ (position node open)) open))   ; element above node
+                     (incf node-idx)                          ; element above (older)
+                     (when (>= node-idx (length open)) (return))
+                     (setf node (nth node-idx open))
                      (when (eq node fmt) (return))
                      (let ((in-afe (position node afe)))
                        (when (and (> inner 3) in-afe) (afe-remove node) (setf in-afe nil))
-                       (if (null in-afe)
-                           (progn (setf open (remove node open)))
-                           (let ((clone (make-element (dnode-name node) (dnode-attrs node))))
-                             (setf (aref afe (position node afe)) clone)
-                             (setf open (substitute clone node open))
-                             (setf node clone)
-                             (when (eq last-node furthest) (setf bookmark (1+ (position node afe))))
-                             (dom-remove last-node) (dom-append node last-node)
-                             (setf last-node node)))))
+                       (cond
+                         ((null in-afe)                        ; drop node from open; keep index aligned
+                          (setf open (remove node open)) (decf node-idx))
+                         (t
+                          (let ((clone (make-element (dnode-name node) (dnode-attrs node))))
+                            (setf (aref afe (position node afe)) clone)
+                            (setf open (substitute clone node open))
+                            (setf node clone)
+                            (when (eq last-node furthest) (setf bookmark (1+ (position clone afe))))
+                            (dom-remove last-node) (dom-append clone last-node)
+                            (setf last-node clone))))))
                    ;; place last-node into the common ancestor (foster-aware)
                    (dom-remove last-node)
                    (if (member (dnode-name ca) '("table" "tbody" "tfoot" "thead" "tr") :test #'equal)
@@ -264,7 +269,15 @@
                                           (subseq open fp))))))))))
          ;; ---- "in body" start/end, reusable from table fallthroughs ----
          (body-end-generic (name)
-           (when (in-scope name) (pop-until name)))
+           ;; "any other end tag": walk from current; match -> pop to it; hit a
+           ;; special element first -> ignore the end tag.
+           (loop for node in open do
+             (cond ((equal (dnode-name node) name)
+                    (gen-implied name)
+                    (loop while (and open (not (eq (current) node))) do (pop open))
+                    (when open (pop open))
+                    (return))
+                   ((member (dnode-name node) *special* :test #'equal) (return)))))
          (merge-attrs (el attrs)
            (dolist (a attrs)
              (unless (assoc (car a) (dnode-attrs el) :test #'string=)
@@ -287,6 +300,11 @@
               (when (in-scope "p" *button-scope*) (close-p))
               (setf frameset-ok nil) (plaintext-element tk))
              ((member name *in-body-ignored-starts* :test #'equal))   ; parse error, ignore
+             ((equal name "xmp")                       ; closes <p>, RAWTEXT, clears frameset-ok
+              (when (in-scope "p" *button-scope*) (close-p))
+              (reconstruct-afe) (setf frameset-ok nil) (raw-element tk nil))
+             ((equal name "textarea")
+              (raw-element tk t) (setf frameset-ok nil))
              ((member name *rcdata-els* :test #'equal) (raw-element tk t))
              ((member name *rawtext-els* :test #'equal) (raw-element tk nil))
              ((equal name "table")

@@ -9,38 +9,32 @@ This is the start of a long program, not a toy. The goal is an independent
 engine in the spirit of [Ladybird](https://ladybird.org/): own your entire view
 of the web, top to bottom, auditable.
 
-## Status — P0 complete: URL + Encoding + Fetch ✅
+## Status — P0–P3: fetch → DOM → CSS → layout → **pixels** ✅
 
-`weft.fetch:fetch-text` already loads a real resource end-to-end — it decoded
-`https://example.com`'s **live Brotli** with our own pure-CL decoder and pulled
-the `<title>`, and `https://www.google.com` (gzip + ISO-8859-1, 81k chars).
+weft now renders styled pages to PNG images, in pure Common Lisp, no browser
+engine. The pipeline: **URL → fetch (TLS-less transport hook + pure-CL br/zstd/
+gzip) → charset decode (36 decoders) → HTML parse (DOM, 98.8% html5lib) → CSS
+(tokenize → parse → selectors vs soupsieve → cascade → computed style) → layout
+(block, inline formatting, floats, flexbox, tables, positioning, width
+constraints) → paint (text, borders, gradients) → PNG**.
 
-### URL — WHATWG parser
+- **P0** URL (97.7% WPT) · Encoding (36 charsets, 37923 cases) · Fetch — done.
+- **P1** HTML tokenizer (6677/6677) · DOM + 10 interface methods · tree
+  construction (338/342 = 98.8%).
+- **P2** CSS: 37 value-type parsers (309/0) · tokenizer + rule/declaration parser
+  · selector engine (35/35 vs soupsieve, specificity, querySelector) · cascade +
+  computed style.
+- **P3** layout + paint: normal flow, inline formatting (styled runs, bold,
+  links, lists), floats + clear, flexbox (grow/justify/align/gap), tables,
+  position (relative/absolute/fixed), max/min-width + margin:auto, linear-
+  gradient backgrounds; a software rasterizer + own PNG encoder.
 
-`weft.url:parse` implements the [WHATWG URL Standard](https://url.spec.whatwg.org/)
-basic URL parser: the full state machine, host parsing (domain / IPv4 / IPv6 /
-opaque), IDNA ToASCII via punycode, percent-encoding sets, and URL serialization
-(the `href` / `protocol` / `host` / `pathname` / `search` / `origin` … getters).
+Run it: `sbcl --script demo/render-url.lisp <url> out.png 900`  (renders a live
+page) or `demo/reader.lisp` / `demo/browse.lisp` for text views.
 
-**Differential-tested against the Web Platform Tests url corpus**
-(`inspect/vectors/urltestdata.json`, 888 cases): **868 pass (97.7%)**, comparing
-every serialized component (or requiring a parse failure) against the reference.
+Not yet: JavaScript (P4), grid, inline-block, sub-pixel text/AA, the long tail of
+CSS. Real JS-heavy pages render blank; server-rendered pages render.
 
-Known tail (the remaining ~2.3%): **full UTS#46 IDNA mapping** — fullwidth→ASCII
-folding, soft-hyphen removal, noncharacter/disallowed validation. Punycode is in;
-the Unicode IDNA *mapping tables* are the scoped follow-up. (Plain ASCII,
-punycode, and invalid-UTF-8 / U+FFFD domain rejection already work.)
-
-### Fetch — resource loader (closes P0)
-
-`weft.fetch` ties it together: parse URL → fetch via a **pluggable transport**
-(default a curl backend; rebind `*http-transport*` for the real TLS/HTTP stack) →
-strip **Content-Encoding** with the pure-CL codecs (`brotli-pure`, `zstd-pure`,
-`chipz` for gzip/deflate) → **charset-decode** the body (Content-Type charset /
-BOM sniff / UTF-8 default) through the 36 encoding decoders. The full WHATWG
-**label alias** table (228 labels → 40 names, e.g. `latin1`/`iso-8859-1` →
-windows-1252) is wired in. Offline gate: decodes real gzip/deflate/br/zstd bodies
-and windows-1252 / Shift_JIS / UTF-16LE / UTF-8-BOM bodies, 10/10.
 
 ## Roadmap
 

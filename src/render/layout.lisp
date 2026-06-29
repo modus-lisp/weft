@@ -8,7 +8,7 @@
 ;;;; canvas and saved as PNG.
 (in-package #:weft.render)
 
-(defstruct lbox x y w h style node kind children marker)   ; kind :block | :line
+(defstruct lbox x y w h style node kind children marker img)   ; kind :block | :line; img = decoded IMG
 (defstruct frag x w text style)                            ; a positioned styled text run on a line
 
 (defvar *floats* nil "Page-scoped float list: each (side left right top bottom).")
@@ -84,17 +84,22 @@ text runs and (:atomic . lbox) for inline-block / replaced boxes."
     (when v (ignore-errors (parse-integer (string-trim '(#\Space #\p #\x) v) :junk-allowed t)))))
 
 (defun img-box (node cs)
-  "A placeholder box for <img>: CSS or HTML width/height, else a small default."
-  (let* ((w (or (let ((sw (css::resolve-size (css:cstyle-width cs) 300))) (and (numberp sw) sw))
-                (img-attr-num node "width") 120))
-         (hh (or (let ((sh (css::resolve-size (css:cstyle-height cs) 200))) (and (numberp sh) sh))
-                 (img-attr-num node "height") 90))
+  "A box for <img>: if src is a decodable data: URI, paint real pixels at its
+intrinsic size (or CSS/HTML override); else an alt-text placeholder."
+  (let* ((src (cdr (assoc "src" (h:dnode-attrs node) :test #'string-equal)))
+         (decoded (and src (>= (length src) 5) (string-equal (subseq src 0 5) "data:")
+                       (ignore-errors (decode-image src))))
+         (cw (let ((sw (css::resolve-size (css:cstyle-width cs) 300))) (and (numberp sw) sw)))
+         (chh (let ((sh (css::resolve-size (css:cstyle-height cs) 200))) (and (numberp sh) sh)))
+         (w (or cw (img-attr-num node "width") (and decoded (img-w decoded)) 120))
+         (hh (or chh (img-attr-num node "height") (and decoded (img-h decoded)) 90))
          (alt (cdr (assoc "alt" (h:dnode-attrs node) :test #'string-equal)))
-         (lb (make-lbox :x 0 :y 0 :w w :h hh :style cs :kind :block)))
-    (setf (lbox-children lb)
-          (when (and alt (plusp (length alt)))
-            (list (make-lbox :x 2 :y (max 0 (floor (- hh *font-h*) 2)) :w (- w 4) :h *font-h* :kind :line
-                             :children (list (make-frag :x 2 :w (* (length alt) *font-w*) :text alt :style cs))))))
+         (lb (make-lbox :x 0 :y 0 :w w :h hh :style cs :kind :block :img decoded)))
+    (unless decoded
+      (setf (lbox-children lb)
+            (when (and alt (plusp (length alt)))
+              (list (make-lbox :x 2 :y (max 0 (floor (- hh *font-h*) 2)) :w (- w 4) :h *font-h* :kind :line
+                               :children (list (make-frag :x 2 :w (* (length alt) *font-w*) :text alt :style cs)))))))
     lb))
 
 (defun word-w (word) (* (length word) *font-w*))
@@ -292,13 +297,17 @@ Returns (values lbox advance-height)."
   (when lb
     (incf (lbox-x lb) dx) (incf (lbox-y lb) dy)
     (if (eq (lbox-kind lb) :line)
-        (dolist (fr (lbox-children lb)) (incf (frag-x fr) dx))
+        (dolist (it (lbox-children lb))
+          (if (frag-p it) (incf (frag-x it) dx) (shift-box it dx dy)))
         (dolist (c (lbox-children lb)) (shift-box c dx dy)))))
 
 (defun est-content-width (node styles)
   "Rough shrink-to-fit width estimate for a flex item."
-  (let ((words (collect-words node styles (st styles node))) (w 0))
-    (dolist (wd words) (incf w (+ (word-w (car wd)) (space-w))))
+  (let ((words (collect-words node styles (st styles node) 600)) (w 0))
+    (dolist (wd words)
+      (if (eq (car wd) :atomic)
+          (incf w (+ (lbox-w (cdr wd)) (space-w)))
+          (incf w (+ (word-w (car wd)) (space-w)))))
     (min w 600)))
 
 (defun item-base (item styles content-w)
@@ -438,6 +447,9 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
                   (fill-gradient cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) dir (rgb from) (rgb to))))
                ((css:cstyle-background cs)
                 (fill-rect cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) (rgb (css:cstyle-background cs)))))
+         (when (lbox-img lb)
+           (blit-img cv (lbox-img lb) (round (lbox-x lb)) (round (lbox-y lb))
+                     (round (lbox-w lb)) (round (lbox-h lb))))
          (let ((bc (rgb (css:cstyle-border-color cs))))
            (when (plusp (css:cstyle-border-top-width cs)) (fill-rect cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (css:cstyle-border-top-width cs) bc))
            (when (plusp (css:cstyle-border-bottom-width cs)) (fill-rect cv (lbox-x lb) (- (+ (lbox-y lb) (lbox-h lb)) (css:cstyle-border-bottom-width cs)) (lbox-w lb) (css:cstyle-border-bottom-width cs) bc))

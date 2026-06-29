@@ -4,7 +4,7 @@
 ;;;; (text nodes are children, matching our model).  For each case we PARSE-HTML
 ;;;; the fixture and run the DOM method; matched elements are compared by their
 ;;;; node path (child indices from the document), text by string.
-(defpackage #:weft.dom.test (:use #:cl) (:local-nicknames (#:d #:weft.dom) (#:h #:weft.html)) (:export #:run))
+(defpackage #:weft.dom.test (:use #:cl) (:local-nicknames (#:d #:weft.dom) (#:h #:weft.html)) (:export #:run #:run-traversal))
 (in-package #:weft.dom.test)
 
 (defun json-parse (string)
@@ -75,6 +75,8 @@ op-name strings) restricts which methods are checked; NIL = all."
             (if (equal got want) (incf pass)
                 (progn (incf fail) (when (< (length fails) 10)
                                      (push (format nil "[~a ~s tgt=~a~@[ ~a~]] want=~s got=~s" op (field c "html") (field c "target") arg want got) fails))))))))
+    (when (zerop (+ pass fail))           ; guard against a vacuous pass (no cases matched)
+      (format t "~%NO CASES MATCHED — treating as failure~%") (setf fail 1))
     (format t "~%~d passed, ~d failed~%" pass fail)
     (when fails (format t "~%sample:~%~{  ~a~%~}" (reverse fails)))
     (values pass fail)))

@@ -1,26 +1,10 @@
 ;;;; src/dom/siblings.lisp — nextElementSibling/previousElementSibling.
 (in-package #:weft.dom)
-
 (defun next-element-sibling (el)
-  "Return the next sibling of EL that is an element node, or NIL."
-  (let* ((parent (h:dnode-parent el))
-         (children (and parent (h:dnode-children parent))))
-    (when children
-      (let ((pos (position el children)))
-        (when pos
-          (loop for i from (1+ pos) below (length children)
-                for child = (aref children i)
-                when (eq (h:dnode-kind child) :element)
-                  do (return child)))))))
-
+  (let* ((p (h:dnode-parent el)) (ch (and p (h:dnode-children p))) (i (and ch (position el ch))))
+    (when i (loop for j from (1+ i) below (length ch)
+                  when (eq (h:dnode-kind (aref ch j)) :element) return (aref ch j)))))
 (defun previous-element-sibling (el)
-  "Return the previous sibling of EL that is an element node, or NIL."
-  (let* ((parent (h:dnode-parent el))
-         (children (and parent (h:dnode-children parent))))
-    (when children
-      (let ((pos (position el children)))
-        (when pos
-          (loop for i from (1- pos) downto 0
-                for child = (aref children i)
-                when (eq (h:dnode-kind child) :element)
-                  do (return child)))))))
+  (let* ((p (h:dnode-parent el)) (ch (and p (h:dnode-children p))) (i (and ch (position el ch))))
+    (when i (loop for j from (1- i) downto 0
+                  when (eq (h:dnode-kind (aref ch j)) :element) return (aref ch j)))))

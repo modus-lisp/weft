@@ -1,27 +1,8 @@
 ;;;; src/dom/element-children.lisp — firstElementChild/lastElementChild/childElementCount.
 (in-package #:weft.dom)
-
 (defun first-element-child (el)
-  "Return the first child of EL that has kind :ELEMENT, or NIL."
-  (let ((children (dnode-children el)))
-    (dotimes (i (length children) nil)
-      (let ((child (aref children i)))
-        (when (eq (dnode-kind child) :element)
-          (return child))))))
-
+  (loop for c across (h:dnode-children el) when (eq (h:dnode-kind c) :element) return c))
 (defun last-element-child (el)
-  "Return the last child of EL that has kind :ELEMENT, or NIL."
-  (let ((children (dnode-children el)))
-    (dotimes (i (length children) nil)
-      (let* ((idx (- (length children) 1 i))
-             (child (aref children idx)))
-        (when (eq (dnode-kind child) :element)
-          (return child))))))
-
+  (let (r) (loop for c across (h:dnode-children el) when (eq (h:dnode-kind c) :element) do (setf r c)) r))
 (defun child-element-count (el)
-  "Return the number of child nodes of EL that have kind :ELEMENT."
-  (let ((children (dnode-children el))
-        (count 0))
-    (dotimes (i (length children) count)
-      (when (eq (dnode-kind (aref children i)) :element)
-        (incf count)))))
+  (count :element (h:dnode-children el) :key #'h:dnode-kind))

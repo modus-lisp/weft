@@ -161,6 +161,50 @@ values (attr(), counters, images) yield an empty box."
                        (incf i)))))))
           (t ""))))   ; attr()/counter()/url() -> present-but-empty box
 
+(defun apply-font-shorthand (cs value parent-cs)
+  "Best-effort `font` shorthand: [style|variant|weight ...] <size>[/<line-height>]
+<family>.  Sets font-size (the pivot token: the first <length>/<percentage>),
+plus optional line-height after '/', and any leading style/weight keywords.
+Ignores the system-font keywords (caption/icon/...)."
+  (let* ((v (string-trim '(#\Space #\Tab #\Newline) value))
+         (toks (remove "" (split-ws v) :test #'string=)))
+    (when (and toks (not (member (string-downcase (first toks))
+                                 '("caption" "icon" "menu" "message-box" "small-caption" "status-bar"
+                                   "inherit" "initial" "unset") :test #'string=)))
+      ;; the size token is the first <length>/<percentage>: a digit plus a unit,
+      ;; '%' or '/'.  A bare integer (e.g. 700) is a weight, not a size.
+      (let ((size-pos (position-if (lambda (t0)
+                                     (and (some #'digit-char-p t0)
+                                          (some (lambda (c) (or (alpha-char-p c) (char= c #\%) (char= c #\/))) t0)))
+                                   toks)))
+        (when size-pos
+          ;; preceding keywords: style / weight
+          (dolist (k (subseq toks 0 size-pos))
+            (let ((kl (string-downcase k)))
+              (cond ((member kl '("bold" "bolder") :test #'string=) (setf (cstyle-font-weight cs) 700))
+                    ((every #'digit-char-p kl) (setf (cstyle-font-weight cs) (parse-integer kl))))))
+          ;; size[/line-height]
+          (let* ((stok (nth size-pos toks)) (slash (position #\/ stok))
+                 (size-s (if slash (subseq stok 0 slash) stok))
+                 (lh-s (when slash (subseq stok (1+ slash))))
+                 (base (if parent-cs (cstyle-font-size parent-cs) 16.0)))
+            (cond ((search "%" size-s) (let ((p (parse-value "percentage" size-s)))
+                                         (when (numberp p) (setf (cstyle-font-size cs) (* base (/ p 100.0))))))
+                  (t (let ((px (resolve-len size-s base))) (when px (setf (cstyle-font-size cs) px)))))
+            (when (and lh-s (plusp (length lh-s)))
+              (let ((n (ignore-errors (let ((*read-eval* nil)) (read-from-string lh-s)))))
+                (when (numberp n) (setf (cstyle-line-height cs) (float n)))))))))))
+
+(defun split-ws (s)
+  "Split S on runs of ASCII whitespace."
+  (let ((out '()) (start nil) (n (length s)))
+    (dotimes (i n)
+      (let ((ws (member (char s i) '(#\Space #\Tab #\Newline #\Return #\Page))))
+        (cond ((and ws start) (push (subseq s start i) out) (setf start nil))
+              ((not (or ws start)) (setf start i)))))
+    (when start (push (subseq s start n) out))
+    (nreverse out)))
+
 (defun apply-decl (cs prop value parent-cs)
   "Apply one declaration to CSTYLE CS (best-effort)."
   (let ((fs (cstyle-font-size cs)))
@@ -177,6 +221,7 @@ values (attr(), counters, images) yield an empty box."
          (let ((base (if parent-cs (cstyle-font-size parent-cs) 16.0)))
            (cond ((search "%" value) (let ((p (parse-value "percentage" value))) (when (numberp p) (setf (cstyle-font-size cs) (* base (/ p 100.0))))))
                  (t (let ((px (resolve-len value base))) (when px (setf (cstyle-font-size cs) px)))))))
+        ((string= prop "font") (apply-font-shorthand cs value parent-cs))
         ((string= prop "font-weight")
          (setf (cstyle-font-weight cs)
                (cond ((string-equal value "bold") 700) ((string-equal value "normal") 400)

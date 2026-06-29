@@ -27,3 +27,9 @@
            #:parse-html #:serialize-tree #:make-document
            #:dnode #:dnode-kind #:dnode-name #:dnode-attrs #:dnode-data
            #:dnode-children #:dnode-parent #:dnode-namespace))
+
+(defpackage #:weft.dom
+  (:use #:cl)
+  (:local-nicknames (#:h #:weft.html))
+  (:export #:get-element-by-id #:get-elements-by-tag-name
+           #:get-elements-by-class-name #:text-content))

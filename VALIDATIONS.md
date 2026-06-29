@@ -36,7 +36,7 @@ itself.
 | DOM query methods | **html5lib** (matched element sets by node path) | **116 / 116** |
 | DOM traversal/attributes | **html5lib** | **540 / 540** |
 | CSS selectors | **soupsieve** (the same selector run on the same HTML; matched sets compared) | **35 / 35** |
-| CSS value parsers (34 types) | spec-precise Python references + `webcolors` | **328 / 328** |
+| CSS value parsers (38 types) | spec-precise Python references + `webcolors` | **369 / 369** |
 | Content-Encoding + charset (fetch) | real gzip/deflate/brotli/zstd bodies produced by Python; round-tripped | **10 / 10** |
 | Sibling codecs (used by fetch) | **libzstd** and the **reference brotli** (node/python): differential fuzz | zstd 150 cases, brotli 1,100 cases — byte-for-byte |
 | PNG output | **Pillow (PIL)** opens and validates every PNG weft writes | every render verified loadable |
@@ -80,21 +80,29 @@ chose.
 - **Acid3 cannot run** — it is ~99% JavaScript (183 `createElement`, 14
   `<script>` blocks). weft renders only its static pre-script state. See the Acid
   gate below.
-- **Acid2 does not pass** — it needs `:before`/`:after` **generated content**,
-  **data-URI image decoding**, and pixel-exact positioning/clipping we have not
-  built. The Acid gate measures ~0% ink coverage for it today, which is the
-  honest truth: almost none of the smiley is ours.
+- **Acid2 does not pass.** Two of its prerequisites now exist and are verified in
+  isolation — **`::before`/`::after` generated content** (inline *and* empty-
+  content `display:block` border boxes) and **data-URI image decoding** (a real
+  PNG decoder: filters 0–4, colour types 0/2/3/4/6, alpha). With those plus a
+  latent crash fix, the Acid gate's ink coverage went **~0% → ~16%**: the face
+  *parts* now decode and paint. What remains is the hard, coupled part — pixel-
+  exact `position:fixed`/absolute placement, float shrink-wrap, CSS2.1 margin
+  collapsing, paint/stacking order, and `overflow:hidden` clipping — without
+  which the parts do not assemble into the smiley. **16% ink is parts-on-canvas,
+  not a face.** We will only claim a pass when the render matches the reference.
 - **No CSS grid, no `inline-block` baseline alignment, no sub-pixel/anti-aliased
   text** (fixed 7×13 bitmap font), no real font metrics, no `overflow` clipping.
 - **URL: ~2.3% fail** — full UTS-46 IDNA mapping tables not implemented.
 - **Tree construction: 4 fail** — the deepest adoption-agency × table
   foster-parenting cases; 21 fragment-parsing cases skipped.
-- **The swarm** (DeepSeek-Flash via OpenRouter) wrote some CSS value parsers, but
-  **no swarm output is trusted on its word.** Every file is re-verified in the
-  main tree (compile + full gate) before it counts; see `tools/swarm/README.md`
-  for the isolation proof (a stub in a worker copy fails even when main is
-  correct) and the stale-cache defenses. Several "passing" swarm results were
-  caught as false by this re-verify and rewritten by hand.
+- **The swarm** (DeepSeek-Flash via OpenRouter) wrote a number of CSS value
+  parsers (most recently `object-fit`, `text-indent`, `background-repeat`,
+  `background-position`), but **no swarm output is trusted on its word.** Every
+  file is re-verified in the main tree (clean-cache compile + full gate) before
+  it counts; see `tools/swarm/README.md` and `../combat/SWARM.md` for the
+  isolation proof (a stub in a worker copy fails even when main is correct) and
+  the stale-cache defenses. Several "passing" swarm results were caught as false
+  by this re-verify and rewritten by hand.
 
 ## The Acid tests as a permanent gate
 

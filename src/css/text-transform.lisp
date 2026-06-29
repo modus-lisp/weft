@@ -1,0 +1,10 @@
+;;;; src/css/text-transform.lisp
+(in-package #:weft.css)
+(define-value-parser "text-transform" (s)
+  (let* ((trimmed (css-trim s))
+         (lowered (ascii-downcase trimmed)))
+    (cond ((string= lowered "none") "none")
+          ((string= lowered "uppercase") "uppercase")
+          ((string= lowered "lowercase") "lowercase")
+          ((string= lowered "capitalize") "capitalize")
+          (t :invalid))))

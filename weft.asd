@@ -56,6 +56,8 @@
                                            (:file "percentage") (:file "integer") (:file "time")
                                            (:file "resolution") (:file "url") (:file "css-string")
                                            (:file "font-family") (:file "text-decoration") (:file "list-style-type") (:file "line-height")
+                                           (:file "flex") (:file "box-sizing") (:file "font-style") (:file "text-transform")
+                                           (:file "overflow") (:file "position") (:file "float") (:file "border-radius") (:file "transform")
                                            (:file "tokenizer") (:file "parser") (:file "selector") (:file "style"))))))
   :in-order-to ((test-op (test-op "weft/test"))))
 

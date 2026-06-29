@@ -1,0 +1,1 @@
+{"type": "float", "cases": [["none", "none"], ["left", "left"], ["right", "right"], ["LEFT", "left"], ["center", null]]}

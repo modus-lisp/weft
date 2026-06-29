@@ -1,0 +1,1 @@
+{"type": "overflow", "cases": [["visible", "visible"], ["hidden", "hidden"], ["scroll", "scroll"], ["auto", "auto"], ["clip", "clip"], ["x", null]]}

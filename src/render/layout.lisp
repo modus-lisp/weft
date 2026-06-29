@@ -112,6 +112,7 @@ text runs and (:atomic . lbox) for inline-block / replaced boxes."
 text-align.  Returns (values line-boxes total-height)."
   (let* ((lh (max *font-h* (round (* (css:cstyle-font-size base-cs) (css:cstyle-line-height base-cs)))))
          (align (css:cstyle-text-align base-cs))
+         (nowrap (member (css:cstyle-white-space base-cs) '("nowrap" "pre") :test #'string=))
          (cright (+ content-x content-w))
          (ws (coerce words 'vector)) (n (length ws)) (i 0)
          (lines '()) (y start-y) (h 0))
@@ -126,7 +127,7 @@ text-align.  Returns (values line-boxes total-height)."
             (let* ((wd (aref ws i)) (atomic (eq (car wd) :atomic))
                    (ww (if atomic (lbox-w (cdr wd)) (word-w (car wd))))
                    (need (if cur (+ (space-w) ww) ww)))
-              (when (and cur (> (+ (- cx lx) need) avail)) (return))
+              (when (and cur (not nowrap) (> (+ (- cx lx) need) avail)) (return))
               (when (> (- cx lx) 0) (incf cx (space-w)))
               (if atomic
                   (let ((lb (cdr wd)))
@@ -273,8 +274,15 @@ Returns (values lbox advance-height)."
                    (incf yy adv) (incf content-h adv)))
                 ((or (eq (h:dnode-kind k) :text) (inline-level-p styles k)) (push k group)))))
           (flush-inline)))
-      (let* ((box-h (+ content-h pt pb bt bb))
-             (lb (make-lbox :x box-x :y box-y :w width :h (max box-h (if list-item *font-h* 0))
+      (let* ((exp-h (css::resolve-size (css:cstyle-height cs) avail-w))   ; explicit height (px) or nil
+             (content-final (cond ((numberp exp-h) (if border-box (- exp-h pad-bord) exp-h)) (t content-h)))
+             (box-h0 (+ content-final pt pb bt bb))
+             ;; min/max-height as box-height floor/ceiling
+             (box-h (let ((bh box-h0) (mn (css:cstyle-min-height cs)) (mx (css:cstyle-max-height cs)))
+                      (when (and (numberp mn) (> mn 0)) (setf bh (max bh (+ mn pt pb bt bb))))
+                      (when (numberp mx) (setf bh (min bh (+ mx pt pb bt bb))))
+                      (max bh (if list-item *font-h* 0))))
+             (lb (make-lbox :x box-x :y box-y :w width :h box-h
                             :style cs :node node :kind :block :children (nreverse children)
                             :marker (when list-item (css:cstyle-list-style cs)))))
         (values lb (+ mt (lbox-h lb) mb))))))

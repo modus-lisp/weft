@@ -20,7 +20,8 @@
   (flex-direction "row") (justify-content "flex-start") (align-items "stretch")
   (flex-wrap "nowrap") (flex-grow 0.0) (flex-shrink 1.0) (flex-basis "auto") (gap 0.0)
   (top :auto) (left :auto) (right :auto) (bottom :auto) (z-index 0)
-  (bg-gradient nil))   ; (dir from-rgba to-rgba), dir :vertical | :horizontal
+  (bg-gradient nil)   ; (dir from-rgba to-rgba), dir :vertical | :horizontal
+  (min-height 0.0) (max-height :none))
 
 (defparameter *inherited* '(:color :font-size :font-weight :line-height :text-align :white-space))
 
@@ -169,6 +170,9 @@
         ((string= prop "max-width") (if (string-equal (string-trim '(#\Space) value) "none") (setf (cstyle-max-width cs) :none)
                                         (let ((w (parse-size value fs nil))) (when w (setf (cstyle-max-width cs) w)))))
         ((string= prop "min-width") (let ((w (parse-size value fs nil))) (when w (setf (cstyle-min-width cs) w))))
+        ((string= prop "min-height") (let ((h (parse-size value fs nil))) (when (numberp h) (setf (cstyle-min-height cs) h))))
+        ((string= prop "max-height") (if (string-equal (string-trim '(#\Space) value) "none") (setf (cstyle-max-height cs) :none)
+                                         (let ((h (parse-size value fs nil))) (when (numberp h) (setf (cstyle-max-height cs) h)))))
         ((string= prop "float") (let ((v (parse-value "float" value))) (when (stringp v) (setf (cstyle-float cs) v))))
         ((string= prop "clear") (setf (cstyle-clear cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "position") (let ((v (parse-value "position" value))) (when (stringp v) (setf (cstyle-position cs) v))))

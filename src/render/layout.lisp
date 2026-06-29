@@ -33,18 +33,21 @@
     yy))
 
 (defun st (styles node) (gethash node styles))
+(defun child-elements (node)
+  (loop for c across (h:dnode-children node) when (eq (h:dnode-kind c) :element) collect c))
 (defun cdisplay (cs) (if cs (css:cstyle-display cs) "inline"))
 (defun float-p (styles node)
   (and (eq (h:dnode-kind node) :element)
        (let ((cs (st styles node))) (and cs (member (css:cstyle-float cs) '("left" "right") :test #'string=)))))
+(defparameter *block-displays* '("block" "list-item" "flex" "table"))
 (defun inline-level-p (styles node)
   (case (h:dnode-kind node)
     (:text t)
-    (:element (let ((cs (st styles node))) (and cs (not (member (cdisplay cs) '("block" "list-item" "none") :test #'string=)))))
+    (:element (let ((cs (st styles node))) (and cs (not (member (cdisplay cs) (cons "none" *block-displays*) :test #'string=)))))
     (t nil)))
 (defun block-level-p (styles node)
   (and (eq (h:dnode-kind node) :element)
-       (let ((cs (st styles node))) (and cs (member (cdisplay cs) '("block" "list-item") :test #'string=)))))
+       (let ((cs (st styles node))) (and cs (member (cdisplay cs) *block-displays* :test #'string=)))))
 
 ;;; ---- inline content: styled word runs -> line boxes --------------------
 (defun collect-words (node styles default-style)
@@ -167,6 +170,13 @@ Returns (values lbox advance-height)."
                (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                               :kind :block :children (nreverse children))))
           (return-from layout-node (values lb (+ mt box-h mb)))))
+      ;; flex container
+      (when (string= (cdisplay cs) "flex")
+        (multiple-value-bind (boxes ch) (layout-flex node styles cx cy content-w cs)
+          (let* ((box-h (+ ch pt pb bt bb))
+                 (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
+                                :kind :block :children boxes)))
+            (return-from layout-node (values lb (+ mt box-h mb))))))
       ;; classify children: anonymous-group consecutive inline-level nodes
       (let ((kids (coerce (h:dnode-children node) 'list)) (group '()) (yy cy))
         (flet ((flush-inline ()
@@ -199,6 +209,78 @@ Returns (values lbox advance-height)."
                             :style cs :node node :kind :block :children (nreverse children)
                             :marker (when list-item (css:cstyle-list-style cs)))))
         (values lb (+ mt (lbox-h lb) mb))))))
+
+(defun shift-box (lb dx dy)
+  "Recursively offset LB and its descendants by (DX,DY)."
+  (when lb
+    (incf (lbox-x lb) dx) (incf (lbox-y lb) dy)
+    (if (eq (lbox-kind lb) :line)
+        (dolist (fr (lbox-children lb)) (incf (frag-x fr) dx))
+        (dolist (c (lbox-children lb)) (shift-box c dx dy)))))
+
+(defun est-content-width (node styles)
+  "Rough shrink-to-fit width estimate for a flex item."
+  (let ((words (collect-words node styles (st styles node))) (w 0))
+    (dolist (wd words) (incf w (+ (word-w (car wd)) (space-w))))
+    (min w 600)))
+
+(defun item-base (item styles content-w)
+  (let* ((cs (st styles item)) (basis (css:cstyle-flex-basis cs)))
+    (cond
+      ((and (stringp basis) (not (member basis '("auto" "content") :test #'string=)))
+       (let ((v (css::resolve-len basis (css:cstyle-font-size cs)))) (if (numberp v) v 0)))
+      ((numberp (css:cstyle-width cs)) (css:cstyle-width cs))
+      ((> (css:cstyle-flex-grow cs) 0) 0)
+      (t (min content-w (est-content-width item styles))))))
+
+(defun layout-flex (node styles cx cy content-w base-cs)
+  "Single-line flexbox layout.  Returns (values child-lboxes content-height)."
+  (let* ((dir (css:cstyle-flex-direction base-cs))
+         (row (not (or (string= dir "column") (string= dir "column-reverse"))))
+         (justify (css:cstyle-justify-content base-cs))
+         (align (css:cstyle-align-items base-cs))
+         (gap (css:cstyle-gap base-cs))
+         (items (remove-if-not (lambda (k) (let ((c (st styles k))) (and c (not (string= (css:cstyle-display c) "none"))))) (child-elements node)))
+         (nitems (length items)))
+    (when (zerop nitems) (return-from layout-flex (values nil 0)))
+    (let* ((main-avail (if row content-w content-w))   ; column main size is intrinsic; treat width as cross
+           (bases (mapcar (lambda (it) (if row (item-base it styles content-w) (item-base it styles content-w))) items))
+           (total-gap (* gap (1- nitems)))
+           (sum-base (+ (reduce #'+ bases) total-gap))
+           (free (- main-avail sum-base))
+           (grows (mapcar (lambda (it) (css:cstyle-flex-grow (st styles it))) items))
+           (sum-grow (reduce #'+ grows))
+           (sizes (if (and row (> free 0) (> sum-grow 0))
+                      (mapcar (lambda (b g) (+ b (* free (/ g sum-grow)))) bases grows)
+                      bases)))
+      (if row
+          ;; ---- ROW ----
+          (let* ((used (+ (reduce #'+ sizes) total-gap))
+                 (extra (max 0 (- content-w used)))
+                 (start (cond ((string= justify "center") (+ cx (/ extra 2)))
+                              ((string= justify "flex-end") (+ cx extra)) (t cx)))
+                 (between (cond ((and (string= justify "space-between") (> nitems 1)) (/ extra (1- nitems)))
+                                ((string= justify "space-around") (/ extra nitems)) (t 0)))
+                 (x (if (string= justify "space-around") (+ start (/ between 2)) start))
+                 (boxes '()) (max-h 0))
+            (loop for it in items for w in sizes do
+              (multiple-value-bind (lb adv) (layout-node it styles (round x) cy (round w))
+                (declare (ignore adv))
+                (when lb (push lb boxes) (setf max-h (max max-h (lbox-h lb))))
+                (incf x (+ w gap between))))
+            (let ((boxes (nreverse boxes)))
+              (dolist (lb boxes)                          ; cross-axis align
+                (cond ((string= align "stretch") (setf (lbox-h lb) (max (lbox-h lb) max-h)))
+                      ((string= align "center") (shift-box lb 0 (round (/ (- max-h (lbox-h lb)) 2))))
+                      ((string= align "flex-end") (shift-box lb 0 (round (- max-h (lbox-h lb)))))))
+              (values boxes max-h)))
+          ;; ---- COLUMN ----
+          (let ((y cy) (boxes '()) (max-w 0))
+            (loop for it in items do
+              (multiple-value-bind (lb adv) (layout-node it styles cx y content-w)
+                (when lb (push lb boxes) (setf max-w (max max-w (lbox-w lb))))
+                (incf y (+ adv gap))))
+            (values (nreverse boxes) (- y cy gap)))))))
 
 (defun place-float (node styles cleft cright top content-w)
   "Position a floated NODE at the left/right edge within [CLEFT,CRIGHT], dropping

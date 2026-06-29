@@ -1,0 +1,1 @@
+{"type": "position", "cases": [["static", "static"], ["relative", "relative"], ["absolute", "absolute"], ["fixed", "fixed"], ["sticky", "sticky"], ["x", null]]}

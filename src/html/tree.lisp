@@ -19,6 +19,9 @@
     "menu" "nav" "ol" "p" "section" "summary" "ul" "pre" "listing"
     "form" "fieldset"))
 (defparameter *headings* '("h1" "h2" "h3" "h4" "h5" "h6"))
+;; "has an element in scope" boundary sets (WHATWG §13.2.4.2)
+(defparameter *scope-bounds* '("applet" "caption" "html" "table" "td" "th" "marquee" "object" "template"))
+(defparameter *button-scope* (cons "button" *scope-bounds*))
 (defparameter *implied-end* '("dd" "dt" "li" "optgroup" "option" "p" "rb" "rp" "rt" "rtc"))
 (defparameter *ws* '(#\Tab #\Newline #\Page #\Return #\Space))
 ;; start tags ignored in "in body" (they belong to table/frame/head contexts)
@@ -37,7 +40,7 @@
   (multiple-value-bind (tklist src) (tokenize input)
    (let* ((toks (coerce tklist 'vector)) (ntok (length toks)) (s src)
           (doc (make-document)) (open '()) (mode :initial) (orig-mode nil)
-          (head nil) (i 0) (reconsume nil) (fostering nil) (pending nil))
+          (head nil) (i 0) (reconsume nil) (fostering nil) (pending nil) (drop-nl nil))
     (labels
         ((current () (car open))
          (top-name () (and open (dnode-name (current))))
@@ -83,6 +86,10 @@
                           (loop for k from 0 below (or endpos (length rtoks))
                                 for x = (aref rtoks k)
                                 when (eq (tok-type x) :char) do (write-string (tok-data x) o)))))
+             ;; <textarea> drops a single leading newline
+             (when (and (equal name "textarea") (plusp (length text))
+                        (char= (char text 0) #\Newline))
+               (setf text (subseq text 1)))
              (insert-node el)
              (when (plusp (length text)) (dom-append el (make-text text)))
              ;; rebase the token stream + source onto the remainder past the end tag
@@ -92,7 +99,7 @@
                      ntok (length toks)
                      s rest))))
          ;; ---- scope queries ----
-         (in-scope (name &optional (bounds '("html" "table" "td" "th" "caption" "button" "marquee" "object")))
+         (in-scope (name &optional (bounds *scope-bounds*))
            (loop for el in open do
              (cond ((equal (dnode-name el) name) (return t))
                    ((member (dnode-name el) bounds :test #'equal) (return nil)))))
@@ -103,7 +110,7 @@
                             (not (equal (top-name) except)))
                  do (pop open)))
          (close-p ()
-           (when (in-scope "p" '("html" "table" "td" "th" "caption" "button" "marquee" "object"))
+           (when (in-scope "p" *button-scope*)
              (gen-implied "p")
              (loop while (and open (not (equal (top-name) "p"))) do (pop open))
              (when open (pop open))))
@@ -134,27 +141,31 @@
              ((member name *rcdata-els* :test #'equal) (raw-element tk t))
              ((member name *rawtext-els* :test #'equal) (raw-element tk nil))
              ((equal name "table")
-              (when (in-scope "p" '("html" "button")) (close-p))
+              (when (in-scope "p" *button-scope*) (close-p))
               (insert-element "table" (tok-attrs tk)) (switch :in-table))
              ((member name *headings* :test #'equal)
-              (when (in-scope "p" '("html" "button")) (close-p))
+              (when (in-scope "p" *button-scope*) (close-p))
               (when (member (top-name) *headings* :test #'equal) (pop open))
               (insert-element name (tok-attrs tk)))
              ((equal name "li")
-              (when (in-scope "p" '("html" "button")) (close-p))
+              (when (in-scope "p" *button-scope*) (close-p))
               (when (in-scope "li") (pop-until "li"))
               (insert-element "li" (tok-attrs tk)))
              ((member name '("dd" "dt") :test #'equal)
               (when (in-scope "dd") (pop-until "dd"))
               (when (in-scope "dt") (pop-until "dt"))
-              (when (in-scope "p" '("html" "button")) (close-p))
+              (when (in-scope "p" *button-scope*) (close-p))
               (insert-element name (tok-attrs tk)))
              ((equal name "hr")
-              (when (in-scope "p" '("html" "button")) (close-p))
+              (when (in-scope "p" *button-scope*) (close-p))
               (insert-void "hr" (tok-attrs tk)))
              ((member name *void* :test #'equal) (insert-void name (tok-attrs tk)))
+             ((member name '("pre" "listing") :test #'equal)
+              (when (in-scope "p" *button-scope*) (close-p))
+              (insert-element name (tok-attrs tk))
+              (setf drop-nl t))                         ; a leading newline is dropped
              ((member name *block-closes-p* :test #'equal)
-              (when (in-scope "p" '("html" "button")) (close-p))
+              (when (in-scope "p" *button-scope*) (close-p))
               (insert-element name (tok-attrs tk)))
              (t (insert-element name (tok-attrs tk)))))
          (body-end (name)
@@ -162,7 +173,7 @@
              ((equal name "body") (switch :after-body))
              ((equal name "html") (switch :after-body) (reproc))
              ((equal name "p")
-              (if (in-scope "p" '("html" "button")) (pop-until "p")
+              (if (in-scope "p" *button-scope*) (pop-until "p")
                   (progn (insert-element "p") (pop open))))
              ((member name *headings* :test #'equal)
               (when (loop for el in open thereis (member (dnode-name el) *headings* :test #'equal))
@@ -220,14 +231,27 @@
                    ((and (eq ty :start-tag) (equal (tok-name tk) "body"))
                     (insert-element "body" (tok-attrs tk)) (switch :in-body))
                    ((and (eq ty :start-tag) (equal (tok-name tk) "html")) (switch :in-body))
+                   ;; head-content start tags: re-process in head, then remove it
+                   ((and (eq ty :start-tag)
+                         (member (tok-name tk) '("base" "basefont" "bgsound" "link" "meta"
+                                                 "title" "style" "script" "noframes" "template") :test #'equal))
+                    (push head open)
+                    (cond ((member (tok-name tk) *rcdata-els* :test #'equal) (raw-element tk t))
+                          ((member (tok-name tk) *rawtext-els* :test #'equal) (raw-element tk nil))
+                          (t (insert-void (tok-name tk) (tok-attrs tk))))
+                    (setf open (remove head open)))
                    (t (insert-element "body") (switch :in-body) (reproc))))
             (:in-body
              (cond
-               ((eq ty :char) (insert-text (tok-data tk)))
+               ((eq ty :char)
+                (let ((data (tok-data tk)))
+                  (when (and drop-nl (string= data (string #\Newline))) (setf data ""))
+                  (setf drop-nl nil)
+                  (when (plusp (length data)) (insert-text data))))
                ((eq ty :comment) (dom-append (current) (make-comment (tok-data tk))))
                ((eq ty :doctype))
-               ((eq ty :start-tag) (body-start tk (tok-name tk)))
-               ((eq ty :end-tag) (body-end (tok-name tk)))
+               ((eq ty :start-tag) (setf drop-nl nil) (body-start tk (tok-name tk)))
+               ((eq ty :end-tag) (setf drop-nl nil) (body-end (tok-name tk)))
                ((eq ty :eof) (return))))
             ;; ---- TABLE ----
             (:in-table
@@ -253,7 +277,7 @@
                        (loop while (and open (not (equal (top-name) "table"))) do (pop open))
                        (when open (pop open)) (reset-mode) (reproc)))
                     ((member name '("style" "script") :test #'equal) (raw-element tk nil))
-                    (t (let ((fostering t)) (body-start tk name))))))
+                    (t (setf fostering t) (body-start tk name) (setf fostering nil)))))
                ((eq ty :end-tag)
                 (let ((name (tok-name tk)))
                   (cond
@@ -263,7 +287,7 @@
                        (when open (pop open)) (reset-mode)))
                     ((member name '("body" "caption" "col" "colgroup" "html" "tbody"
                                     "td" "tfoot" "th" "thead" "tr") :test #'equal))   ; ignore
-                    (t (let ((fostering t)) (body-end name))))))
+                    (t (setf fostering t) (body-end name) (setf fostering nil)))))
                ((eq ty :eof) (return))))
             (:in-table-text
              (cond
@@ -271,7 +295,7 @@
                (t ;; flush: foster-parent if any non-whitespace, else plain-insert
                 (let ((text (apply #'concatenate 'string (nreverse pending))))
                   (if (some (lambda (c) (not (member c *ws*))) text)
-                      (let ((fostering t)) (insert-text text))
+                      (progn (setf fostering t) (insert-text text) (setf fostering nil))
                       (insert-text text)))
                 (setf pending nil) (switch :in-table) (reproc))))
             (:in-table-body

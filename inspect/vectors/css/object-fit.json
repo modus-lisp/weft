@@ -1,0 +1,1 @@
+{"type": "object-fit", "cases": [["fill", "fill"], ["contain", "contain"], ["cover", "cover"], ["none", "none"], ["scale-down", "scale-down"], ["FILL", "fill"], ["  cover ", "cover"], ["bogus", null], ["", null], ["fill fill", null]]}

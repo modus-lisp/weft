@@ -1,8 +1,8 @@
 ;;;; src/css/line-height.lisp
 (in-package #:weft.css)
 (define-value-parser "line-height" (s)
-  (let ((trimmed (css-trim s))
-        (lowered (ascii-downcase trimmed)))
+  (let* ((trimmed (css-trim s))
+         (lowered (ascii-downcase trimmed)))
     (cond ((string= lowered "normal") '("normal"))
           ((string= lowered "") :invalid)
           (t (multiple-value-bind (val pos)

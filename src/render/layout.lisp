@@ -121,10 +121,24 @@ Returns (values lbox advance-height)."
                     (round (+ (lbox-y lb) (max 0 (floor (- (lbox-h lb) *font-h*) 2))))
                     (rgb (css:cstyle-color cs))))))))
 
+(defun collect-stylesheets (doc)
+  "Concatenate the text of all <style> elements in DOC."
+  (with-output-to-string (o)
+    (labels ((rec (n)
+               (when (eq (h:dnode-kind n) :element)
+                 (when (string= (h:dnode-name n) "style")
+                   (loop for c across (h:dnode-children n)
+                         when (eq (h:dnode-kind c) :text) do (write-string (h:dnode-data c) o)
+                         do (terpri o)))
+                 (loop for c across (h:dnode-children n) do (rec c)))))
+      (loop for c across (h:dnode-children doc) do (rec c)))))
+
 (defun render-to-png (html css width path &key (min-height 200))
-  "Full pipeline: parse HTML + CSS, cascade, lay out at WIDTH px, paint, save PNG."
+  "Full pipeline: parse HTML, gather CSS (explicit + the page's <style> tags),
+cascade, lay out at WIDTH px, paint, save PNG."
   (let* ((doc (h:parse-html html))
-         (sheet (css:parse-stylesheet (or css "")))
+         (sheet (css:parse-stylesheet (concatenate 'string (or css "") (string #\Newline)
+                                                   (collect-stylesheets doc))))
          (styles (css:compute-styles doc sheet)))
     (multiple-value-bind (root adv) (layout-tree doc styles width)
       (declare (ignore adv))

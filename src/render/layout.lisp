@@ -541,7 +541,15 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
            (draw-text cv (marker-glyph (lbox-marker lb))
                       (round (- (+ (lbox-x lb) (css:cstyle-padding-left cs)) (* 2 *font-w*)))
                       (round (+ (lbox-y lb) (css:cstyle-padding-top cs))) (rgb (css:cstyle-color cs))))
-         (dolist (c (lbox-children lb)) (paint-box cv c))))
+         ;; overflow:hidden/clip/scroll clips descendants to this box's padding box.
+         (if (member (css:cstyle-overflow cs) '("hidden" "clip" "scroll") :test #'string=)
+             (let ((*clip* (clip-intersect
+                            (round (+ (lbox-x lb) (css:cstyle-border-left-width cs)))
+                            (round (+ (lbox-y lb) (css:cstyle-border-top-width cs)))
+                            (round (- (+ (lbox-x lb) (lbox-w lb)) (css:cstyle-border-right-width cs)))
+                            (round (- (+ (lbox-y lb) (lbox-h lb)) (css:cstyle-border-bottom-width cs))))))
+               (dolist (c (lbox-children lb)) (paint-box cv c)))
+             (dolist (c (lbox-children lb)) (paint-box cv c)))))
       (:line
        (let ((yoff (max 0 (floor (- (lbox-h lb) *font-h*) 2))))
          (dolist (it (lbox-children lb))

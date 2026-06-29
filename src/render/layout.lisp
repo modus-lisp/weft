@@ -50,9 +50,9 @@
        (let ((cs (st styles node))) (and cs (member (cdisplay cs) *block-displays* :test #'string=)))))
 
 ;;; ---- inline content: styled word runs -> line boxes --------------------
-(defun collect-words (node styles default-style)
-  "Walk inline content of NODE; return a list of (word . style) tokens
-(whitespace becomes token separators).  DEFAULT-STYLE owns bare text."
+(defun collect-words (node styles default-style content-w)
+  "Walk inline content of NODE; return a list of inline tokens: (word . style)
+text runs and (:atomic . lbox) for inline-block / replaced boxes."
   (let ((words '()))
     (labels ((emit-text (s style)
                (let ((b (make-string-output-stream)) (any nil))
@@ -64,12 +64,38 @@
              (rec (n owner)
                (case (h:dnode-kind n)
                  (:text (emit-text (h:dnode-data n) owner))
-                 (:element (let ((cs (or (st styles n) owner)))
-                             (unless (and cs (string= (cdisplay cs) "none"))
-                               (unless (member (h:dnode-name n) '("script" "style") :test #'string=)
-                                 (loop for c across (h:dnode-children n) do (rec c cs)))))))))
+                 (:element
+                  (let ((cs (or (st styles n) owner)))
+                    (cond
+                      ((and cs (string= (cdisplay cs) "none")))
+                      ((member (h:dnode-name n) '("script" "style") :test #'string=))
+                      ((and cs (member (cdisplay cs) '("inline-block" "flex" "table") :test #'string=))
+                       (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
+                         (declare (ignore adv))
+                         (when lb (push (cons :atomic lb) words))))
+                      ((string= (h:dnode-name n) "img")    ; replaced element placeholder
+                       (let ((lb (img-box n cs))) (when lb (push (cons :atomic lb) words))))
+                      (t (loop for c across (h:dnode-children n) do (rec c cs)))))))))
       (rec node (or (st styles node) default-style)))
     (nreverse words)))
+
+(defun img-attr-num (node name)
+  (let ((v (cdr (assoc name (h:dnode-attrs node) :test #'string-equal))))
+    (when v (ignore-errors (parse-integer (string-trim '(#\Space #\p #\x) v) :junk-allowed t)))))
+
+(defun img-box (node cs)
+  "A placeholder box for <img>: CSS or HTML width/height, else a small default."
+  (let* ((w (or (let ((sw (css::resolve-size (css:cstyle-width cs) 300))) (and (numberp sw) sw))
+                (img-attr-num node "width") 120))
+         (hh (or (let ((sh (css::resolve-size (css:cstyle-height cs) 200))) (and (numberp sh) sh))
+                 (img-attr-num node "height") 90))
+         (alt (cdr (assoc "alt" (h:dnode-attrs node) :test #'string-equal)))
+         (lb (make-lbox :x 0 :y 0 :w w :h hh :style cs :kind :block)))
+    (setf (lbox-children lb)
+          (when (and alt (plusp (length alt)))
+            (list (make-lbox :x 2 :y (max 0 (floor (- hh *font-h*) 2)) :w (- w 4) :h *font-h* :kind :line
+                             :children (list (make-frag :x 2 :w (* (length alt) *font-w*) :text alt :style cs))))))
+    lb))
 
 (defun word-w (word) (* (length word) *font-w*))
 (defun space-w () *font-w*)
@@ -95,24 +121,35 @@ text-align.  Returns (values line-boxes total-height)."
         (loop while (and (< (- rx lx) (* 3 *font-w*)) (next-float-bottom y)) do
           (let ((ny (next-float-bottom y))) (incf h (- ny y)) (setf y ny)
             (multiple-value-setq (lx rx) (float-band y lh content-x cright))))
-        (let* ((avail (- rx lx)) (cur '()) (cx lx))
+        (let* ((avail (- rx lx)) (cur '()) (cx lx) (line-h lh))
           (loop while (< i n) do
-            (let* ((wd (aref ws i)) (word (car wd)) (ww (word-w word))
+            (let* ((wd (aref ws i)) (atomic (eq (car wd) :atomic))
+                   (ww (if atomic (lbox-w (cdr wd)) (word-w (car wd))))
                    (need (if cur (+ (space-w) ww) ww)))
               (when (and cur (> (+ (- cx lx) need) avail)) (return))
               (when (> (- cx lx) 0) (incf cx (space-w)))
-              (push (make-frag :x cx :w ww :text word :style (cdr wd)) cur)
+              (if atomic
+                  (let ((lb (cdr wd)))
+                    (shift-box lb (round (- cx (lbox-x lb))) 0)
+                    (setf line-h (max line-h (lbox-h lb))) (push lb cur))
+                  (push (make-frag :x cx :w ww :text (car wd) :style (cdr wd)) cur))
               (incf cx ww) (incf i)))
-          (when (null cur)                       ; one word too wide for the band: force it
-            (let* ((wd (aref ws i)) (word (car wd)))
-              (push (make-frag :x lx :w (word-w word) :text word :style (cdr wd)) cur) (incf i)))
-          (let* ((frags (nreverse cur))
-                 (used (- (+ (frag-x (car (last frags))) (frag-w (car (last frags)))) lx))
+          (when (null cur)                       ; one item too wide for the band: force it
+            (let* ((wd (aref ws i)))
+              (if (eq (car wd) :atomic) (let ((lb (cdr wd))) (shift-box lb (round (- lx (lbox-x lb))) 0)
+                                          (setf line-h (max line-h (lbox-h lb))) (push lb cur))
+                  (push (make-frag :x lx :w (word-w (car wd)) :text (car wd) :style (cdr wd)) cur))
+              (incf i)))
+          (let* ((items (nreverse cur))
+                 (lastx (let ((it (car (last items)))) (if (frag-p it) (+ (frag-x it) (frag-w it)) (+ (lbox-x it) (lbox-w it)))))
+                 (used (- lastx lx))
                  (shift (cond ((string= align "center") (max 0 (floor (- avail used) 2)))
                               ((string= align "right") (max 0 (- avail used))) (t 0))))
-            (when (plusp shift) (dolist (fr frags) (incf (frag-x fr) shift)))
-            (push (make-lbox :x lx :y y :w avail :h lh :kind :line :children frags) lines))
-          (incf y lh) (incf h lh))))
+            (when (plusp shift)
+              (dolist (it items) (if (frag-p it) (incf (frag-x it) shift) (shift-box it shift 0))))
+            (dolist (it items) (unless (frag-p it) (shift-box it 0 (round y))))  ; atomic to line y
+            (push (make-lbox :x lx :y y :w avail :h line-h :kind :line :children items) lines))
+          (incf y line-h) (incf h line-h))))
     (values (nreverse lines) h)))
 
 (defun collect-raw (node)
@@ -141,17 +178,22 @@ Returns (values lbox advance-height)."
            (pl (css:cstyle-padding-left cs)) (pr (css:cstyle-padding-right cs))
            (bt (css:cstyle-border-top-width cs)) (bb (css:cstyle-border-bottom-width cs))
            (bl (css:cstyle-border-left-width cs)) (br (css:cstyle-border-right-width cs))
-           (explicit-w (css:cstyle-width cs))
-           (width (let ((w (if (numberp explicit-w) explicit-w (- avail-w ml mr))))
-                    ;; max-width / min-width clamp
-                    (when (numberp (css:cstyle-max-width cs)) (setf w (min w (css:cstyle-max-width cs))))
-                    (setf w (max w (css:cstyle-min-width cs)))
-                    w))
-           ;; margin:auto centering when width is constrained (explicit or max-width)
+           (border-box (string= (css:cstyle-box-sizing cs) "border-box"))
+           (pad-bord (+ pl pr bl br))
+           (spec-w (css::resolve-size (css:cstyle-width cs) avail-w))      ; px or nil
+           (max-w (css::resolve-size (css:cstyle-max-width cs) avail-w))
+           (min-w (css::resolve-size (css:cstyle-min-width cs) avail-w))
+           ;; border-box width of this element
+           (width (let ((bw (if (numberp spec-w) (if border-box spec-w (+ spec-w pad-bord))
+                                (- avail-w ml mr))))
+                    (when (numberp max-w) (setf bw (min bw (if border-box max-w (+ max-w pad-bord)))))
+                    (when (numberp min-w) (setf bw (max bw (if border-box min-w (+ min-w pad-bord)))))
+                    (max 0 bw)))
+           ;; margin:auto centering when width is constrained
            (ml (if (and (css:cstyle-margin-left-auto cs) (css:cstyle-margin-right-auto cs)
-                        (or (numberp explicit-w) (numberp (css:cstyle-max-width cs))) (< width avail-w))
+                        (or (numberp spec-w) (numberp max-w)) (< width avail-w))
                    (max 0 (floor (- avail-w width) 2)) ml))
-           (content-w (max 0 (- width bl br pl pr)))
+           (content-w (max 0 (- width pad-bord)))
            (box-x (+ x ml)) (box-y (+ y mt))
            (cx (+ box-x bl pl)) (cy (+ box-y bt pt))
            (list-item (string= (cdisplay cs) "list-item"))
@@ -184,7 +226,7 @@ Returns (values lbox advance-height)."
       (let ((kids (coerce (h:dnode-children node) 'list)) (group '()) (yy cy))
         (flet ((flush-inline ()
                  (when group
-                   (let ((words (loop for g in (nreverse group) append (collect-words g styles cs))))
+                   (let ((words (loop for g in (nreverse group) append (collect-words g styles cs content-w))))
                      (when words
                        (multiple-value-bind (lines lh-total) (layout-inline words cx yy content-w cs)
                          (dolist (l lines) (push l children))
@@ -393,12 +435,14 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
          (dolist (c (lbox-children lb)) (paint-box cv c))))
       (:line
        (let ((yoff (max 0 (floor (- (lbox-h lb) *font-h*) 2))))
-         (dolist (fr (lbox-children lb))
-           (let ((cs (frag-style fr)))
-             (draw-text cv (frag-text fr) (round (frag-x fr)) (round (+ (lbox-y lb) yoff))
-                        (rgb (css:cstyle-color cs))
-                        :bold (>= (css:cstyle-font-weight cs) 600)
-                        :underline (member "underline" (css:cstyle-text-decoration cs) :test #'string=)))))))))
+         (dolist (it (lbox-children lb))
+           (if (frag-p it)
+               (let ((cs (frag-style it)))
+                 (draw-text cv (frag-text it) (round (frag-x it)) (round (+ (lbox-y lb) yoff))
+                            (rgb (css:cstyle-color cs))
+                            :bold (>= (css:cstyle-font-weight cs) 600)
+                            :underline (member "underline" (css:cstyle-text-decoration cs) :test #'string=)))
+               (paint-box cv it))))))))   ; atomic inline-block / img box
 
 (defun collect-stylesheets (doc)
   (with-output-to-string (o)

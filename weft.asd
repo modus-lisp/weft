@@ -60,6 +60,7 @@
                                            (:file "overflow") (:file "position") (:file "float") (:file "border-radius") (:file "transform")
                                            (:file "cursor") (:file "visibility") (:file "direction") (:file "font-variant")
                                            (:file "z-index") (:file "letter-spacing") (:file "vertical-align") (:file "white-space")
+                                           (:file "opacity") (:file "word-spacing") (:file "order")
                                            (:file "tokenizer") (:file "parser") (:file "selector") (:file "style"))))))
   :in-order-to ((test-op (test-op "weft/test"))))
 

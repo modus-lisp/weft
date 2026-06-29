@@ -14,11 +14,25 @@
       (setf (aref px i) (first bg) (aref px (+ i 1)) (second bg) (aref px (+ i 2)) (third bg)))
     (%make-canvas :width w :height h :pixels px)))
 
+(defvar *clip* nil
+  "Active clip rectangle (x0 y0 x1 y1) in device pixels, or NIL for none.
+Bound by paint when entering an overflow:hidden/clip/scroll box.")
+
 (declaim (inline put))
 (defun put (cv x y r g b)
-  (when (and (>= x 0) (>= y 0) (< x (canvas-width cv)) (< y (canvas-height cv)))
+  (when (and (>= x 0) (>= y 0) (< x (canvas-width cv)) (< y (canvas-height cv))
+             (or (null *clip*)
+                 (and (>= x (the fixnum (first *clip*))) (>= y (the fixnum (second *clip*)))
+                      (< x (the fixnum (third *clip*))) (< y (the fixnum (fourth *clip*))))))
     (let ((i (* 3 (+ (* y (canvas-width cv)) x))) (px (canvas-pixels cv)))
       (setf (aref px i) r (aref px (+ i 1)) g (aref px (+ i 2)) b))))
+
+(defun clip-intersect (x0 y0 x1 y1)
+  "Intersect (X0 Y0 X1 Y1) with the current *CLIP*, returning a new clip rect."
+  (if *clip*
+      (list (max x0 (first *clip*)) (max y0 (second *clip*))
+            (min x1 (third *clip*)) (min y1 (fourth *clip*)))
+      (list x0 y0 x1 y1)))
 
 (defun fill-rect (cv x y w h color)
   (let ((r (first color)) (g (second color)) (b (third color))

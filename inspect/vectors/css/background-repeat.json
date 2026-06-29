@@ -1,0 +1,1 @@
+{"type": "background-repeat", "cases": [["repeat", "repeat"], ["repeat-x", "repeat-x"], ["repeat-y", "repeat-y"], ["no-repeat", "no-repeat"], ["space", "space"], ["round", "round"], ["NO-REPEAT", "no-repeat"], ["  round", "round"], ["nope", null], ["", null]]}

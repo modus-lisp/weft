@@ -19,4 +19,6 @@
            #:cstyle-padding-right #:cstyle-padding-bottom #:cstyle-padding-left
            #:cstyle-border-top-width #:cstyle-border-right-width #:cstyle-border-bottom-width
            #:cstyle-border-left-width #:cstyle-border-color #:cstyle-text-align #:cstyle-white-space
-           #:cstyle-text-decoration #:cstyle-list-style))
+           #:cstyle-text-decoration #:cstyle-list-style
+           #:cstyle-max-width #:cstyle-min-width #:cstyle-margin-left-auto #:cstyle-margin-right-auto
+           #:cstyle-float #:cstyle-clear #:cstyle-position #:cstyle-box-sizing))

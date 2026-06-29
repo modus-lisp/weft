@@ -1,0 +1,1 @@
+{"type": "css-string", "cases": [["\"hello\"", "hello"], ["'world'", "world"], ["\"with \\\"q\"", "with \\\"q"], ["unquoted", null], ["\"\"", ""], ["\"a", null], ["x\"", null]]}

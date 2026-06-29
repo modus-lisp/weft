@@ -1,0 +1,1 @@
+{"type": "url", "cases": [["url(http://a.com/x.png)", "http://a.com/x.png"], ["url(\"a b.png\")", "a b.png"], ["url('q.svg')", "q.svg"], ["url(  spaced  )", "spaced"], ["url()", ""], ["not-a-url", null], ["URL(x)", null]]}

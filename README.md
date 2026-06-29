@@ -36,6 +36,14 @@ Not yet: JavaScript (P4), grid, inline-block, sub-pixel text/AA, the long tail o
 CSS. Real JS-heavy pages render blank; server-rendered pages render.
 
 
+## Honesty
+
+See [VALIDATIONS.md](VALIDATIONS.md) — what is validated against independent
+oracles (URL/encoding/tokenizer/tree/DOM/selectors vs WPT, html5lib, soupsieve),
+what is only self-asserted (layout/paint correctness — no pixel oracle yet), and
+the known limits (no JS; Acid3 cannot run; Acid2 does not pass). Read it before
+trusting any screenshot.
+
 ## Roadmap
 
 See [ROADMAP.md](ROADMAP.md). In dependency order, each phase backed by its

@@ -2,3 +2,4 @@
 *.fas
 *.lx64fsl
 .cache/
+inspect/vectors/acid/*-weft.png

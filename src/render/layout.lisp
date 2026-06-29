@@ -469,20 +469,34 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
                  (loop for c across (h:dnode-children n) do (rec c)))))
       (loop for c across (h:dnode-children doc) do (rec c)))))
 
-(defun render-to-png (html css width path &key (min-height 200))
-  "Parse HTML, gather CSS (explicit + page <style> tags), cascade, lay out at
-WIDTH px, paint, save PNG.  Returns (values path width height)."
+(defun render-to-canvas (html css width &key (min-height 200) (max-height 20000))
+  "Parse HTML, gather CSS, cascade, lay out at WIDTH px, paint.  Returns the
+CANVAS.  HEIGHT is clamped to MAX-HEIGHT (keeps pathological pages bounded)."
   (let* ((doc (h:parse-html html))
          (sheet (css:parse-stylesheet (concatenate 'string (or css "") (string #\Newline)
                                                    (collect-stylesheets doc))))
          (styles (css:compute-styles doc sheet)))
     (multiple-value-bind (root adv) (layout-tree doc styles width)
       (declare (ignore adv))
-      (let* ((height (max min-height (if root (round (+ (lbox-y root) (lbox-h root) 8)) min-height)))
-             ;; canvas background = body's background (propagated), else white
+      (let* ((height (min max-height (max min-height (if root (round (+ (lbox-y root) (lbox-h root) 8)) min-height))))
              (body (css:query-select doc "body"))
              (bg (let ((cs (and body (gethash body styles)))) (and cs (css:cstyle-background cs))))
              (cv (make-canvas width height (if bg (rgb bg) '(255 255 255)))))
         (paint-box cv root)
-        (write-png cv path)
-        (values path width height)))))
+        cv))))
+
+(defun canvas-ink (cv)
+  "Fraction of pixels that differ from the top-left (background) color — a coarse
+\"how much got painted\" signal for tracking rendering progress."
+  (let* ((px (canvas-pixels cv)) (n (length px))
+         (br (aref px 0)) (bg (aref px 1)) (bb (aref px 2)) (ink 0) (total (floor n 3)))
+    (loop for i from 0 below n by 3
+          unless (and (= (aref px i) br) (= (aref px (+ i 1)) bg) (= (aref px (+ i 2)) bb))
+            do (incf ink))
+    (if (plusp total) (/ ink (float total)) 0.0)))
+
+(defun render-to-png (html css width path &key (min-height 200))
+  "Render HTML+CSS at WIDTH px and save a PNG.  Returns (values path width height)."
+  (let ((cv (render-to-canvas html css width :min-height min-height)))
+    (write-png cv path)
+    (values path width (canvas-height cv))))

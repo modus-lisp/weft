@@ -78,11 +78,12 @@
                                (:file "canvas") (:file "layout")))))))
 
 (defsystem "weft/test"
-  :depends-on ("weft" "weft/fetch")
+  :depends-on ("weft" "weft/fetch" "weft/render")
   :components ((:module "inspect" :components ((:file "offline-test") (:file "encoding-test")
                                               (:file "fetch-test") (:file "html-test")
                                               (:file "tree-test")
-                                              (:file "dom-test") (:file "css-test") (:file "selector-test"))))
+                                              (:file "dom-test") (:file "css-test") (:file "selector-test")
+                                              (:file "acid-test"))))
   :perform (test-op (o c)
              (let ((url-ok (uiop:symbol-call :weft.test :run))
                    (enc-ok (zerop (nth-value 1 (uiop:symbol-call :weft.encoding.test :run))))
@@ -91,7 +92,8 @@
                    (dom-ok (and (zerop (nth-value 1 (uiop:symbol-call :weft.dom.test :run)))
                                 (zerop (nth-value 1 (uiop:symbol-call :weft.dom.test :run-traversal)))))
                    (css-ok (zerop (nth-value 1 (uiop:symbol-call :weft.css.test :run))))
+                   (acid-ok (zerop (nth-value 1 (uiop:symbol-call :weft.acid.test :run))))
                    (sel-ok (zerop (nth-value 1 (uiop:symbol-call :weft.css.select-test :run)))))
                ;; tree construction is in progress — run for visibility, don't gate on it yet
                (uiop:symbol-call :weft.html.tree-test :run)
-               (unless (and url-ok enc-ok fetch-ok html-ok dom-ok css-ok sel-ok) (error "weft: gate failures")))))
+               (unless (and url-ok enc-ok fetch-ok html-ok dom-ok css-ok sel-ok acid-ok) (error "weft: gate failures")))))

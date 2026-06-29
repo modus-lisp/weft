@@ -1,0 +1,1 @@
+{"type": "angle", "cases": [["45deg", [45.0, "deg"]], ["0", [0.0, "deg"]], ["1.5turn", [1.5, "turn"]], ["-90DEG", [-90.0, "deg"]], ["3.14rad", [3.14, "rad"]], ["100grad", [100.0, "grad"]], ["45", null], ["deg", null], ["45px", null], ["", null], ["0deg", [0.0, "deg"]], ["1e2deg", [100.0, "deg"]], ["-0.5turn", [-0.5, "turn"]]]}

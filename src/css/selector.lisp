@@ -165,7 +165,10 @@ else (values NIL CX).  first-line/first-letter are treated as NIL (no box)."
                            (push sel simples) (setf i j)))
           ((char= c #\:) (multiple-value-bind (sel j) (read-pseudo s i end)
                            (push sel simples) (setf i j)))
-          ((or (alpha-char-p c) (char= c #\-) (char= c #\_))
+          ((or (alpha-char-p c) (char= c #\-) (char= c #\_) (char= c #\\))
+           ;; A leading backslash starts an escaped identifier (type selector).
+           ;; e.g. `\.parser` is a TYPE selector for an element literally named
+           ;; ".parser" — NOT the .parser class.  read-ident decodes the escape.
            (multiple-value-bind (name j) (read-ident s i end)
              (push (list :type name) simples) (setf i j)))
           (t (return)))))
@@ -240,7 +243,7 @@ else (values NIL CX).  first-line/first-letter are treated as NIL (no box)."
 
 (defun parse-complex (s)
   "Parse one complex selector string into a CX."
-  (let ((compounds '()) (combs '()) (i 0) (n (length s)) (pending :descendant) (first t) (explicit nil))
+  (let ((compounds '()) (combs '()) (i 0) (n (length s)) (pending :descendant) (first t) (explicit nil) (invalid nil))
     (loop while (< i n) do
       (let ((c (char s i)))
         (cond
@@ -249,12 +252,20 @@ else (values NIL CX).  first-line/first-letter are treated as NIL (no box)."
           ((char= c #\+) (incf i) (setf pending :adjacent explicit t))
           ((char= c #\~) (incf i) (setf pending :sibling explicit t))
           (t (multiple-value-bind (compound j) (parse-compound s i n)
-               (when compound
-                 (unless first (push pending combs))
-                 (push compound compounds) (setf first nil pending :descendant explicit nil))
-               (if (> j i) (setf i j) (incf i)))))))
-    (make-cx :compounds (coerce (nreverse compounds) 'vector)
-             :combs (coerce (nreverse combs) 'vector))))
+               (cond
+                 ((> j i)                       ; consumed a compound selector
+                  (when compound
+                    (unless first (push pending combs))
+                    (push compound compounds) (setf first nil pending :descendant explicit nil))
+                  (setf i j))
+                 ;; An unrecognized token that parse-compound can't consume (e.g.
+                 ;; a stray `;` from `.parser {...};` running into the next rule's
+                 ;; selector) makes the WHOLE selector invalid — drop the rule.
+                 (t (setf invalid t) (return))))))))
+    (if invalid
+        (make-cx :compounds #() :combs #())
+        (make-cx :compounds (coerce (nreverse compounds) 'vector)
+                 :combs (coerce (nreverse combs) 'vector)))))
 
 (defun parse-selector-list (string)
   "Parse a comma-separated selector list into a list of CX."
@@ -265,7 +276,10 @@ else (values NIL CX).  first-line/first-letter are treated as NIL (no box)."
     (push (subseq string start) parts)
     (loop for p in (nreverse parts)
           for trimmed = (string-trim '(#\Space #\Tab #\Newline) p)
-          when (plusp (length trimmed)) collect (parse-complex trimmed))))
+          for cx = (and (plusp (length trimmed)) (parse-complex trimmed))
+          ;; drop invalid selectors (parse-complex yields no compounds), e.g. a
+          ;; selector containing a stray `;` from a botched preceding rule.
+          when (and cx (plusp (length (cx-compounds cx)))) collect cx)))
 
 ;;; ---- public API --------------------------------------------------------
 (defun selector-matches-p (selector-list n)

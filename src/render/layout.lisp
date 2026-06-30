@@ -500,11 +500,6 @@ Returns (values lbox advance-height)."
                                 (final-top (if cleared float-bottom natural-top)))
                            (when (and top-collapse (not cleared)) (setf first-child-mt cmt))
                            (shift-box lb 0 (round (- final-top (lbox-y lb))))   ; flow placement
-                           (when (and kcs (string= pos "relative"))             ; visual shift, flow unchanged
-                             (shift-box lb (round (cond ((numberp (css:cstyle-left kcs)) (css:cstyle-left kcs))
-                                                        ((numberp (css:cstyle-right kcs)) (- (css:cstyle-right kcs))) (t 0)))
-                                        (round (cond ((numberp (css:cstyle-top kcs)) (css:cstyle-top kcs))
-                                                     ((numberp (css:cstyle-bottom kcs)) (- (css:cstyle-bottom kcs))) (t 0)))))
                            (push lb children)
                            (setf min-cn (min min-cn 0 cmt cmb cmneg))
                            (if (and (zerop (lbox-h lb)) (not cleared))
@@ -524,7 +519,16 @@ Returns (values lbox advance-height)."
                                  (incf content-h (- new-yy yy))
                                  (setf yy new-yy)
                                  (setf prev-mb (cons (max 0 cmb) (min 0 cmb))) ; held to collapse with next sibling
-                                 (setf content-started t))))))))
+                                 (setf content-started t)))
+                           ;; Relative offset is a VISUAL shift only (CSS 2.1 9.4.3):
+                           ;; applied after flow bookkeeping above so it never feeds
+                           ;; back into YY / CONTENT-H — Acid2's .smile div has
+                           ;; bottom:-1em and must not stretch its parent by 12px.
+                           (when (and kcs (string= pos "relative"))
+                             (shift-box lb (round (cond ((numberp (css:cstyle-left kcs)) (css:cstyle-left kcs))
+                                                        ((numberp (css:cstyle-right kcs)) (- (css:cstyle-right kcs))) (t 0)))
+                                        (round (cond ((numberp (css:cstyle-top kcs)) (css:cstyle-top kcs))
+                                                     ((numberp (css:cstyle-bottom kcs)) (- (css:cstyle-bottom kcs))) (t 0))))))))))
                 ((or (eq (h:dnode-kind k) :text) (inline-level-p styles k)) (push k group)))))
           (flush-inline)
           ;; The last in-flow block's bottom margin (PREV-MB) was held back from

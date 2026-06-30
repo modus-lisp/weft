@@ -648,6 +648,7 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
   (let* ((cs (st styles node))
          (side (if (string= (css:cstyle-float cs) "left") :left :right))
          (ml (css:cstyle-margin-left cs)) (mr (css:cstyle-margin-right cs))
+         (mb (css:cstyle-margin-bottom cs))
          (extra (+ (css:cstyle-padding-left cs) (css:cstyle-padding-right cs)
                    (css:cstyle-border-left-width cs) (css:cstyle-border-right-width cs)))
          ;; AVAIL-W is the available content width handed to LAYOUT-NODE; for an
@@ -669,7 +670,12 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
         (multiple-value-bind (lb adv) (layout-node node styles fx y avail-w)
           (declare (ignore adv))
           (when lb
-            (push (list side fx (+ fx avail-w) y (+ y (lbox-h lb))) *floats*))
+            ;; A float occupies (and content clears) its MARGIN box, not its
+            ;; border box: the border-top edge already carries the float's top
+            ;; margin (in LBOX-Y), and the bottom margin edge adds MB.  Honouring
+            ;; this lets Acid2's nose float (margin -2em ... -1em) report a higher
+            ;; bottom so the cleared smile abuts it instead of leaving a gap.
+            (push (list side fx (+ fx avail-w) y (+ (lbox-y lb) (lbox-h lb) mb)) *floats*))
           lb)))))
 
 (defun find-lbox-for-node (lb node)

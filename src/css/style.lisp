@@ -13,6 +13,10 @@
   (margin-top 0.0) (margin-right 0.0) (margin-bottom 0.0) (margin-left 0.0)
   (padding-top 0.0) (padding-right 0.0) (padding-bottom 0.0) (padding-left 0.0)
   (border-top-width 0.0) (border-right-width 0.0) (border-bottom-width 0.0) (border-left-width 0.0)
+  ;; per-edge border colors (NIL = fall back to BORDER-COLOR) and styles
+  ;; (NIL = treat as solid; "none"/"hidden" suppress the edge).
+  (border-top-color nil) (border-right-color nil) (border-bottom-color nil) (border-left-color nil)
+  (border-top-style nil) (border-right-style nil) (border-bottom-style nil) (border-left-style nil)
   (border-color '(0 0 0 1.0)) (text-align "left") (white-space "normal")
   (text-decoration nil) (list-style "disc")
   (max-width :none) (min-width 0.0) (margin-left-auto nil) (margin-right-auto nil)
@@ -352,7 +356,20 @@ Ignores the system-font keywords (caption/icon/...)."
         ((string= prop "padding-right") (let ((v (len))) (when v (setf (cstyle-padding-right cs) v))))
         ((string= prop "padding-bottom") (let ((v (len))) (when v (setf (cstyle-padding-bottom cs) v))))
         ((string= prop "padding-left") (let ((v (len))) (when v (setf (cstyle-padding-left cs) v))))
-        ((string= prop "border-color") (let ((c (resolve-color value))) (when c (setf (cstyle-border-color cs) c))))
+        ((string= prop "border-color")
+         (apply-color-box value cs #'(setf cstyle-border-top-color) #'(setf cstyle-border-right-color)
+                          #'(setf cstyle-border-bottom-color) #'(setf cstyle-border-left-color)))
+        ((string= prop "border-top-color") (let ((c (resolve-border-color value cs))) (when c (setf (cstyle-border-top-color cs) c))))
+        ((string= prop "border-right-color") (let ((c (resolve-border-color value cs))) (when c (setf (cstyle-border-right-color cs) c))))
+        ((string= prop "border-bottom-color") (let ((c (resolve-border-color value cs))) (when c (setf (cstyle-border-bottom-color cs) c))))
+        ((string= prop "border-left-color") (let ((c (resolve-border-color value cs))) (when c (setf (cstyle-border-left-color cs) c))))
+        ((string= prop "border-style")
+         (apply-style-box value cs #'(setf cstyle-border-top-style) #'(setf cstyle-border-right-style)
+                          #'(setf cstyle-border-bottom-style) #'(setf cstyle-border-left-style)))
+        ((string= prop "border-top-style") (when (border-style-token-p value) (setf (cstyle-border-top-style cs) (string-downcase (string-trim '(#\Space) value)))))
+        ((string= prop "border-right-style") (when (border-style-token-p value) (setf (cstyle-border-right-style cs) (string-downcase (string-trim '(#\Space) value)))))
+        ((string= prop "border-bottom-style") (when (border-style-token-p value) (setf (cstyle-border-bottom-style cs) (string-downcase (string-trim '(#\Space) value)))))
+        ((string= prop "border-left-style") (when (border-style-token-p value) (setf (cstyle-border-left-style cs) (string-downcase (string-trim '(#\Space) value)))))
         ((member prop '("border" "border-top" "border-bottom" "border-left" "border-right") :test #'string=)
          (apply-border cs prop value fs))
         ((string= prop "border-width") (let ((v (len))) (when v (setf (cstyle-border-top-width cs) v (cstyle-border-right-width cs) v (cstyle-border-bottom-width cs) v (cstyle-border-left-width cs) v))))))))
@@ -405,19 +422,56 @@ url(...) chunk removed (so its contents aren't mistaken for keywords)."
     (destructuring-bind (&optional (a 0.0) (b a) (c a) (d b)) vals
       (funcall top a cs) (funcall right b cs) (funcall bottom c cs) (funcall left d cs))))
 
+(defparameter *border-styles*
+  '("none" "hidden" "solid" "dotted" "dashed" "double" "groove" "ridge" "inset" "outset"))
+(defun border-style-token-p (tok)
+  (member (string-trim '(#\Space) tok) *border-styles* :test #'string-equal))
+(defun border-edge-painted-p (style)
+  "True when an edge with STYLE (string or NIL) paints; NIL defaults to solid."
+  (not (and style (member style '("none" "hidden") :test #'string-equal))))
+
+(defun apply-style-box (value cs top right bottom left)
+  "Apply a 1-4 value border-style shorthand (top right bottom left CSS order)."
+  (let* ((parts (remove-if-not #'border-style-token-p (split-tokens (string-trim '(#\Space) value))))
+         (vals (mapcar #'string-downcase parts)))
+    (when vals
+      (destructuring-bind (&optional (a "none") (b a) (c a) (d b)) vals
+        (funcall top a cs) (funcall right b cs) (funcall bottom c cs) (funcall left d cs)))))
+
+(defun resolve-border-color (tok cs)
+  "Resolve a border color token; \"currentcolor\" maps to the element's color."
+  (if (string-equal (string-trim '(#\Space) tok) "currentcolor")
+      (cstyle-color cs)
+      (resolve-color tok)))
+
+(defun apply-color-box (value cs top right bottom left)
+  "Apply a 1-4 value border-color shorthand (top right bottom left CSS order).
+Invalid/unparseable components are left as NIL (= fall back to BORDER-COLOR)."
+  (let* ((parts (split-tokens (string-trim '(#\Space) value)))
+         (vals (mapcar (lambda (p) (resolve-border-color p cs)) parts)))
+    (when vals
+      (destructuring-bind (&optional a (b a) (c a) (d b)) vals
+        (funcall top a cs) (funcall right b cs) (funcall bottom c cs) (funcall left d cs)))))
+
 (defun apply-border (cs prop value fs)
-  (let ((w 0.0) (col nil))
+  (let ((w 0.0) (col nil) (sty nil))
     (dolist (tok (split-tokens value))
       (let ((px (resolve-len tok fs)))
         (cond ((numberp px) (setf w px))
               ((member tok '("thin" "medium" "thick") :test #'string-equal) (setf w (cond ((string-equal tok "thin") 1.0) ((string-equal tok "thick") 5.0) (t 3.0))))
-              ((resolve-color tok) (setf col (resolve-color tok))))))
-    (when col (setf (cstyle-border-color cs) col))
+              ((border-style-token-p tok) (setf sty (string-downcase tok)))
+              ((resolve-border-color tok cs) (setf col (resolve-border-color tok cs))))))
     (flet ((setw (side) (case side (:t (setf (cstyle-border-top-width cs) w)) (:r (setf (cstyle-border-right-width cs) w))
-                          (:b (setf (cstyle-border-bottom-width cs) w)) (:l (setf (cstyle-border-left-width cs) w)))))
-      (cond ((string= prop "border") (setw :t) (setw :r) (setw :b) (setw :l))
-            ((string= prop "border-top") (setw :t)) ((string= prop "border-bottom") (setw :b))
-            ((string= prop "border-left") (setw :l)) ((string= prop "border-right") (setw :r))))))
+                          (:b (setf (cstyle-border-bottom-width cs) w)) (:l (setf (cstyle-border-left-width cs) w))))
+           (setc (side) (when col (case side (:t (setf (cstyle-border-top-color cs) col)) (:r (setf (cstyle-border-right-color cs) col))
+                          (:b (setf (cstyle-border-bottom-color cs) col)) (:l (setf (cstyle-border-left-color cs) col)))))
+           (sets (side) (when sty (case side (:t (setf (cstyle-border-top-style cs) sty)) (:r (setf (cstyle-border-right-style cs) sty))
+                          (:b (setf (cstyle-border-bottom-style cs) sty)) (:l (setf (cstyle-border-left-style cs) sty))))))
+      (cond ((string= prop "border") (mapc (lambda (s) (setw s) (setc s) (sets s)) '(:t :r :b :l)))
+            ((string= prop "border-top") (setw :t) (setc :t) (sets :t))
+            ((string= prop "border-bottom") (setw :b) (setc :b) (sets :b))
+            ((string= prop "border-left") (setw :l) (setc :l) (sets :l))
+            ((string= prop "border-right") (setw :r) (setc :r) (sets :r))))))
 
 ;;; ---- the cascade --------------------------------------------------------
 (defun compute-styles (document stylesheet)

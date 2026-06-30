@@ -240,11 +240,25 @@ AVAIL-H is the containing-block height in px when definite, else NIL (CSS 2.1
   (handler-case (%layout-node node styles x y avail-w avail-h)
     (error (e) (if *layout-debug* (error e) (values nil 0 0 0)))))
 
+(defun used-border (cs edge)
+  "Used border width for EDGE (:t :r :b :l): the declared width, or 0 when that
+edge's border-style is none/hidden (CSS 2.1 8.5.1 — a none/hidden border forces
+the used width to 0).  Unlike the paint helper BORDER-EDGE-WIDTH this keeps
+*transparent* borders at full width: transparent is a colour, not a style, so
+those borders still occupy layout space (e.g. Acid2's smile `solid transparent`)."
+  (multiple-value-bind (w sty)
+      (case edge
+        (:t (values (css:cstyle-border-top-width cs) (css:cstyle-border-top-style cs)))
+        (:r (values (css:cstyle-border-right-width cs) (css:cstyle-border-right-style cs)))
+        (:b (values (css:cstyle-border-bottom-width cs) (css:cstyle-border-bottom-style cs)))
+        (:l (values (css:cstyle-border-left-width cs) (css:cstyle-border-left-style cs))))
+    (if (css:border-edge-painted-p sty) w 0.0)))
+
 (defun pad-box (lb cs)
   "Padding box (px py pw ph) of LB — the border-box minus borders.  This is the
 containing block that absolutely-positioned descendants resolve against."
-  (let ((bl (css:cstyle-border-left-width cs)) (br (css:cstyle-border-right-width cs))
-        (bt (css:cstyle-border-top-width cs)) (bb (css:cstyle-border-bottom-width cs)))
+  (let ((bl (used-border cs :l)) (br (used-border cs :r))
+        (bt (used-border cs :t)) (bb (used-border cs :b)))
     (list (+ (lbox-x lb) bl) (+ (lbox-y lb) bt)
           (max 0 (- (lbox-w lb) bl br)) (max 0 (- (lbox-h lb) bt bb)))))
 
@@ -256,11 +270,16 @@ CB=(px py pw ph) using top/left/right/bottom from CS.  When top (or left) is
     (destructuring-bind (px py pw ph) cb
       (let* ((left (css:cstyle-left cs)) (right (css:cstyle-right cs))
              (top (css:cstyle-top cs)) (bottom (css:cstyle-bottom cs))
-             (nx (cond ((numberp left)  (+ px left))
-                       ((numberp right) (+ px (- pw (lbox-w lb) right)))
+             ;; CSS 2.1 10.6.4 / 9.3.2: top/left position the *margin* edge, so the
+             ;; border box is offset inward by the box's own margin (the static
+             ;; case already carries the margin in LBOX-X/Y, so leave it alone).
+             (mt (css:cstyle-margin-top cs)) (mb (css:cstyle-margin-bottom cs))
+             (ml (css:cstyle-margin-left cs)) (mr (css:cstyle-margin-right cs))
+             (nx (cond ((numberp left)  (+ px left ml))
+                       ((numberp right) (+ px (- pw (lbox-w lb) right mr)))
                        (t (lbox-x lb))))
-             (ny (cond ((numberp top)    (+ py top))
-                       ((numberp bottom) (+ py (- ph (lbox-h lb) bottom)))
+             (ny (cond ((numberp top)    (+ py top mt))
+                       ((numberp bottom) (+ py (- ph (lbox-h lb) bottom mb)))
                        (t (lbox-y lb)))))
         (shift-box lb (round (- nx (lbox-x lb))) (round (- ny (lbox-y lb))))))))
 
@@ -281,6 +300,19 @@ this box, if any, carries them along correctly)."
               (*floats* (if (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)
                             nil *floats*)))
           (multiple-value-bind (lb adv mt-eff mb-eff mneg) (%layout-core node styles x y avail-w avail-h)
+            ;; A box establishing a BFC contains its floats: with auto height it
+            ;; grows so its bottom border edge sits below the lowest float's bottom
+            ;; margin edge (CSS 2.1 10.6.7).  Acid2's `.first.one` is an absolute
+            ;; auto-height block whose only content is a float — its height is that
+            ;; float's 12px, not 0.  (Only the abs/fixed case rebinds *FLOATS*, so
+            ;; here every entry was generated inside this box.)
+            (when (and lb *floats*
+                       (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)
+                       (null (css::resolve-height (css:cstyle-height cs) avail-h)))
+              (let ((mfb (loop for f in *floats* maximize (fifth f)))
+                    (bot (+ (lbox-y lb) (lbox-h lb))))
+                (when (> mfb bot)
+                  (setf (lbox-h lb) (- (+ mfb (used-border cs :b)) (lbox-y lb))))))
             (when (and lb *abs-pending*)
               (let ((cb (pad-box lb cs)))
                 (dolist (p *abs-pending*) (resolve-positioned (car p) cb (cdr p)))))
@@ -303,8 +335,8 @@ Returns (values lbox advance-height)."
            (ml (css:cstyle-margin-left cs)) (mr (css:cstyle-margin-right cs))
            (pt (css:cstyle-padding-top cs)) (pb (css:cstyle-padding-bottom cs))
            (pl (css:cstyle-padding-left cs)) (pr (css:cstyle-padding-right cs))
-           (bt (css:cstyle-border-top-width cs)) (bb (css:cstyle-border-bottom-width cs))
-           (bl (css:cstyle-border-left-width cs)) (br (css:cstyle-border-right-width cs))
+           (bt (used-border cs :t)) (bb (used-border cs :b))
+           (bl (used-border cs :l)) (br (used-border cs :r))
            (border-box (string= (css:cstyle-box-sizing cs) "border-box"))
            (pad-bord (+ pl pr bl br))
            ;; explicit height (CSS 2.1 10.5): a px length, or a percentage resolved
@@ -317,7 +349,7 @@ Returns (values lbox advance-height)."
            (child-avail-h (when (numberp exp-h)
                             (max 0 (if (string= (css:cstyle-box-sizing cs) "border-box")
                                        (- exp-h (+ (css:cstyle-padding-top cs) (css:cstyle-padding-bottom cs)
-                                                   (css:cstyle-border-top-width cs) (css:cstyle-border-bottom-width cs)))
+                                                   (used-border cs :t) (used-border cs :b)))
                                        exp-h))))
            (spec-w (css::resolve-size (css:cstyle-width cs) avail-w))      ; px or nil
            (max-w (css::resolve-size (css:cstyle-max-width cs) avail-w))
@@ -665,7 +697,7 @@ max-content width.  Bounded by DEPTH and CONTENT-W so it stays cheap/resilient."
          (w (and cs (css:cstyle-width cs))))
     (if (null cs) 0
         (+ (css:cstyle-margin-left cs) (css:cstyle-margin-right cs)
-           (css:cstyle-border-left-width cs) (css:cstyle-border-right-width cs)
+           (used-border cs :l) (used-border cs :r)
            (css:cstyle-padding-left cs) (css:cstyle-padding-right cs)
            (if (numberp w) w (pref-content-width node styles content-w depth))))))
 
@@ -677,7 +709,7 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
          (ml (css:cstyle-margin-left cs)) (mr (css:cstyle-margin-right cs))
          (mb (css:cstyle-margin-bottom cs))
          (extra (+ (css:cstyle-padding-left cs) (css:cstyle-padding-right cs)
-                   (css:cstyle-border-left-width cs) (css:cstyle-border-right-width cs)))
+                   (used-border cs :l) (used-border cs :r)))
          ;; AVAIL-W is the available content width handed to LAYOUT-NODE; for an
          ;; auto-width float the box fills (avail - margins), so to shrink-wrap
          ;; we size it to the float's preferred content width + its own
@@ -850,10 +882,10 @@ image paints nothing (the bg color shows through)."
              (repx (member rep '("repeat" "repeat-x") :test #'string=))
              (repy (member rep '("repeat" "repeat-y") :test #'string=))
              ;; padding box (inside the borders)
-             (px0 (round (+ (lbox-x lb) (css:cstyle-border-left-width cs))))
-             (py0 (round (+ (lbox-y lb) (css:cstyle-border-top-width cs))))
-             (px1 (round (- (+ (lbox-x lb) (lbox-w lb)) (css:cstyle-border-right-width cs))))
-             (py1 (round (- (+ (lbox-y lb) (lbox-h lb)) (css:cstyle-border-bottom-width cs))))
+             (px0 (round (+ (lbox-x lb) (used-border cs :l))))
+             (py0 (round (+ (lbox-y lb) (used-border cs :t))))
+             (px1 (round (- (+ (lbox-x lb) (lbox-w lb)) (used-border cs :r))))
+             (py1 (round (- (+ (lbox-y lb) (lbox-h lb)) (used-border cs :b))))
              (pos (css:cstyle-bg-position cs))
              (offx (if pos (bg-pos-offset (first pos) (- (- px1 px0) iw)) 0))
              (offy (if pos (bg-pos-offset (second pos) (- (- py1 py0) ih)) 0))
@@ -999,10 +1031,10 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
          ;; overflow:hidden/clip/scroll clips descendants to this box's padding box.
          (if (member (css:cstyle-overflow cs) '("hidden" "clip" "scroll") :test #'string=)
              (let ((*clip* (clip-intersect
-                            (round (+ (lbox-x lb) (css:cstyle-border-left-width cs)))
-                            (round (+ (lbox-y lb) (css:cstyle-border-top-width cs)))
-                            (round (- (+ (lbox-x lb) (lbox-w lb)) (css:cstyle-border-right-width cs)))
-                            (round (- (+ (lbox-y lb) (lbox-h lb)) (css:cstyle-border-bottom-width cs))))))
+                            (round (+ (lbox-x lb) (used-border cs :l)))
+                            (round (+ (lbox-y lb) (used-border cs :t)))
+                            (round (- (+ (lbox-x lb) (lbox-w lb)) (used-border cs :r)))
+                            (round (- (+ (lbox-y lb) (lbox-h lb)) (used-border cs :b))))))
                (paint-children cv (lbox-children lb)))
              (paint-children cv (lbox-children lb)))))
       (:line

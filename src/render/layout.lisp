@@ -81,6 +81,12 @@ text runs and (:atomic . lbox) for inline-block / replaced boxes."
                          (when lb (push (cons :atomic lb) words))))
                       ((string= (h:dnode-name n) "img")    ; replaced element placeholder
                        (let ((lb (img-box n cs))) (when lb (push (cons :atomic lb) words))))
+                      ;; <object data="data:...image..."> that decodes renders as a
+                      ;; replaced image (with its own background, e.g. Acid2's eye
+                      ;; tile); otherwise it falls back to its child content.
+                      ((and (string= (h:dnode-name n) "object") (object-data-image n))
+                       (let ((lb (object-box n cs (object-data-image n))))
+                         (when lb (push (cons :atomic lb) words))))
                       (t (loop for c across (h:dnode-children n) do (rec c cs)))))))))
       (rec node (or (st styles node) default-style)))
     (nreverse words)))
@@ -107,6 +113,21 @@ intrinsic size (or CSS/HTML override); else an alt-text placeholder."
               (list (make-lbox :x 2 :y (max 0 (floor (- hh *font-h*) 2)) :w (- w 4) :h *font-h* :kind :line
                                :children (list (make-frag :x 2 :w (word-w alt cs) :text alt :style cs)))))))
     lb))
+
+(defun object-data-image (node)
+  "Decoded IMG for an <object> whose data attribute is a decodable image data:
+URI, else NIL (so the object falls back to its child content)."
+  (let ((data (cdr (assoc "data" (h:dnode-attrs node) :test #'string-equal))))
+    (and data (>= (length data) 5) (string-equal (subseq data 0 5) "data:")
+         (ignore-errors (decode-image (if (find #\% data) (percent-decode data) data))))))
+
+(defun object-box (node cs decoded)
+  "An atomic replaced box for an <object> rendering DECODED at its intrinsic size.
+Carries the object's own style so its background (e.g. Acid2's fixed eye tile)
+and borders paint behind/around the image."
+  (declare (ignore node))
+  (make-lbox :x 0 :y 0 :w (img-w decoded) :h (img-h decoded)
+             :style cs :kind :block :img decoded))
 
 (defun make-pseudo-node (content)
   "A synthetic inline element carrying generated CONTENT as its only text child,
@@ -755,6 +776,21 @@ whose display is an inline/inline-block kind (an atomic inline)."
                         '("inline" "inline-block" "inline-table" "inline-flex")
                         :test #'string=)))))
 
+(defun block-has-replaced-inline-p (lb)
+  "True when LB is a background-less block whose direct content is a line box
+carrying a replaced atomic inline (an <img>/<object> image box).  Per CSS
+appendix E such inline content paints in the inline phase — above sibling
+floats — so the block must be ordered with the inlines, not the blocks (Acid2's
+#eyes-a object must paint over the #eyes-b float to fuse the eye tiles)."
+  (and (eq (lbox-kind lb) :block)
+       (let ((cs (lbox-style lb)))
+         (and cs (not (css:cstyle-background cs)) (not (css:cstyle-bg-image cs))))
+       (some (lambda (c)
+               (and (lbox-p c) (eq (lbox-kind c) :line)
+                    (some (lambda (it) (and (lbox-p it) (lbox-img it)))
+                          (lbox-children c))))
+             (lbox-children lb))))
+
 (defun paint-children (cv children)
   "Paint CHILDREN in a simplified CSS stacking order (appendix E): negative
 z-index positioned boxes; then, among IN-FLOW content, block-level boxes, then
@@ -770,6 +806,7 @@ z-index keeps tree order (stable)."
       (dolist (c flow)
         (cond ((lbox-float-p c)        (push c floats))
               ((lbox-inline-level-p c) (push c inlines))
+              ((block-has-replaced-inline-p c) (push c inlines))
               (t                       (push c blocks))))
       (let ((neg    (stable-sort (remove-if-not (lambda (c) (minusp (lbox-z c))) (copy-list pos))
                                  #'< :key #'lbox-z))

@@ -47,8 +47,13 @@ def main():
     wc = classify(np.asarray(Image.open(WEFT).convert("RGB"))); WH, WW = wc.shape
     nonwhite = rc != 0
     best = (-1.0, 0, 0)
-    for oy in range(0, min(380, WH - H), 2):
-        for ox in range(0, min(380, WW - W), 2):
+    # Slide the reference across the full valid range of the render canvas.
+    # (The old 380px cap was smaller than the canvas's valid offset range, so a
+    # geometrically-correct-but-lower face could fall outside the window and be
+    # mis-scored; search the whole range so the metric tracks the face wherever
+    # layout places it.)
+    for oy in range(0, WH - H, 2):
+        for ox in range(0, WW - W, 2):
             win = wc[oy:oy + H, ox:ox + W]
             ink = ((win == rc) & nonwhite).sum() / max(1, nonwhite.sum())
             if ink > best[0]:

@@ -53,6 +53,70 @@
 (defparameter *rawtext-els* '("style" "xmp" "iframe" "noembed" "noframes" "script"))
 (defparameter *rcdata-els* '("title" "textarea"))
 
+;; HTML5 "quirks mode" DOCTYPE determination (13.2.6.1).  Public identifiers
+;; that force quirks regardless of system id — exact matches and prefixes.
+(defparameter *quirks-public-exact*
+  '("-//w3o//dtd w3 html strict 3.0//en//"
+    "-/w3c/dtd html 4.0 transitional/en" "html"))
+(defparameter *quirks-public-prefixes*
+  '("+//silmaril//dtd html pro v0r11 19970101//"
+    "-//as//dtd html 3.0 aswedit + extensions//"
+    "-//advasoft ltd//dtd html 3.0 aswedit + extensions//"
+    "-//ietf//dtd html 2.0 level 1//" "-//ietf//dtd html 2.0 level 2//"
+    "-//ietf//dtd html 2.0 strict level 1//" "-//ietf//dtd html 2.0 strict level 2//"
+    "-//ietf//dtd html 2.0 strict//" "-//ietf//dtd html 2.0//"
+    "-//ietf//dtd html 2.1e//" "-//ietf//dtd html 3.0//"
+    "-//ietf//dtd html 3.2 final//" "-//ietf//dtd html 3.2//"
+    "-//ietf//dtd html 3//" "-//ietf//dtd html level 0//"
+    "-//ietf//dtd html level 1//" "-//ietf//dtd html level 2//"
+    "-//ietf//dtd html level 3//" "-//ietf//dtd html strict level 0//"
+    "-//ietf//dtd html strict level 1//" "-//ietf//dtd html strict level 2//"
+    "-//ietf//dtd html strict level 3//" "-//ietf//dtd html strict//"
+    "-//ietf//dtd html//" "-//metrius//dtd metrius presentational//"
+    "-//microsoft//dtd internet explorer 2.0 html strict//"
+    "-//microsoft//dtd internet explorer 2.0 html//"
+    "-//microsoft//dtd internet explorer 2.0 tables//"
+    "-//microsoft//dtd internet explorer 3.0 html strict//"
+    "-//microsoft//dtd internet explorer 3.0 html//"
+    "-//microsoft//dtd internet explorer 3.0 tables//"
+    "-//netscape comm. corp.//dtd html//"
+    "-//netscape comm. corp.//dtd strict html//"
+    "-//o'reilly and associates//dtd html 2.0//"
+    "-//o'reilly and associates//dtd html extended 1.0//"
+    "-//o'reilly and associates//dtd html extended relaxed 1.0//"
+    "-//sq//dtd html 2.0 hotmetal + extensions//"
+    "-//softquad software//dtd hotmetal pro 6.0::19990601::extensions to html 4.0//"
+    "-//softquad//dtd hotmetal pro 4.0::19971010::extensions to html 4.0//"
+    "-//spyglass//dtd html 2.0 extended//"
+    "-//sun microsystems corp.//dtd hotjava html//"
+    "-//sun microsystems corp.//dtd hotjava strict html//"
+    "-//w3c//dtd html 3 1995-03-24//" "-//w3c//dtd html 3.2 draft//"
+    "-//w3c//dtd html 3.2 final//" "-//w3c//dtd html 3.2//"
+    "-//w3c//dtd html 3.2s draft//" "-//w3c//dtd html 4.0 frameset//"
+    "-//w3c//dtd html 4.0 transitional//" "-//w3c//dtd html experimental 19960712//"
+    "-//w3c//dtd html experimental 970421//" "-//w3c//dtd w3 html//"
+    "-//w3o//dtd w3 html 3.0//" "-//webtechs//dtd mozilla html 2.0//"
+    "-//webtechs//dtd mozilla html//"))
+;; These two are quirks only when the system identifier is absent.
+(defparameter *quirks-public-prefixes-no-system*
+  '("-//w3c//dtd html 4.01 frameset//" "-//w3c//dtd html 4.01 transitional//"))
+
+(defun ci-prefix-p (prefix s)
+  (and s (>= (length s) (length prefix))
+       (string-equal prefix (subseq s 0 (length prefix)))))
+
+(defun doctype-quirks-p (name public system force)
+  "True when a DOCTYPE puts the document in (full) quirks mode (HTML5 13.2.6.1).
+Limited-quirks counts as NON-quirks here — only full quirks suppresses e.g.
+<table> closing an open <p>."
+  (or force
+      (not (equal name "html"))
+      (and public (member public *quirks-public-exact* :test #'string-equal))
+      (and public (some (lambda (p) (ci-prefix-p p public)) *quirks-public-prefixes*))
+      (and system (string-equal system "http://www.ibm.com/data/dtd/v11/ibmxhtml1-transitional.dtd"))
+      (and (null system) public
+           (some (lambda (p) (ci-prefix-p p public)) *quirks-public-prefixes-no-system*))))
+
 (defun parse-html (input)
   "Parse an HTML string into a DOM document."
   (multiple-value-bind (tklist src) (tokenize input)
@@ -450,10 +514,11 @@
              (cond ((eq ty :doctype)
                     (dom-append doc (%dnode :kind :doctype :name (tok-name tk)
                                             :public (tok-public tk) :system (tok-system tk)))
-                    ;; non-quirks only for a clean <!DOCTYPE html> (no forced quirks, no ids)
-                    (when (and (equal (tok-name tk) "html") (not (tok-force-quirks tk))
-                               (null (tok-public tk)) (null (tok-system tk)))
-                      (setf quirks nil))
+                    ;; Quirks per HTML5 13.2.6.1: standards (non-quirks) for a clean
+                    ;; <!DOCTYPE html> AND for known standards public ids such as
+                    ;; Acid2's "-//W3C//DTD HTML 4.01//EN" (Strict, no system id).
+                    (setf quirks (doctype-quirks-p (tok-name tk) (tok-public tk)
+                                                   (tok-system tk) (tok-force-quirks tk)))
                     (switch :before-html))
                    ((eq ty :comment) (dom-append doc (make-comment (tok-data tk))))
                    ((ws-char-tok-p tk))

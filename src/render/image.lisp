@@ -44,7 +44,7 @@
 (defun png-decode (bytes)
   "Decode a PNG byte vector to an IMG (RGBA), or NIL."
   (when (and (>= (length bytes) 8) (= (aref bytes 0) 137) (= (aref bytes 1) 80))
-    (let ((i 8) (n (length bytes)) w h depth ctype
+    (let ((i 8) (n (length bytes)) w h depth ctype (interlace 0)
           (idat (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
           (plte nil) (trns nil))
       (loop while (< (+ i 8) n) do
@@ -52,7 +52,8 @@
                (ds (+ i 8)))
           (cond
             ((string= type "IHDR")
-             (setf w (be32 bytes ds) h (be32 bytes (+ ds 4)) depth (aref bytes (+ ds 8)) ctype (aref bytes (+ ds 9))))
+             (setf w (be32 bytes ds) h (be32 bytes (+ ds 4)) depth (aref bytes (+ ds 8)) ctype (aref bytes (+ ds 9))
+                   interlace (aref bytes (+ ds 12))))
             ((string= type "PLTE") (setf plte (subseq bytes ds (+ ds len))))
             ((string= type "tRNS") (setf trns (subseq bytes ds (+ ds len))))
             ((string= type "IDAT") (loop for k from ds below (+ ds len) do (vector-push-extend (aref bytes k) idat)))
@@ -63,37 +64,79 @@
         ;; vector unchanged, so build a fresh simple-array of the bytes.
         (png-finish w h depth ctype
                     (replace (make-array (length idat) :element-type '(unsigned-byte 8)) idat)
-                    plte trns)))))
+                    plte trns interlace)))))
 
 (defun only-supported-p (depth ctype) (and (= depth 8) (member ctype '(0 2 3 4 6))))
 
 (defun channels (ctype) (ecase ctype (0 1) (2 3) (3 1) (4 2) (6 4)))
 
-(defun png-finish (w h depth ctype idat plte trns)
+(defun png-unfilter (raw ri w h ch)
+  "Unfilter H scanlines of W*CH bytes from RAW starting at index RI (each scanline
+prefixed by a PNG filter-type byte).  Returns (values rows next-ri); ROWS is a
+fresh (W*H*CH) octet vector of reconstructed samples."
+  (let* ((stride (* w ch)) (rows (make-array (* h stride) :element-type '(unsigned-byte 8))) (rp 0))
+    (dotimes (y h)
+      (let ((ft (aref raw ri))) (incf ri)
+        (dotimes (xb stride)
+          (let* ((rawb (aref raw ri))
+                 (a (if (>= xb ch) (aref rows (- rp ch)) 0))
+                 (b (if (> y 0) (aref rows (- rp stride)) 0))
+                 (c (if (and (> y 0) (>= xb ch)) (aref rows (- rp stride ch)) 0))
+                 (val (ecase ft
+                        (0 rawb) (1 (+ rawb a)) (2 (+ rawb b)) (3 (+ rawb (floor (+ a b) 2)))
+                        (4 (+ rawb (paeth a b c))))))
+            (setf (aref rows rp) (logand val #xff)) (incf rp) (incf ri)))))
+    (values rows ri)))
+
+;; Adam7 interlace passes: (x-start y-start x-step y-step).
+(defparameter +adam7+ '((0 0 8 8) (4 0 8 8) (0 4 4 8) (2 0 4 4) (0 2 2 4) (1 0 2 2) (0 1 1 2)))
+
+(defun png-deinterlace (raw w h ch)
+  "Reconstruct a non-interlaced W*H*CH sample buffer from Adam7-interlaced RAW."
+  (let ((rows (make-array (* w h ch) :element-type '(unsigned-byte 8))) (ri 0) (stride (* w ch)))
+    (dolist (pass +adam7+ rows)
+      (destructuring-bind (sx sy dx dy) pass
+        (let ((pw (ceiling (max 0 (- w sx)) dx)) (ph (ceiling (max 0 (- h sy)) dy)))
+          (when (and (plusp pw) (plusp ph))
+            (multiple-value-bind (prows nri) (png-unfilter raw ri pw ph ch)
+              (setf ri nri)
+              (let ((pstride (* pw ch)))
+                (dotimes (py ph)
+                  (dotimes (px pw)
+                    (let ((srcp (+ (* py pstride) (* px ch)))
+                          (dstp (+ (* (+ sy (* py dy)) stride) (* (+ sx (* px dx)) ch))))
+                      (dotimes (k ch) (setf (aref rows (+ dstp k)) (aref prows (+ srcp k)))))))))))))))
+
+(defun png-finish (w h depth ctype idat plte trns interlace)
   (declare (ignore depth))
   (let* ((ch (channels ctype)) (stride (* w ch))
          (raw (handler-case (chipz:decompress nil 'chipz:zlib idat) (error () nil))))
-    (when (and raw (>= (length raw) (* h (1+ stride))))
-      (let ((rows (make-array (* h stride) :element-type '(unsigned-byte 8))) (rp 0) (ri 0))
-        ;; unfilter
-        (dotimes (y h)
-          (let ((ft (aref raw ri))) (incf ri)
-            (dotimes (xb stride)
-              (let* ((rawb (aref raw ri))
-                     (a (if (>= xb ch) (aref rows (- rp ch)) 0))
-                     (b (if (> y 0) (aref rows (- rp stride)) 0))
-                     (c (if (and (> y 0) (>= xb ch)) (aref rows (- rp stride ch)) 0))
-                     (val (ecase ft
-                            (0 rawb) (1 (+ rawb a)) (2 (+ rawb b)) (3 (+ rawb (floor (+ a b) 2)))
-                            (4 (+ rawb (paeth a b c))))))
-                (setf (aref rows rp) (logand val #xff)) (incf rp) (incf ri)))))
+    (when (and raw (if (= interlace 1)
+                       (plusp (length raw))
+                       (>= (length raw) (* h (1+ stride)))))
+      (let ((rows (if (= interlace 1)
+                      (png-deinterlace raw w h ch)
+                      (png-unfilter raw 0 w h ch))))
         ;; expand to RGBA
         (let ((rgba (make-array (* w h 4) :element-type '(unsigned-byte 8))))
           (dotimes (p (* w h))
             (let ((s (* p ch)) (d (* p 4)))
               (ecase ctype
-                (0 (let ((g (aref rows s))) (setf (aref rgba d) g (aref rgba (+ d 1)) g (aref rgba (+ d 2)) g (aref rgba (+ d 3)) 255)))
-                (2 (setf (aref rgba d) (aref rows s) (aref rgba (+ d 1)) (aref rows (+ s 1)) (aref rgba (+ d 2)) (aref rows (+ s 2)) (aref rgba (+ d 3)) 255))
+                ;; tRNS for grayscale (ctype 0) is a single 16-bit key sample;
+                ;; a pixel equal to it is fully transparent (depth 8 -> low byte).
+                (0 (let ((g (aref rows s)))
+                     (setf (aref rgba d) g (aref rgba (+ d 1)) g (aref rgba (+ d 2)) g
+                           (aref rgba (+ d 3))
+                           (if (and trns (>= (length trns) 2) (= g (aref trns 1))) 0 255))))
+                ;; tRNS for truecolor (ctype 2) is an R,G,B key (16-bit each);
+                ;; a pixel matching it is fully transparent (Acid2's eye tiles use
+                ;; a black key so their two opposite pixels read through).
+                (2 (let ((r (aref rows s)) (g (aref rows (+ s 1))) (bl (aref rows (+ s 2))))
+                     (setf (aref rgba d) r (aref rgba (+ d 1)) g (aref rgba (+ d 2)) bl
+                           (aref rgba (+ d 3))
+                           (if (and trns (>= (length trns) 6)
+                                    (= r (aref trns 1)) (= g (aref trns 3)) (= bl (aref trns 5)))
+                               0 255))))
                 (3 (let* ((idx (aref rows s)) (pi3 (* idx 3)))
                      (setf (aref rgba d) (if plte (aref plte pi3) 0)
                            (aref rgba (+ d 1)) (if plte (aref plte (+ pi3 1)) 0)

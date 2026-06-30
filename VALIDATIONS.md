@@ -72,11 +72,21 @@ caught and fixed rather than papered over.
   placement, metric-driven wrapping/alignment — is still author-eyeballed, not
   pixel-diffed.
 
-What would make these strong: a reference-image diff harness (render the same
-page in a real browser, compare pixels with tolerance — WPT reftests do this).
-We do not have it. Until we do, **"the showcase looks like a web page" is not
-proof the layout engine is correct** — only that it is plausible on inputs we
-chose.
+**This gap is now partly closed.** We built the reference-image diff harness we
+said we lacked — two independent pixel/geometry oracles against a **real browser**
+(Chromium via Playwright), for Acid2:
+- `inspect/acid2-reftest.py` — colour-class agreement of weft's rendered face vs
+  the canonical reference smiley, auto-aligned (slide-and-match).
+- `inspect/acid2-layout-dump.lisp` + `inspect/acid2-layout-diff.py` — a
+  **per-element** diff: every `.picture` descendant's box (x,y,w,h) vs Chromium's
+  ground truth (`acid2-browser-layout.json`), so a regression names the element
+  and the delta. This generalizes to a layout reftest for **any** page.
+On Acid2 these reached **99.9% pixel match** (the 0.1% residual is the reference
+browser's edge anti-aliasing, which weft's hard-edged fill can't bit-match — an
+asymptote, not a defect). This is the first *independent, exact* validation of
+weft's layout+paint. The caveat stands for everything ELSE: general layout
+correctness on arbitrary pages is still author-eyeballed — but the tooling to
+diff any page against a real browser now exists.
 
 ## Not validated / known limits — stated plainly
 
@@ -85,16 +95,23 @@ chose.
 - **Acid3 cannot run** — it is ~99% JavaScript (183 `createElement`, 14
   `<script>` blocks). weft renders only its static pre-script state. See the Acid
   gate below.
-- **Acid2 does not pass.** Two of its prerequisites now exist and are verified in
-  isolation — **`::before`/`::after` generated content** (inline *and* empty-
-  content `display:block` border boxes) and **data-URI image decoding** (a real
-  PNG decoder: filters 0–4, colour types 0/2/3/4/6, alpha). With those plus a
-  latent crash fix, the Acid gate's ink coverage went **~0% → ~16%**: the face
-  *parts* now decode and paint. What remains is the hard, coupled part — pixel-
-  exact `position:fixed`/absolute placement, float shrink-wrap, CSS2.1 margin
-  collapsing, paint/stacking order, and `overflow:hidden` clipping — without
-  which the parts do not assemble into the smiley. **16% ink is parts-on-canvas,
-  not a face.** We will only claim a pass when the render matches the reference.
+- **Acid2 renders at 99.9% pixel-match vs a real browser** (up from ~0%). Driven
+  to convergence by an objective oracle (the per-element + colour-class diffs
+  above), the face assembles correctly: crown, two green-pupil eyes, black
+  diamond nose, curved smile, chin — colour-class agreement **99.9%**, stray-red
+  (Acid2's error colour) **0%**. Getting here built and verified a long list of
+  *general* engine features, each oracle-gated and re-checked in the canonical
+  tree: generated content, data-URI/element/**fixed**-attachment background
+  images (+ PNG tRNS/Adam7), `<object>` images, the full positioning + viewport +
+  scroll-to-anchor model, CSS2.1 margin collapsing, percentage sizing, a complete
+  per-edge/mitered **border model**, appendix-E paint order, anonymous table rows
+  + shrink-to-fit, line-box metrics from real fonts, **standards/quirks-mode
+  DOCTYPE** determination, and several CSS parser/selector conformance fixes.
+  Honest limits: the remaining 0.1% is edge anti-aliasing (asymptote); the match
+  is against the reference *image* (colour classes), not a byte-identical
+  framebuffer; and Acid2's interactive `:hover` sub-tests are not exercised
+  (static render only). We do not call it an official "pass" — we call it
+  **99.9% pixel-match, independently measured**.
 - **No CSS grid, no `inline-block` baseline alignment.** Text is real now
   (scribe: anti-aliased, font-metric-driven advances/wrapping); remaining text
   gaps are **fake-bold** (stem-darkening, no bold font vendored) and **per-line
@@ -115,22 +132,20 @@ chose.
 ## The Acid tests as a permanent gate
 
 `inspect/acid-test.lisp` (in `weft/test`) renders the vendored `acid2.html` and
-`acid3.html` on every run. It is **not** a pass/fail conformance claim — weft
-fails Acid2 and cannot run Acid3. It is two honest things:
+`acid3.html` on every run as a **robustness guard** — the build fails if these
+real, gnarly pages ever *error*. Conformance is measured separately and honestly:
 
-1. a **robustness guard** — the build fails if rendering these real, gnarly pages
-   ever *errors*;
-2. a **progress tracker** — it prints each render's **ink coverage** (fraction of
-   painted pixels). Acid2 sits near 0% today; as we implement generated content
-   and data-URI images, that number should climb toward the smiley. The PNGs are
-   written next to the vendored sources so the visual progress is inspectable.
-
-When Acid2's ink coverage climbs and the render starts to resemble the reference
-smiley (`acid2-reference.html`), *that* will be real evidence — and only then will
-we claim it.
+- **Acid2** — `inspect/acid2-reftest.py` (colour-class match vs the reference
+  smiley) and `inspect/acid2-layout-diff.py` (per-element box diff vs Chromium
+  ground truth). Currently **99.9% pixel-match, 0% stray red** (the 0.1% is edge
+  AA). The grind from ~0% → 99.9% is recorded commit-by-commit (each subject
+  carries its `face-ink`/`face-geom` delta). Re-run: render via
+  `(weft.acid.test:run)`, then the two scripts.
+- **Acid3** — still ~99% JavaScript; weft renders only its static pre-script
+  state until the JS engine (P4) lands. Not runnable yet.
 
 ---
 
-*Last updated alongside the layout-hardening work. If a number here disagrees
-with `asdf:test-system`, the test system is right and this file is stale — fix
-this file.*
+*Last updated alongside the Acid2 grind (→ 99.9% pixel-match). If a number here
+disagrees with `asdf:test-system` or the `inspect/acid2-*` oracles, those are
+right and this file is stale — fix this file.*

@@ -32,9 +32,15 @@ constraints) → paint (text, borders, gradients) → PNG**.
   · selector engine (35/35 vs soupsieve, specificity, querySelector) · cascade +
   computed style.
 - **P3** layout + paint: normal flow, inline formatting (styled runs, bold,
-  links, lists), floats + clear, flexbox (grow/justify/align/gap), tables,
-  position (relative/absolute/fixed), max/min-width + margin:auto, linear-
-  gradient backgrounds; a software rasterizer + own PNG encoder.
+  links, lists), floats + clear, flexbox (grow/justify/align/gap), tables
+  (anonymous rows, shrink-to-fit), position (relative/absolute/fixed) + viewport
+  + scroll-to-anchor, margin collapsing, percentage sizing, a per-edge/mitered
+  border model, generated content, data-URI/element/fixed background images,
+  standards/quirks DOCTYPE; real text via **[scribe](../scribe)** (anti-aliased
+  OpenType) with a 7×13 bitmap fallback; a software rasterizer + own PNG encoder.
+- **Acid2: 99.9% pixel-match** vs a real browser (Chromium), measured by an
+  objective per-element + colour-class diff (`inspect/acid2-*`). The remaining
+  0.1% is edge anti-aliasing. See [VALIDATIONS.md](VALIDATIONS.md).
 
 Run it: `sbcl --script demo/render-url.lisp <url> out.png 900`  (renders a live
 page) or `demo/reader.lisp` / `demo/browse.lisp` for text views.

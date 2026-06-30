@@ -109,6 +109,22 @@
                        (t num)))   ; treat unknown abs units as px-ish
                nil))))))
 
+(defun line-height-multiplier (value font-size)
+  "Parse a line-height VALUE into a multiplier of FONT-SIZE (weft stores
+line-height as a number that LAYOUT multiplies by font-size).  A bare <number>
+IS the multiplier; `normal` -> 1.2; a <percentage> -> its fraction; a <length>
+-> length/font-size (CSS 2.1 10.8.1).  Returns NIL when unparseable."
+  (let ((tt (string-downcase (string-trim '(#\Space) value))))
+    (cond ((string= tt "normal") 1.2)
+          ((and (plusp (length tt)) (char= (char tt (1- (length tt))) #\%))
+           (let ((n (ignore-errors (read-from-string (subseq tt 0 (1- (length tt)))))))
+             (when (realp n) (/ (float n) 100.0))))
+          (t (let ((n (ignore-errors (let ((*read-eval* nil)) (read-from-string tt)))))
+               (if (realp n)
+                   (float n)
+                   (let ((px (resolve-len tt font-size)))
+                     (when (and (numberp px) (plusp font-size)) (/ px font-size)))))))))
+
 (defun parse-size (text font-size auto-ok)
   "Parse a width/height value -> px number | :auto | (:percent N) | NIL."
   (let ((tt (string-downcase (string-trim '(#\Space) text))))
@@ -231,8 +247,8 @@ Ignores the system-font keywords (caption/icon/...)."
                                          (when (numberp p) (setf (cstyle-font-size cs) (* base (/ p 100.0))))))
                   (t (let ((px (resolve-len size-s base))) (when px (setf (cstyle-font-size cs) px)))))
             (when (and lh-s (plusp (length lh-s)))
-              (let ((n (ignore-errors (let ((*read-eval* nil)) (read-from-string lh-s)))))
-                (when (numberp n) (setf (cstyle-line-height cs) (float n)))))))))))
+              (let ((m (line-height-multiplier lh-s (cstyle-font-size cs))))
+                (when m (setf (cstyle-line-height cs) m))))))))))
 
 (defun split-ws (s)
   "Split S on runs of ASCII whitespace."
@@ -293,7 +309,7 @@ Ignores the system-font keywords (caption/icon/...)."
          (setf (cstyle-font-weight cs)
                (cond ((string-equal value "bold") 700) ((string-equal value "normal") 400)
                      ((ignore-errors (parse-integer (string-trim '(#\Space) value)))) (t 400))))
-        ((string= prop "line-height") (let ((n (ignore-errors (read-from-string value)))) (when (numberp n) (setf (cstyle-line-height cs) (float n)))))
+        ((string= prop "line-height") (let ((m (line-height-multiplier value (cstyle-font-size cs)))) (when m (setf (cstyle-line-height cs) m))))
         ((string= prop "text-align") (setf (cstyle-text-align cs) (string-downcase (string-trim '(#\Space) value))))
         ((member prop '("text-decoration" "text-decoration-line") :test #'string=)
          (let ((v (parse-value "text-decoration" value))) (when (listp v) (setf (cstyle-text-decoration cs) v))))

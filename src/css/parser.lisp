@@ -10,6 +10,20 @@
 (defstruct css-rule selector decls)        ; selector: string; decls: list of (prop value . important)
 (defstruct css-decl prop value important)
 
+(defun css-escape-ident (s)
+  "Re-escape an ident value when reconstructing source text.  The tokenizer
+already decoded CSS escapes (e.g. `\\.parser` -> the ident \".parser\"), which
+would otherwise be re-parsed as a `.parser` CLASS selector.  Backslash-escape any
+character that is not a valid CSS name char so the escape survives the round-trip
+and the selector parser sees it as a literal (type) identifier."
+  (if (every (lambda (c) (or (alphanumericp c) (member c '(#\- #\_)) (> (char-code c) 127))) s)
+      s
+      (with-output-to-string (o)
+        (loop for c across s do
+          (if (or (alphanumericp c) (member c '(#\- #\_)) (> (char-code c) 127))
+              (write-char c o)
+              (progn (write-char #\\ o) (write-char c o)))))))
+
 (defun toks-text (toks start end)
   "Reconstruct source-ish text from token range [start,end)."
   (with-output-to-string (o)
@@ -17,7 +31,7 @@
           for tk = (aref toks k)
           do (case (ctok-type tk)
                (:ws (write-char #\Space o))
-               (:ident (write-string (ctok-value tk) o))
+               (:ident (write-string (css-escape-ident (ctok-value tk)) o))
                (:function (format o "~a(" (ctok-value tk)))
                (:hash (format o "#~a" (ctok-value tk)))
                (:string (format o "\"~a\"" (ctok-value tk)))

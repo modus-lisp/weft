@@ -34,12 +34,27 @@
                            ((char= c #\Newline) (return))   ; bad string
                            (t (write-char c b) (incf i)))))
                  (emit :string (get-output-stream-string b))))
+             (consume-escape (b)
+               ;; I is at a backslash.  CSS: `\` + 1-6 hex digits (+ optional one
+               ;; trailing whitespace) is a hex escape decoded to that code point;
+               ;; otherwise the next char is taken literally.  Acid2's `m\argin`
+               ;; is thus "m"+U+000A+"rgin" (NOT "margin") -> an unknown property.
+               (incf i)
+               (cond ((>= i n) nil)
+                     ((digit-char-p (char s i) 16)
+                      (let ((start i))
+                        (loop while (and (< i n) (< (- i start) 6) (digit-char-p (char s i) 16)) do (incf i))
+                        (let ((code (parse-integer s :start start :end i :radix 16)))
+                          (when (and (< i n) (ws-p (char s i))) (incf i))
+                          (write-char (if (or (zerop code) (> code #x10FFFF)) (code-char #xFFFD)
+                                          (code-char code)) b))))
+                     (t (write-char (char s i) b) (incf i))))
              (consume-name ()
                (let ((b (make-string-output-stream)))
                  (loop while (and (< i n) (or (name-p (char s i))
                                               (and (char= (char s i) #\\) (< (1+ i) n)))) do
                    (if (char= (char s i) #\\)
-                       (progn (incf i) (when (< i n) (write-char (char s i) b) (incf i)))
+                       (consume-escape b)
                        (progn (write-char (char s i) b) (incf i))))
                  (get-output-stream-string b)))
              (number-start-p ()

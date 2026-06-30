@@ -393,7 +393,15 @@ Ignores the system-font keywords (caption/icon/...)."
         ((string= prop "border-left-style") (when (border-style-token-p value) (setf (cstyle-border-left-style cs) (string-downcase (string-trim '(#\Space) value)))))
         ((member prop '("border" "border-top" "border-bottom" "border-left" "border-right") :test #'string=)
          (apply-border cs prop value fs))
-        ((string= prop "border-width") (let ((v (len))) (when v (setf (cstyle-border-top-width cs) v (cstyle-border-right-width cs) v (cstyle-border-bottom-width cs) v (cstyle-border-left-width cs) v))))))))
+        ((string= prop "border-width")
+         ;; 1-4 value box shorthand (e.g. Acid2's `border-width: 0 2em`); each
+         ;; value is a length or a thin/medium/thick keyword.
+         (let ((vals (mapcar (lambda (tk) (resolve-border-width-token tk fs))
+                             (split-tokens (string-trim '(#\Space) value)))))
+           (when (and vals (every #'numberp vals))
+             (destructuring-bind (&optional (a 0.0) (b a) (c a) (d b)) vals
+               (setf (cstyle-border-top-width cs) a (cstyle-border-right-width cs) b
+                     (cstyle-border-bottom-width cs) c (cstyle-border-left-width cs) d)))))))))
 
 (defun first-token (s) (let ((p (position #\Space (string-trim '(#\Space) s)))) (if p (subseq (string-trim '(#\Space) s) 0 p) (string-trim '(#\Space) s))))
 
@@ -473,6 +481,13 @@ Invalid/unparseable components are left as NIL (= fall back to BORDER-COLOR)."
     (when vals
       (destructuring-bind (&optional a (b a) (c a) (d b)) vals
         (funcall top a cs) (funcall right b cs) (funcall bottom c cs) (funcall left d cs)))))
+
+(defun resolve-border-width-token (tok fs)
+  "A single border-width value: thin/medium/thick keyword or a length."
+  (cond ((string-equal tok "thin") 1.0)
+        ((string-equal tok "medium") 3.0)
+        ((string-equal tok "thick") 5.0)
+        (t (resolve-len tok fs))))
 
 (defun apply-border (cs prop value fs)
   (let ((w 0.0) (col nil) (sty nil))

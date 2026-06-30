@@ -261,9 +261,16 @@ Returns (values lbox advance-height)."
            (spec-w (css::resolve-size (css:cstyle-width cs) avail-w))      ; px or nil
            (max-w (css::resolve-size (css:cstyle-max-width cs) avail-w))
            (min-w (css::resolve-size (css:cstyle-min-width cs) avail-w))
+           ;; an absolutely-positioned / fixed box with width:auto is sized
+           ;; shrink-to-fit (CSS 10.3.7): min(available, preferred max-content).
+           (shrink (and (null spec-w)
+                        (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)))
            ;; border-box width of this element
-           (width (let ((bw (if (numberp spec-w) (if border-box spec-w (+ spec-w pad-bord))
-                                (- avail-w ml mr))))
+           (width (let ((bw (cond ((numberp spec-w) (if border-box spec-w (+ spec-w pad-bord)))
+                                  (shrink (min (- avail-w ml mr)
+                                               (+ (pref-content-width node styles (- avail-w ml mr))
+                                                  pad-bord)))
+                                  (t (- avail-w ml mr)))))
                     (when (numberp max-w) (setf bw (min bw (if border-box max-w (+ max-w pad-bord)))))
                     (when (numberp min-w) (setf bw (max bw (if border-box min-w (+ min-w pad-bord)))))
                     (max 0 bw)))
@@ -473,16 +480,55 @@ Returns (values cell-lboxes content-height)."
           (incf y rowh)))
       (values boxes (- y cy)))))
 
+(defun pref-inline-width (node styles cs content-w)
+  "Max-content width of NODE's inline content: word + atomic-box widths summed
+on a single (unwrapped) line."
+  (let ((words (collect-words node styles cs content-w)) (w 0))
+    (dolist (wd words)
+      (incf w (+ (if (eq (car wd) :atomic) (lbox-w (cdr wd)) (word-w (car wd))) (space-w))))
+    w))
+
+(defun pref-content-width (node styles content-w &optional (depth 0))
+  "Shrink-to-fit preferred (max-content) CONTENT width of element NODE: the
+widest of its block/float children's border-box widths, else its inline
+max-content width.  Bounded by DEPTH and CONTENT-W so it stays cheap/resilient."
+  (let ((cs (st styles node)))
+    (if (or (> depth 6) (not (eq (h:dnode-kind node) :element)) (null cs))
+        0
+        (let ((block-kids (remove-if-not (lambda (k) (or (block-level-p styles k) (float-p styles k)))
+                                         (child-elements node))))
+          (min content-w
+               (if block-kids
+                   (loop for k in block-kids
+                         maximize (pref-border-width k styles content-w (1+ depth)))
+                   (pref-inline-width node styles cs content-w)))))))
+
+(defun pref-border-width (node styles content-w depth)
+  "Preferred BORDER-box width (incl. margins) of NODE for shrink-to-fit sizing."
+  (let* ((cs (st styles node))
+         (w (and cs (css:cstyle-width cs))))
+    (if (null cs) 0
+        (+ (css:cstyle-margin-left cs) (css:cstyle-margin-right cs)
+           (css:cstyle-border-left-width cs) (css:cstyle-border-right-width cs)
+           (css:cstyle-padding-left cs) (css:cstyle-padding-right cs)
+           (if (numberp w) w (pref-content-width node styles content-w depth))))))
+
 (defun place-float (node styles cleft cright top content-w)
   "Position a floated NODE at the left/right edge within [CLEFT,CRIGHT], dropping
 below existing floats if it does not fit.  Records it in *FLOATS*; returns its lbox."
   (let* ((cs (st styles node))
          (side (if (string= (css:cstyle-float cs) "left") :left :right))
+         (ml (css:cstyle-margin-left cs)) (mr (css:cstyle-margin-right cs))
+         (extra (+ (css:cstyle-padding-left cs) (css:cstyle-padding-right cs)
+                   (css:cstyle-border-left-width cs) (css:cstyle-border-right-width cs)))
+         ;; AVAIL-W is the available content width handed to LAYOUT-NODE; for an
+         ;; auto-width float the box fills (avail - margins), so to shrink-wrap
+         ;; we size it to the float's preferred content width + its own
+         ;; padding/border/margins (CSS 10.3.5 shrink-to-fit), capped at content.
          (avail-w (let ((w (css:cstyle-width cs)))
-                    (if (numberp w) (+ w (css:cstyle-margin-left cs) (css:cstyle-margin-right cs)
-                                       (css:cstyle-padding-left cs) (css:cstyle-padding-right cs)
-                                       (css:cstyle-border-left-width cs) (css:cstyle-border-right-width cs))
-                        (min content-w 240))))
+                    (if (numberp w) (+ w ml mr extra)
+                        (min content-w
+                             (max 0 (+ (pref-content-width node styles content-w) extra ml mr))))))
          (y top))
     (setf avail-w (min avail-w content-w))
     ;; drop to a band wide enough for the float

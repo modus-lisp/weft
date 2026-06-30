@@ -792,8 +792,9 @@ image paints nothing (the bg color shows through)."
          (dolist (it (lbox-children lb))
            (if (frag-p it)
                (let ((cs (frag-style it)))
-                 (draw-text cv (frag-text it) (round (frag-x it)) (round (+ (lbox-y lb) yoff))
+                 (draw-text-scribe cv (frag-text it) (round (frag-x it)) (round (+ (lbox-y lb) yoff))
                             (rgb (css:cstyle-color cs))
+                            (css:cstyle-font-size cs)
                             :bold (>= (css:cstyle-font-weight cs) 600)
                             :underline (member "underline" (css:cstyle-text-decoration cs) :test #'string=)))
                (paint-box cv it))))))))   ; atomic inline-block / img box

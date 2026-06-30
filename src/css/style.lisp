@@ -272,6 +272,18 @@ Ignores the system-font keywords (caption/icon/...)."
          (let ((grad (parse-linear-gradient value))
                (url (extract-css-url value))
                (tok (string-downcase (string-trim '(#\Space) (first-token value)))))
+           ;; CSS 2.1 14.2.1 / 4.2: a `background` (or `background-color`)
+           ;; declaration whose value carries two bare <color> tokens is invalid
+           ;; and the whole declaration must be dropped, leaving any earlier
+           ;; background intact (Acid2's `.parser { background: red pink; }` must
+           ;; NOT override the prior `background: yellow`, or the parser box shows
+           ;; the red error fill).  A url()/gradient background legitimately pairs
+           ;; one colour with other tokens, so only count bare colour tokens.
+           (when (and (not grad)
+                      (>= (count-if (lambda (tk) (resolve-color tk))
+                                    (remove "url" (css-background-tokens value) :test #'string=))
+                          2))
+             (return-from apply-decl))
            (cond (grad (setf (cstyle-bg-gradient cs) grad))
                  ;; `none`/`transparent` clear any background set by an earlier rule
                  ((member tok '("none" "transparent") :test #'string=)

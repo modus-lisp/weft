@@ -421,7 +421,13 @@ Returns (values lbox advance-height)."
                          (push (cons lb kcs) *abs-pending*))
                      (push lb children))))
                 ((float-p styles k)                                              ; float
-                 (let ((lb (place-float k styles cx (+ cx content-w) yy content-w)))
+                 ;; A float's top margin edge sits at the position the next in-flow
+                 ;; box would take: the preceding block's pending (collapsed) bottom
+                 ;; margin still separates them (floats don't collapse, but they are
+                 ;; placed AFTER that margin).  PREV-MB is preserved so it goes on to
+                 ;; collapse with the block following the float (CSS 2.1 9.5 / 8.3.1).
+                 (let* ((pend (if prev-mb (+ (max 0 (car prev-mb)) (min 0 (cdr prev-mb))) 0))
+                        (lb (place-float k styles cx (+ cx content-w) (+ yy pend) content-w)))
                    (when lb (push lb children))))
                 ((block-level-p styles k)
                  (flush-inline)

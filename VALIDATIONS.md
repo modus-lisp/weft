@@ -64,8 +64,13 @@ caught and fixed rather than papered over.
   pages were also written by the author, so they exercise what we already
   support. This is exactly the kind of evidence that produces self-delusion, and
   it is the single weakest claim in the project.
-- **Paint** (colors, borders, gradients, bitmap text). Same: looks right to the
-  eye, not diffed against a reference rendering.
+- **Paint** (colors, borders, gradients, text). Same: looks right to the eye,
+  not diffed against a reference rendering. Text is now rendered by **scribe**
+  (a pure-CL OpenType engine: real glyph outlines, shaping, anti-aliased
+  gamma-correct compositing) with weft's 7×13 bitmap as fallback; scribe has its
+  own differential oracle (FreeType/HarfBuzz) but weft's *use* of it — baseline
+  placement, metric-driven wrapping/alignment — is still author-eyeballed, not
+  pixel-diffed.
 
 What would make these strong: a reference-image diff harness (render the same
 page in a real browser, compare pixels with tolerance — WPT reftests do this).
@@ -90,8 +95,11 @@ chose.
   collapsing, paint/stacking order, and `overflow:hidden` clipping — without
   which the parts do not assemble into the smiley. **16% ink is parts-on-canvas,
   not a face.** We will only claim a pass when the render matches the reference.
-- **No CSS grid, no `inline-block` baseline alignment, no sub-pixel/anti-aliased
-  text** (fixed 7×13 bitmap font), no real font metrics, no `overflow` clipping.
+- **No CSS grid, no `inline-block` baseline alignment.** Text is real now
+  (scribe: anti-aliased, font-metric-driven advances/wrapping); remaining text
+  gaps are **fake-bold** (stem-darkening, no bold font vendored) and **per-line
+  mixed-font-size baseline sharing** (each inline size is centered in the line
+  box independently rather than on a common baseline — fine for uniform lines).
 - **URL: ~2.3% fail** — full UTS-46 IDNA mapping tables not implemented.
 - **Tree construction: 4 fail** — the deepest adoption-agency × table
   foster-parenting cases; 21 fragment-parsing cases skipped.

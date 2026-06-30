@@ -542,7 +542,12 @@ Returns (values lbox advance-height)."
           (when first-child-mt
             (setf mt-eff (collapse-margins mt first-child-mt)))
           (setf box-mneg (min mt mb min-cn))))
-      (let* ((content-final (cond ((numberp exp-h) (if border-box (- exp-h pad-bord) exp-h)) (t content-h)))
+      ;; A used content height is never negative (CSS 2.1 10.6.3): a self-
+      ;; collapsing last child with a contained negative bottom margin (Acid2's
+      ;; smile: strong margin-bottom:-1em inside em's top+bottom borders) drives
+      ;; CONTENT-H below zero — clamp so the border-bottom sits at the content top,
+      ;; not pulled up through it (gives em its 24px yellow-over-black mouth).
+      (let* ((content-final (cond ((numberp exp-h) (if border-box (- exp-h pad-bord) exp-h)) (t (max 0 content-h))))
              (box-h0 (+ content-final pt pb bt bb))
              ;; min/max-height as box-height floor/ceiling (CSS 2.1 10.7): a
              ;; percentage resolves against the CB height AVAIL-H when definite,

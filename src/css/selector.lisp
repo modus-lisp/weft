@@ -203,7 +203,22 @@ else (values NIL CX).  first-line/first-letter are treated as NIL (no box)."
                             (let ((q (char s i)) (start (1+ i)))
                               (incf i) (loop while (and (< i end) (not (char= (char s i) q))) do (incf i))
                               (prog1 (subseq s start i) (when (< i end) (incf i)))))
-                           (t (multiple-value-bind (v k) (read-ident s i end) (setf i k) v)))))
+                           ;; Unquoted value: read up to ']' (honoring '\' escapes),
+                           ;; then trim surrounding whitespace.  This keeps internal
+                           ;; spaces that came from a decoded escape (e.g. Acid2's
+                           ;; `[class=second\ two]`, whose backslash the tokenizer
+                           ;; already resolved into a literal space) — read-ident
+                           ;; alone would stop at that space and lose "two".
+                           (t (let ((out (make-string-output-stream)))
+                                (loop while (< i end)
+                                      for c = (char s i) do
+                                  (cond ((char= c #\\)
+                                         (when (< (1+ i) end) (write-char (char s (1+ i)) out))
+                                         (incf i 2))
+                                        ((char= c #\]) (return))
+                                        (t (write-char c out) (incf i))))
+                                (string-trim '(#\Space #\Tab #\Newline)
+                                             (get-output-stream-string out)))))))
             (loop while (and (< i end) (not (char= (char s i) #\]))) do (incf i))
             (values (list :attr name op val) (if (< i end) (1+ i) i)))))))
 

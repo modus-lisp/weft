@@ -172,11 +172,19 @@ else (values NIL CX).  first-line/first-letter are treated as NIL (no box)."
     (values (nreverse simples) i)))
 
 (defun read-ident (s i end)
-  (let ((start i))
-    (loop while (and (< i end) (let ((c (char s i)))
-                                 (or (alphanumericp c) (member c '(#\- #\_)) (> (char-code c) 127))))
-          do (incf i))
-    (values (subseq s start i) i)))
+  ;; CSS escapes: a backslash takes the next char literally (e.g. `second\ two`
+  ;; -> "second two").  Hex escapes (\20) are not decoded — only the literal form
+  ;; Acid2 needs.  Without this, `[class=second\ two]` would parse as "second".
+  (let ((out (make-string-output-stream)))
+    (loop while (< i end)
+          for c = (char s i) do
+          (cond ((char= c #\\)
+                 (when (< (1+ i) end) (write-char (char s (1+ i)) out))
+                 (incf i 2))
+                ((or (alphanumericp c) (member c '(#\- #\_)) (> (char-code c) 127))
+                 (write-char c out) (incf i))
+                (t (return))))
+    (values (get-output-stream-string out) i)))
 
 (defun read-attr (s i end)
   "I points just after '['.  Returns (values (:attr name op value) new-i)."

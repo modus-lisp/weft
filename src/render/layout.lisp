@@ -742,13 +742,50 @@ positioned boxes ordered by z-index.  Equal z-index keeps tree order (stable)."
                             :underline (member "underline" (css:cstyle-text-decoration cs) :test #'string=)))
                (paint-box cv it))))))))   ; atomic inline-block / img box
 
+(defun percent-decode (s)
+  "Decode %XX escapes in a URI component (leaves '+' literal — data: URIs are not
+form-encoded)."
+  (with-output-to-string (o)
+    (let ((i 0) (n (length s)))
+      (loop while (< i n) do
+        (let ((c (char s i)))
+          (if (and (char= c #\%) (< (+ i 2) n))
+              (let ((hex (ignore-errors (parse-integer s :start (1+ i) :end (+ i 3) :radix 16))))
+                (if hex (progn (write-char (code-char hex) o) (incf i 3))
+                    (progn (write-char c o) (incf i))))
+              (progn (write-char c o) (incf i))))))))
+
+(defun link-stylesheet-css (href)
+  "CSS text from a data: URI HREF of a <link rel=stylesheet>, else NIL.  Only
+data: URIs are honoured (no network); base64 and percent-encoded payloads both."
+  (when (and href (>= (length href) 5) (string-equal (subseq href 0 5) "data:"))
+    (let ((comma (position #\, href)))
+      (when comma
+        (let ((meta (subseq href 5 comma)) (payload (subseq href (1+ comma))))
+          (if (search ";base64" meta :test #'char-equal)
+              (handler-case (map 'string #'code-char (base64-decode payload)) (error () nil))
+              (percent-decode payload)))))))
+
+(defun link-rel-stylesheet-p (n)
+  (let ((rel (cdr (assoc "rel" (h:dnode-attrs n) :test #'string-equal))))
+    (and (string-equal (h:dnode-name n) "link") rel
+         (member "stylesheet" (css::split-ws (string-downcase rel)) :test #'string=))))
+
 (defun collect-stylesheets (doc)
+  "Concatenate author CSS in document order: <style> text and the CSS of
+<link rel=stylesheet> data: URIs (so the later source order of an appendix sheet
+wins cascade ties, as a browser would)."
   (with-output-to-string (o)
     (labels ((rec (n)
                (when (eq (h:dnode-kind n) :element)
-                 (when (string= (h:dnode-name n) "style")
-                   (loop for c across (h:dnode-children n) when (eq (h:dnode-kind c) :text)
-                         do (write-string (h:dnode-data c) o) (terpri o)))
+                 (cond
+                   ((string= (h:dnode-name n) "style")
+                    (loop for c across (h:dnode-children n) when (eq (h:dnode-kind c) :text)
+                          do (write-string (h:dnode-data c) o) (terpri o)))
+                   ((link-rel-stylesheet-p n)
+                    (let ((css (link-stylesheet-css
+                                (cdr (assoc "href" (h:dnode-attrs n) :test #'string-equal)))))
+                      (when css (write-string css o) (terpri o)))))
                  (loop for c across (h:dnode-children n) do (rec c)))))
       (loop for c across (h:dnode-children doc) do (rec c)))))
 

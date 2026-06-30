@@ -59,7 +59,11 @@
             ((string= type "IEND") (return)))
           (setf i (+ ds len 4))))   ; skip CRC
       (when (and w h depth ctype (only-supported-p depth ctype))
-        (png-finish w h depth ctype (coerce idat '(vector (unsigned-byte 8))) plte trns)))))
+        ;; chipz needs a SIMPLE array; COERCE leaves an adjustable/fill-pointer
+        ;; vector unchanged, so build a fresh simple-array of the bytes.
+        (png-finish w h depth ctype
+                    (replace (make-array (length idat) :element-type '(unsigned-byte 8)) idat)
+                    plte trns)))))
 
 (defun only-supported-p (depth ctype) (and (= depth 8) (member ctype '(0 2 3 4 6))))
 

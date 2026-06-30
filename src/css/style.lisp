@@ -90,7 +90,13 @@
                  (cond ((string= unit "px") num)
                        ((string= unit "em") (* num font-size))
                        ((string= unit "rem") (* num 16.0))
-                       ((string= unit "pt") (* num 1.3333))
+                       ;; absolute units at the CSS reference 96px/in
+                       ((string= unit "in") (* num 96.0))
+                       ((string= unit "cm") (* num 37.795))    ; 96/2.54
+                       ((string= unit "mm") (* num 3.7795))    ; 96/25.4
+                       ((string= unit "q")  (* num 0.94488))   ; 96/101.6 (quarter-mm)
+                       ((string= unit "pt") (* num 1.33333))   ; 96/72
+                       ((string= unit "pc") (* num 16.0))      ; 12pt
                        ((member unit '("" ) :test #'string=) num)
                        (t num)))   ; treat unknown abs units as px-ish
                nil))))))

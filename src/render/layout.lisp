@@ -594,6 +594,30 @@ the condition under which the canvas becomes a fixed, viewport-sized rectangle
 ;;; ---- paint --------------------------------------------------------------
 (defun rgb (color) (list (first color) (second color) (third color)))
 
+(defun lbox-positioned-p (lb)
+  "True when LB is a positioned (relative/absolute/fixed) block box — one that
+forms its own stacking level above in-flow siblings."
+  (let ((cs (and (eq (lbox-kind lb) :block) (lbox-style lb))))
+    (and cs (member (css:cstyle-position cs) '("relative" "absolute" "fixed") :test #'string=))))
+
+(defun lbox-z (lb)
+  (let ((cs (lbox-style lb))) (if cs (or (css:cstyle-z-index cs) 0) 0)))
+
+(defun paint-children (cv children)
+  "Paint CHILDREN in a simplified CSS stacking order (appendix E): negative
+z-index positioned boxes, then in-flow content in tree order, then >=0
+positioned boxes ordered by z-index.  Equal z-index keeps tree order (stable)."
+  (let ((flow '()) (pos '()))
+    (dolist (c children) (if (lbox-positioned-p c) (push c pos) (push c flow)))
+    (setf flow (nreverse flow) pos (nreverse pos))
+    (let ((neg    (stable-sort (remove-if-not (lambda (c) (minusp (lbox-z c))) (copy-list pos))
+                               #'< :key #'lbox-z))
+          (nonneg (stable-sort (remove-if     (lambda (c) (minusp (lbox-z c))) (copy-list pos))
+                               #'< :key #'lbox-z)))
+      (dolist (c neg)    (paint-box cv c))
+      (dolist (c flow)   (paint-box cv c))
+      (dolist (c nonneg) (paint-box cv c)))))
+
 (defun marker-glyph (kind) (cond ((string= kind "circle") "o") ((string= kind "square") "#")
                                  ((string= kind "none") "") (t "•")))
 
@@ -628,8 +652,8 @@ the condition under which the canvas becomes a fixed, viewport-sized rectangle
                             (round (+ (lbox-y lb) (css:cstyle-border-top-width cs)))
                             (round (- (+ (lbox-x lb) (lbox-w lb)) (css:cstyle-border-right-width cs)))
                             (round (- (+ (lbox-y lb) (lbox-h lb)) (css:cstyle-border-bottom-width cs))))))
-               (dolist (c (lbox-children lb)) (paint-box cv c)))
-             (dolist (c (lbox-children lb)) (paint-box cv c)))))
+               (paint-children cv (lbox-children lb)))
+             (paint-children cv (lbox-children lb)))))
       (:line
        (let ((yoff (max 0 (floor (- (lbox-h lb) *font-h*) 2))))
          (dolist (it (lbox-children lb))

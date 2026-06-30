@@ -827,10 +827,22 @@ painting is clipped to LB's border box (default background-clip)."
              (:b (css:cstyle-border-bottom-color cs)) (:l (css:cstyle-border-left-color cs)))
            (css:cstyle-border-color cs))))
 
+(defun border-edge-width (cs edge)
+  "Effective border width for EDGE: the declared width, or 0 when the edge's
+border-style is none/hidden."
+  (multiple-value-bind (w sty)
+      (case edge
+        (:t (values (css:cstyle-border-top-width cs) (css:cstyle-border-top-style cs)))
+        (:r (values (css:cstyle-border-right-width cs) (css:cstyle-border-right-style cs)))
+        (:b (values (css:cstyle-border-bottom-width cs) (css:cstyle-border-bottom-style cs)))
+        (:l (values (css:cstyle-border-left-width cs) (css:cstyle-border-left-style cs))))
+    (if (css:border-edge-painted-p sty) w 0.0)))
+
 (defun paint-borders (cv lb cs)
-  "Paint the four border edges, each with its own color (overlapping rectangles)."
-  (let* ((bt (css:cstyle-border-top-width cs)) (br (css:cstyle-border-right-width cs))
-         (bb (css:cstyle-border-bottom-width cs)) (bl (css:cstyle-border-left-width cs))
+  "Paint the four border edges, each with its own color (overlapping rectangles).
+Edges whose border-style is none/hidden are suppressed (zero effective width)."
+  (let* ((bt (border-edge-width cs :t)) (br (border-edge-width cs :r))
+         (bb (border-edge-width cs :b)) (bl (border-edge-width cs :l))
          (x0 (lbox-x lb)) (y0 (lbox-y lb)) (w (lbox-w lb)) (h (lbox-h lb))
          (x1 (+ x0 w)) (y1 (+ y0 h)))
     (when (plusp bt) (fill-rect cv x0 y0 w bt (border-edge-color cs :t)))

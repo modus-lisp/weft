@@ -200,9 +200,11 @@ text-align.  Returns (values line-boxes total-height)."
 
 ;;; ---- block layout -------------------------------------------------------
 (defvar *layout-debug* nil)
-(defun layout-node (node styles x y avail-w)
-  "Resilient wrapper: a failing subtree degrades to an empty box, not a crash."
-  (handler-case (%layout-node node styles x y avail-w)
+(defun layout-node (node styles x y avail-w &optional avail-h)
+  "Resilient wrapper: a failing subtree degrades to an empty box, not a crash.
+AVAIL-H is the containing-block height in px when definite, else NIL (CSS 2.1
+10.5: a percentage height resolves against it only when definite)."
+  (handler-case (%layout-node node styles x y avail-w avail-h)
     (error (e) (if *layout-debug* (error e) (values nil 0 0 0)))))
 
 (defun pad-box (lb cs)
@@ -229,7 +231,7 @@ CB=(px py pw ph) using top/left/right/bottom from CS.  When top (or left) is
                        (t (lbox-y lb)))))
         (shift-box lb (round (- nx (lbox-x lb))) (round (- ny (lbox-y lb))))))))
 
-(defun %layout-node (node styles x y avail-w)
+(defun %layout-node (node styles x y avail-w &optional avail-h)
   "Establish an absolute containing block for positioned elements, then lay the
 node out.  A positioned element (relative/absolute/fixed) is the containing block
 for its absolutely-positioned descendants; we collect those during subtree layout
@@ -238,12 +240,12 @@ this box, if any, carries them along correctly)."
   (let ((cs (st styles node)))
     (if (and cs (member (css:cstyle-position cs) '("relative" "absolute" "fixed") :test #'string=))
         (let ((*abs-pending* nil))
-          (multiple-value-bind (lb adv mt-eff mb-eff) (%layout-core node styles x y avail-w)
+          (multiple-value-bind (lb adv mt-eff mb-eff) (%layout-core node styles x y avail-w avail-h)
             (when (and lb *abs-pending*)
               (let ((cb (pad-box lb cs)))
                 (dolist (p *abs-pending*) (resolve-positioned (car p) cb (cdr p)))))
             (values lb adv mt-eff mb-eff)))
-        (%layout-core node styles x y avail-w))))
+        (%layout-core node styles x y avail-w avail-h))))
 
 (defun collapse-margins (&rest ms)
   "CSS 2.1 8.3.1 collapsed margin of MS: sum of the largest positive and the
@@ -251,8 +253,9 @@ most-negative margin.  {20,30}->30  {20,-10}->10  {-5,-8}->-8  {-20,30}->10."
   (+ (reduce #'max ms :initial-value 0)
      (reduce #'min ms :initial-value 0)))
 
-(defun %layout-core (node styles x y avail-w)
-  "Lay out block-level NODE at (X,Y); AVAIL-W is the containing content width.
+(defun %layout-core (node styles x y avail-w &optional avail-h)
+  "Lay out block-level NODE at (X,Y); AVAIL-W is the containing content width and
+AVAIL-H the containing-block height (px when definite, else NIL).
 Returns (values lbox advance-height)."
   (let ((cs (st styles node)))
     (when (or (null cs) (string= (cdisplay cs) "none")) (return-from %layout-core (values nil 0 0 0)))
@@ -264,6 +267,18 @@ Returns (values lbox advance-height)."
            (bl (css:cstyle-border-left-width cs)) (br (css:cstyle-border-right-width cs))
            (border-box (string= (css:cstyle-box-sizing cs) "border-box"))
            (pad-bord (+ pl pr bl br))
+           ;; explicit height (CSS 2.1 10.5): a px length, or a percentage resolved
+           ;; against the containing-block height AVAIL-H when definite — else NIL
+           ;; (the percentage computes to auto and content drives the height).
+           (exp-h (css::resolve-height (css:cstyle-height cs) avail-h))    ; px or nil
+           ;; content height handed to children as THEIR containing-block height:
+           ;; this box's content-box height when its height is explicit, else NIL
+           ;; (auto height is indefinite, so child percentage heights -> auto).
+           (child-avail-h (when (numberp exp-h)
+                            (max 0 (if (string= (css:cstyle-box-sizing cs) "border-box")
+                                       (- exp-h (+ (css:cstyle-padding-top cs) (css:cstyle-padding-bottom cs)
+                                                   (css:cstyle-border-top-width cs) (css:cstyle-border-bottom-width cs)))
+                                       exp-h))))
            (spec-w (css::resolve-size (css:cstyle-width cs) avail-w))      ; px or nil
            (max-w (css::resolve-size (css:cstyle-max-width cs) avail-w))
            (min-w (css::resolve-size (css:cstyle-min-width cs) avail-w))
@@ -348,7 +363,7 @@ Returns (values lbox advance-height)."
                  ;; when top/left are auto), then defer final placement: collect
                  ;; against the nearest positioned ancestor (absolute) or the
                  ;; viewport (fixed).  Out-of-flow boxes never affect content-h.
-                 (multiple-value-bind (lb adv) (layout-node k styles cx yy content-w)
+                 (multiple-value-bind (lb adv) (layout-node k styles cx yy content-w child-avail-h)
                    (declare (ignore adv))
                    (when lb
                      (if (string= pos "fixed")
@@ -373,7 +388,7 @@ Returns (values lbox advance-height)."
                      ;; lands at YY+GAP (GAP = the collapsed adjoining margin).
                      ;; CMT/CMB are the child's *effective* margins (already
                      ;; collapsed with its own first/last child).
-                     (multiple-value-bind (lb adv cmt cmb) (layout-node k styles cx yy content-w)
+                     (multiple-value-bind (lb adv cmt cmb) (layout-node k styles cx yy content-w child-avail-h)
                        (declare (ignore adv))
                        (when lb
                          (let* ((cmt (or cmt own-mt))
@@ -407,15 +422,14 @@ Returns (values lbox advance-height)."
           ;; out below and collapses into MB-EFF; otherwise it is contained and
           ;; adds to the content height.
           (when prev-mb
-            (let ((height-auto (not (numberp (css::resolve-size (css:cstyle-height cs) avail-w)))))
+            (let ((height-auto (not (numberp exp-h))))
               (if (and height-auto (zerop bb) (zerop pb))
                   (setf mb-eff (collapse-margins mb prev-mb))
                   (incf content-h prev-mb))))
           ;; parent/first-child collapse: first child's top margin bubbled up.
           (when first-child-mt
             (setf mt-eff (collapse-margins mt first-child-mt)))))
-      (let* ((exp-h (css::resolve-size (css:cstyle-height cs) avail-w))   ; explicit height (px) or nil
-             (content-final (cond ((numberp exp-h) (if border-box (- exp-h pad-bord) exp-h)) (t content-h)))
+      (let* ((content-final (cond ((numberp exp-h) (if border-box (- exp-h pad-bord) exp-h)) (t content-h)))
              (box-h0 (+ content-final pt pb bt bb))
              ;; min/max-height as box-height floor/ceiling
              (box-h (let ((bh box-h0) (mn (css:cstyle-min-height cs)) (mx (css:cstyle-max-height cs)))
@@ -609,7 +623,10 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
   (let ((*floats* nil) (*abs-pending* nil) (*fixed-pending* nil)
         (body (css:query-select document "body")))
     (when body
-      (multiple-value-bind (root adv) (layout-node body styles 0 0 width)
+      ;; The initial containing block has the viewport height when the viewport
+      ;; model is active (definite) — so body's percentage height resolves
+      ;; against it (CSS 2.1 10.5); otherwise the page height is indefinite.
+      (multiple-value-bind (root adv) (layout-node body styles 0 0 width viewport-height)
         (let* ((ph (if root (max 0 (+ (lbox-y root) (lbox-h root))) 0))
                (vph (or viewport-height ph))
                ;; Scroll the viewport to the SCROLL-TO anchor (e.g. Acid2's

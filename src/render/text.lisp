@@ -39,19 +39,54 @@ or NIL if it could not be loaded (callers then fall back to the bitmap path)."
             (error () nil))))
   *scribe-font*)
 
-(defun draw-text-scribe (cv text x y color size &key bold underline)
-  "Paint TEXT with scribe glyphs.  X/Y is the top-left of the text within its line
-box (same contract as the bitmap DRAW-TEXT); SIZE is the px font-size used as the
-rasterization ppem.  Returns the advance (pen x at end).
+(defun glyph-advance-px (font gid ppem upem)
+  "Advance in px for GID at PPEM — the SAME value DRAW-TEXT-SCRIBE advances the
+pen by, so measured widths match painted widths to the pixel.  .notdef (gid 0)
+advances half an em, matching the painter's tofu-suppression."
+  (if (zerop gid)
+      (* 0.5d0 ppem)
+      (* (scribe::glyph-advance font gid) (/ ppem upem))))
+
+(defun measure-text-width (text size)
+  "Sum of per-glyph advances for TEXT at px SIZE — the width scribe will actually
+paint.  Falls back to the bitmap metric (LEN*7) if the font is unavailable or
+anything errors, so layout never depends on the font succeeding."
+  (let ((font (scribe-font)))
+    (if (or (null font) (zerop (length text)))
+        (* (length text) *font-w*)
+        (handler-case
+            (let* ((ppem (float (max 1 size) 1d0))
+                   (upem (float (scribe:font-units-per-em font) 1d0))
+                   (w 0d0))
+              (loop for ch across text do
+                (incf w (glyph-advance-px font (scribe:font-glyph-index font (char-code ch))
+                                          ppem upem)))
+              w)
+          (error () (* (length text) *font-w*))))))
+
+(defun bitmap-top (line-top line-h)
+  "Where the bitmap DRAW-TEXT path centers its fixed *FONT-H* slot in a line box."
+  (+ line-top (max 0 (floor (- line-h *font-h*) 2))))
+
+(defun draw-text-scribe (cv text x line-top line-h color size &key bold underline)
+  "Paint TEXT with scribe glyphs.  X is the left edge; LINE-TOP/LINE-H are the
+line box's top and height — the real font em-box (ascent+descent at SIZE px) is
+centered within it, so large text lands correctly instead of being pinned to a
+13px slot.  SIZE is the px font-size used as the rasterization ppem.  Returns the
+pen x at end.
 
 Degrades to the bitmap DRAW-TEXT for the whole string if the font is unavailable
 or anything goes wrong; respects weft's *CLIP* rect per pixel."
   (let ((font (scribe-font)))
     (if (or (null font) (zerop (length text)))
-        (draw-text cv text x y color :bold bold :underline underline)
+        (draw-text cv text x (bitmap-top line-top line-h) color :bold bold :underline underline)
         (handler-case
             (let* ((ppem (float (max 1 size) 1d0))
-                   (baseline (+ y (round (* *scribe-ascent-ratio* ppem))))
+                   ;; center the font's em-box (ascent+descent) in the line box,
+                   ;; then the baseline sits ascent px below the box's top.
+                   (text-h (* (+ *scribe-ascent-ratio* *scribe-descent-ratio*) ppem))
+                   (baseline (round (+ line-top (/ (- line-h text-h) 2)
+                                       (* *scribe-ascent-ratio* ppem))))
                    ;; zero-copy view of weft's pixel buffer as a scribe canvas
                    (scv (scribe::%make-canvas :width (canvas-width cv)
                                               :height (canvas-height cv)
@@ -85,9 +120,10 @@ or anything goes wrong; respects weft's *CLIP* rect per pixel."
                                             (scribe:blend-coverage scv px py c color)))))))))))
                         (incf penx adv)))))
               (when underline
-                (fill-rect cv x (+ y *font-h* -1) (- (round penx) x) 1 color))
+                (let ((uy (min (1- cy1) (+ baseline (max 1 (round (* 0.12d0 ppem)))))))
+                  (fill-rect cv x uy (- (round penx) x) (max 1 (round (* 0.06d0 ppem))) color)))
               (round penx))
           (error ()
             ;; partial paint may have happened; finish the string with the bitmap
             ;; path so the user at least sees the text.
-            (draw-text cv text x y color :bold bold :underline underline))))))
+            (draw-text cv text x (bitmap-top line-top line-h) color :bold bold :underline underline))))))

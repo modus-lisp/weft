@@ -310,7 +310,12 @@ Ignores the system-font keywords (caption/icon/...)."
         ((string= prop "max-height") (if (string-equal (string-trim '(#\Space) value) "none") (setf (cstyle-max-height cs) :none)
                                          (let ((h (parse-size value fs nil)))   ; px or (:percent N)
                                            (when (or (numberp h) (consp h)) (setf (cstyle-max-height cs) h)))))
-        ((string= prop "float") (let ((v (parse-value "float" value))) (when (stringp v) (setf (cstyle-float cs) v))))
+        ((string= prop "float")
+         ;; `float:inherit` (used by Acid2's smile) copies the parent's computed
+         ;; float; otherwise parse the keyword normally.
+         (if (string-equal (string-trim '(#\Space #\Tab #\Newline) value) "inherit")
+             (when parent-cs (setf (cstyle-float cs) (cstyle-float parent-cs)))
+             (let ((v (parse-value "float" value))) (when (stringp v) (setf (cstyle-float cs) v)))))
         ((string= prop "clear") (setf (cstyle-clear cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "position") (let ((v (parse-value "position" value))) (when (stringp v) (setf (cstyle-position cs) v))))
         ((string= prop "box-sizing") (let ((v (parse-value "box-sizing" value))) (when (stringp v) (setf (cstyle-box-sizing cs) v))))

@@ -110,6 +110,31 @@
         ((and (consp spec) (eq (first spec) :percent)) (* avail (/ (second spec) 100.0)))
         (t nil)))
 
+(defun resolve-height (spec avail-h)
+  "Resolve a height parse-size SPEC against the containing-block height AVAIL-H
+per CSS 2.1 10.5: a percentage resolves only when AVAIL-H is a definite number;
+otherwise it computes to auto (NIL).  A plain px number resolves to itself."
+  (cond ((numberp spec) spec)
+        ((and (consp spec) (eq (first spec) :percent) (numberp avail-h))
+         (* avail-h (/ (second spec) 100.0)))
+        (t nil)))
+
+(defun resolve-min-height (spec avail-h)
+  "CSS 2.1 10.7 min-height: a length resolves to itself; a percentage resolves
+against AVAIL-H if definite, else computes to 0."
+  (cond ((numberp spec) spec)
+        ((and (consp spec) (eq (first spec) :percent))
+         (if (numberp avail-h) (* avail-h (/ (second spec) 100.0)) 0.0))
+        (t 0.0)))
+
+(defun resolve-max-height (spec avail-h)
+  "CSS 2.1 10.7 max-height: a length resolves to itself; a percentage resolves
+against AVAIL-H if definite, else computes to none (NIL = no ceiling)."
+  (cond ((numberp spec) spec)
+        ((and (consp spec) (eq (first spec) :percent) (numberp avail-h))
+         (* avail-h (/ (second spec) 100.0)))
+        (t nil)))
+
 (defun resolve-color (text)
   (let ((v (parse-value "color" text))) (if (and (listp v) (>= (length v) 3)) v nil)))
 

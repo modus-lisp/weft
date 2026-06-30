@@ -497,19 +497,53 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
             (push (list side fx (+ fx avail-w) y (+ y (lbox-h lb))) *floats*))
           lb)))))
 
-(defun layout-tree (document styles width)
+(defun find-lbox-for-node (lb node)
+  "Locate the block lbox whose source NODE is NODE, NIL if none."
+  (when (and lb node)
+    (if (eq (lbox-node lb) node) lb
+        (when (eq (lbox-kind lb) :block)
+          (some (lambda (c) (find-lbox-for-node c node)) (lbox-children lb))))))
+
+(defun layout-tree (document styles width &optional viewport-height scroll-to)
   (let ((*floats* nil) (*abs-pending* nil) (*fixed-pending* nil)
         (body (css:query-select document "body")))
     (when body
       (multiple-value-bind (root adv) (layout-node body styles 0 0 width)
-        ;; Initial containing block / viewport: origin (0,0), width=WIDTH,
-        ;; height = laid-out page height.  Absolutely-positioned boxes with no
-        ;; positioned ancestor, and all fixed boxes, resolve against it.
         (let* ((ph (if root (max 0 (+ (lbox-y root) (lbox-h root))) 0))
-               (vp (list 0 0 width ph)))
-          (dolist (p *abs-pending*)   (resolve-positioned (car p) vp (cdr p)))
-          (dolist (p *fixed-pending*) (resolve-positioned (car p) vp (cdr p))))
+               (vph (or viewport-height ph))
+               ;; Scroll the viewport to the SCROLL-TO anchor (e.g. Acid2's
+               ;; intro links to #top; navigating there scrolls the picture to
+               ;; the top of the clipped viewport — that is how the face lands
+               ;; at the top-left, per the Acid2 guided tour).
+               (anchor (and scroll-to viewport-height
+                            (find-lbox-for-node
+                             root (css:query-select document (format nil "#~a" scroll-to)))))
+               (scroll-y (if anchor
+                             (max 0 (min (round (lbox-y anchor)) (max 0 (- ph vph))))
+                             0))
+               ;; Absolutes with no positioned ancestor resolve against the
+               ;; initial containing block (document origin, scrolls with the
+               ;; page); fixed boxes resolve against the viewport (offset by the
+               ;; current scroll so they stay pinned to the visible rectangle).
+               (icb (list 0 0 width ph))
+               (vp  (list 0 scroll-y width vph)))
+          (dolist (p *abs-pending*)   (resolve-positioned (car p) icb (cdr p)))
+          (dolist (p *fixed-pending*) (resolve-positioned (car p) vp (cdr p)))
+          ;; Apply the scroll: shift the whole painted tree up so the anchor
+          ;; (and fixed boxes, already placed at scroll-y+offset) land in view.
+          (when (and root (plusp scroll-y)) (shift-box root 0 (- scroll-y))))
         (values root adv)))))
+
+(defun root-clips-p (doc styles)
+  "True when the root box (html, else body) establishes overflow clipping —
+the condition under which the canvas becomes a fixed, viewport-sized rectangle
+(html{overflow:hidden}, as Acid2 relies on) rather than growing to content."
+  (flet ((clips (el)
+           (let ((cs (and el (gethash el styles))))
+             (and cs (member (css:cstyle-overflow cs) '("hidden" "clip" "scroll")
+                             :test #'string=)))))
+    (or (clips (css:query-select doc "html"))
+        (clips (css:query-select doc "body")))))
 
 ;;; ---- paint --------------------------------------------------------------
 (defun rgb (color) (list (first color) (second color) (third color)))
@@ -571,20 +605,37 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
                  (loop for c across (h:dnode-children n) do (rec c)))))
       (loop for c across (h:dnode-children doc) do (rec c)))))
 
-(defun render-to-canvas (html css width &key (min-height 200) (max-height 20000))
+(defun render-to-canvas (html css width &key (min-height 200) (max-height 20000)
+                                              (viewport-height 600) scroll-to)
   "Parse HTML, gather CSS, cascade, lay out at WIDTH px, paint.  Returns the
-CANVAS.  HEIGHT is clamped to MAX-HEIGHT (keeps pathological pages bounded)."
+CANVAS.
+
+Two height models:
+  * Reader view (default): when the root does NOT clip overflow, the canvas
+    grows to content height (clamped to MAX-HEIGHT) — full-page rendering.
+  * Viewport model: when the root establishes overflow clipping
+    (html/body {overflow:hidden|clip|scroll}), the canvas is a FIXED
+    VIEWPORT-HEIGHT rectangle and all painting is clipped to it.  This is how
+    a real browser tames Acid2's giant margins and lands fixed boxes at fixed
+    viewport coordinates."
   (let* ((doc (h:parse-html html))
          (sheet (css:parse-stylesheet (concatenate 'string (or css "") (string #\Newline)
                                                    (collect-stylesheets doc))))
-         (styles (css:compute-styles doc sheet)))
-    (multiple-value-bind (root adv) (layout-tree doc styles width)
+         (styles (css:compute-styles doc sheet))
+         (viewport-p (and viewport-height (root-clips-p doc styles)))
+         (vph (and viewport-p (round viewport-height))))
+    (multiple-value-bind (root adv) (layout-tree doc styles width vph
+                                                 (and viewport-p scroll-to))
       (declare (ignore adv))
-      (let* ((height (min max-height (max min-height (if root (round (+ (lbox-y root) (lbox-h root) 8)) min-height))))
+      (let* ((content-h (if root (round (+ (lbox-y root) (lbox-h root) 8)) min-height))
+             (height (if vph vph (min max-height (max min-height content-h))))
              (body (css:query-select doc "body"))
              (bg (let ((cs (and body (gethash body styles)))) (and cs (css:cstyle-background cs))))
              (cv (make-canvas width height (if bg (rgb bg) '(255 255 255)))))
-        (paint-box cv root)
+        (if vph
+            (let ((*clip* (clip-intersect 0 0 width vph)))
+              (paint-box cv root))
+            (paint-box cv root))
         cv))))
 
 (defun canvas-ink (cv)

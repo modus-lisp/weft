@@ -17,11 +17,11 @@
   (with-open-file (s path :external-format :utf-8)
     (let ((str (make-string (file-length s)))) (subseq str 0 (read-sequence str s)))))
 
-(defun render-one (name file width)
+(defun render-one (name file width &optional scroll-to)
   "Render a vendored test page; return (values ok ink width height) and write a PNG."
   (handler-case
       (let* ((html (slurp (asdf:system-relative-pathname "weft" (format nil "inspect/vectors/acid/~a" file))))
-             (cv (r:render-to-canvas html nil width :min-height 200))
+             (cv (r:render-to-canvas html nil width :min-height 200 :scroll-to scroll-to))
              (out (asdf:system-relative-pathname "weft" (format nil "inspect/vectors/acid/~a-weft.png" name))))
         (r:write-png cv out)
         (values t (r:canvas-ink cv) (r:canvas-width cv) (r:canvas-height cv)))
@@ -30,10 +30,12 @@
 (defun run ()
   (let ((fails 0))
     (format t "~&=== weft Acid gate (robustness + progress, NOT a pass/fail claim) ===~%")
-    (dolist (test '(("acid2" "acid2.html" 700)
-                    ("acid3" "acid3.html" 800)))
-      (destructuring-bind (name file width) test
-        (multiple-value-bind (ok ink w h) (render-one name file width)
+    ;; Acid2: its intro links to #top; a real browser navigates there, scrolling
+    ;; the picture to the top of the overflow:hidden viewport.  We do the same.
+    (dolist (test '(("acid2" "acid2.html" 700 "top")
+                    ("acid3" "acid3.html" 800 nil)))
+      (destructuring-bind (name file width scroll-to) test
+        (multiple-value-bind (ok ink w h) (render-one name file width scroll-to)
           (if ok
               (format t "  ok   ~a renders: ~dx~d, ink ~,1f%% (~a)~%" name w h (* 100 ink)
                       "progress signal; not a conformance score")

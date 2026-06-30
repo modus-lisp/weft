@@ -41,6 +41,32 @@ Bound by paint when entering an overflow:hidden/clip/scroll box.")
     (loop for yy from y0 below y1 do
       (loop for xx from x0 below x1 do (put cv xx yy r g b)))))
 
+(defun fill-poly (cv points color)
+  "Scanline-fill the polygon POINTS (a list of (x . y) float conses) with COLOR
+\(an (r g b ...) list).  Handles convex and degenerate (collapsed-edge) polygons;
+respects *CLIP*.  Used for mitered border trapezoids/triangles."
+  (when (and points (>= (length points) 3))
+    (let* ((r (first color)) (g (second color)) (b (third color))
+           (pts (coerce points 'vector)) (n (length pts))
+           (ys (map 'list #'cdr pts))
+           (y0 (max 0 (floor (reduce #'min ys))))
+           (y1 (min (canvas-height cv) (ceiling (reduce #'max ys)))))
+      (loop for yy from y0 below y1
+            for yc = (+ yy 0.5)
+            do (let ((xs '()))
+                 (dotimes (i n)
+                   (let* ((p1 (aref pts i)) (p2 (aref pts (mod (1+ i) n)))
+                          (ya (cdr p1)) (yb (cdr p2)))
+                     (when (or (and (<= ya yc) (< yc yb)) (and (<= yb yc) (< yc ya)))
+                       (let ((xa (car p1)) (xb (car p2)))
+                         (push (+ xa (* (- xb xa) (/ (- yc ya) (- yb ya)))) xs)))))
+                 (setf xs (sort xs #'<))
+                 (loop for (xl xr) on xs by #'cddr
+                       when xr do
+                         (loop for xx from (max 0 (round xl))
+                                 below (min (canvas-width cv) (round xr))
+                               do (put cv xx yy r g b))))))))
+
 (defun lerp (a b tt) (round (+ a (* (- b a) tt))))
 
 (defun fill-gradient (cv x y w h dir from to)

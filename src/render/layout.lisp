@@ -839,16 +839,35 @@ border-style is none/hidden."
     (if (css:border-edge-painted-p sty) w 0.0)))
 
 (defun paint-borders (cv lb cs)
-  "Paint the four border edges, each with its own color (overlapping rectangles).
-Edges whose border-style is none/hidden are suppressed (zero effective width)."
+  "Paint the four border edges, each with its own color.  Edges whose
+border-style is none/hidden are suppressed (zero effective width).
+
+When all painted edges share one color, the edges are drawn as overlapping
+rectangles — pixel-identical to weft's original border painting.  When edge
+colors differ, each edge is drawn as a mitered trapezoid whose outer side is
+the full box edge and whose inner side is inset by the adjacent edges' widths,
+so adjacent borders meet on the 45-degree corner diagonal.  For a small/0-size
+box with thick borders this yields the classic triangles (e.g. CSS triangles)."
   (let* ((bt (border-edge-width cs :t)) (br (border-edge-width cs :r))
          (bb (border-edge-width cs :b)) (bl (border-edge-width cs :l))
          (x0 (lbox-x lb)) (y0 (lbox-y lb)) (w (lbox-w lb)) (h (lbox-h lb))
-         (x1 (+ x0 w)) (y1 (+ y0 h)))
-    (when (plusp bt) (fill-rect cv x0 y0 w bt (border-edge-color cs :t)))
-    (when (plusp bb) (fill-rect cv x0 (- y1 bb) w bb (border-edge-color cs :b)))
-    (when (plusp bl) (fill-rect cv x0 y0 bl h (border-edge-color cs :l)))
-    (when (plusp br) (fill-rect cv (- x1 br) y0 br h (border-edge-color cs :r)))))
+         (x1 (+ x0 w)) (y1 (+ y0 h))
+         (ct (border-edge-color cs :t)) (crr (border-edge-color cs :r))
+         (cb (border-edge-color cs :b)) (cl (border-edge-color cs :l)))
+    (when (and (<= bt 0) (<= br 0) (<= bb 0) (<= bl 0)) (return-from paint-borders))
+    (if (and (equal ct crr) (equal ct cb) (equal ct cl))
+        ;; uniform color: overlapping rectangles, exactly as the original code.
+        (progn
+          (when (plusp bt) (fill-rect cv x0 y0 w bt ct))
+          (when (plusp bb) (fill-rect cv x0 (- y1 bb) w bb cb))
+          (when (plusp bl) (fill-rect cv x0 y0 bl h cl))
+          (when (plusp br) (fill-rect cv (- x1 br) y0 br h crr)))
+        ;; differing colors: mitered trapezoids (degenerate to triangles).
+        (let ((ix0 (+ x0 bl)) (iy0 (+ y0 bt)) (ix1 (- x1 br)) (iy1 (- y1 bb)))
+          (when (plusp bt) (fill-poly cv (list (cons x0 y0) (cons x1 y0) (cons ix1 iy0) (cons ix0 iy0)) ct))
+          (when (plusp bb) (fill-poly cv (list (cons x0 y1) (cons ix0 iy1) (cons ix1 iy1) (cons x1 y1)) cb))
+          (when (plusp bl) (fill-poly cv (list (cons x0 y0) (cons ix0 iy0) (cons ix0 iy1) (cons x0 y1)) cl))
+          (when (plusp br) (fill-poly cv (list (cons x1 y0) (cons x1 y1) (cons ix1 iy1) (cons ix1 iy0)) crr))))))
 
 (defun paint-box (cv lb)
   (handler-case (%paint-box cv lb) (error () nil)))

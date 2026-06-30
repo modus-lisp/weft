@@ -203,7 +203,7 @@ text-align.  Returns (values line-boxes total-height)."
 (defun layout-node (node styles x y avail-w)
   "Resilient wrapper: a failing subtree degrades to an empty box, not a crash."
   (handler-case (%layout-node node styles x y avail-w)
-    (error (e) (if *layout-debug* (error e) (values nil 0)))))
+    (error (e) (if *layout-debug* (error e) (values nil 0 0 0)))))
 
 (defun pad-box (lb cs)
   "Padding box (px py pw ph) of LB — the border-box minus borders.  This is the
@@ -238,11 +238,11 @@ this box, if any, carries them along correctly)."
   (let ((cs (st styles node)))
     (if (and cs (member (css:cstyle-position cs) '("relative" "absolute" "fixed") :test #'string=))
         (let ((*abs-pending* nil))
-          (multiple-value-bind (lb adv) (%layout-core node styles x y avail-w)
+          (multiple-value-bind (lb adv mt-eff mb-eff) (%layout-core node styles x y avail-w)
             (when (and lb *abs-pending*)
               (let ((cb (pad-box lb cs)))
                 (dolist (p *abs-pending*) (resolve-positioned (car p) cb (cdr p)))))
-            (values lb adv)))
+            (values lb adv mt-eff mb-eff)))
         (%layout-core node styles x y avail-w))))
 
 (defun collapse-margins (&rest ms)
@@ -255,7 +255,7 @@ most-negative margin.  {20,30}->30  {20,-10}->10  {-5,-8}->-8  {-20,30}->10."
   "Lay out block-level NODE at (X,Y); AVAIL-W is the containing content width.
 Returns (values lbox advance-height)."
   (let ((cs (st styles node)))
-    (when (or (null cs) (string= (cdisplay cs) "none")) (return-from %layout-core (values nil 0)))
+    (when (or (null cs) (string= (cdisplay cs) "none")) (return-from %layout-core (values nil 0 0 0)))
     (let* ((mt (css:cstyle-margin-top cs)) (mb (css:cstyle-margin-bottom cs))
            (ml (css:cstyle-margin-left cs)) (mr (css:cstyle-margin-right cs))
            (pt (css:cstyle-padding-top cs)) (pb (css:cstyle-padding-bottom cs))
@@ -288,6 +288,9 @@ Returns (values lbox advance-height)."
            (box-x (+ x ml)) (box-y (+ y mt))
            (cx (+ box-x bl pl)) (cy (+ box-y bt pt))
            (list-item (string= (cdisplay cs) "list-item"))
+           ;; effective (collapsed) outer margins reported up to the parent:
+           ;; default to this box's own margins, raised by parent/child collapse.
+           (mt-eff mt) (mb-eff mb)
            (children '()) (content-h 0))
       ;; <pre>/white-space:pre — preserve newlines, no wrapping
       (when (and (string= (css:cstyle-white-space cs) "pre") (not (has-block-children styles node)))
@@ -302,7 +305,7 @@ Returns (values lbox advance-height)."
         (let* ((box-h (+ content-h pt pb bt bb))
                (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                               :kind :block :children (nreverse children))))
-          (return-from %layout-core (values lb (+ mt box-h mb)))))
+          (return-from %layout-core (values lb (+ mt box-h mb) mt mb))))
       ;; flex / table containers
       (when (member (cdisplay cs) '("flex" "table") :test #'string=)
         (multiple-value-bind (boxes ch)
@@ -312,7 +315,7 @@ Returns (values lbox advance-height)."
           (let* ((box-h (+ ch pt pb bt bb))
                  (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                                 :kind :block :children boxes)))
-            (return-from %layout-core (values lb (+ mt box-h mb))))))
+            (return-from %layout-core (values lb (+ mt box-h mb) mt mb)))))
       ;; classify children: anonymous-group consecutive inline-level nodes.
       ;; ::before / ::after generated boxes bracket the real children.
       ;; YY tracks the border-bottom edge of the last in-flow block placed (or
@@ -324,7 +327,7 @@ Returns (values lbox advance-height)."
                     (append (when before (list before))
                             (coerce (h:dnode-children node) 'list)
                             (when after (list after)))))
-            (group '()) (yy cy) (prev-mb nil))
+            (group '()) (yy cy) (prev-mb nil) (content-started nil) (first-child-mt nil))
         (flet ((flush-inline ()
                  (when group
                    (let ((words (loop for g in (nreverse group) append (collect-words g styles cs content-w))))
@@ -332,8 +335,9 @@ Returns (values lbox advance-height)."
                        (multiple-value-bind (lines lh-total) (layout-inline words cx yy content-w cs)
                          (dolist (l lines) (push l children))
                          (incf yy lh-total) (incf content-h lh-total)
-                         ;; inline content separates block margins: no collapse.
-                         (setf prev-mb nil))))
+                         ;; inline content separates block margins: no collapse,
+                         ;; and the box is no longer empty / a fresh first child.
+                         (setf prev-mb nil content-started t))))
                    (setf group '()))))
           (dolist (k kids)
             (let* ((kcs (st styles k))
@@ -356,39 +360,60 @@ Returns (values lbox advance-height)."
                    (when lb (push lb children))))
                 ((block-level-p styles k)
                  (flush-inline)
-                 (when (and kcs (member (css:cstyle-clear kcs) '("left" "right" "both") :test #'string=))
-                   (let ((ny (clear-y yy cx (+ cx content-w)
-                                     (case (intern (string-upcase (css:cstyle-clear kcs)) :keyword)
-                                       (:left '(:left)) (:right '(:right)) (t '(:left :right))))))
-                     (when (> ny yy)                                             ; clearance: margins do not collapse across it
-                       (incf content-h (- ny yy)) (setf yy ny) (setf prev-mb nil))))
-                 (let* ((this-mt (if kcs (css:cstyle-margin-top kcs) 0))
-                        (this-mb (if kcs (css:cstyle-margin-bottom kcs) 0))
-                        ;; gap from prior border-bottom to this border-top: the
-                        ;; collapse of the adjoining margins (else full top margin).
-                        (gap (if prev-mb (collapse-margins prev-mb this-mt) this-mt))
-                        ;; LAYOUT-CORE places the box at passed-y + its own mt, so
-                        ;; pass a y that lands its border-top at (yy + gap).
-                        (passed-y (+ yy (- gap this-mt))))
-                   (multiple-value-bind (lb adv) (layout-node k styles cx passed-y content-w)
-                     (declare (ignore adv))
-                     (when lb
-                       (when (and kcs (string= pos "relative"))                  ; visual shift, flow unchanged
-                         (shift-box lb (round (cond ((numberp (css:cstyle-left kcs)) (css:cstyle-left kcs))
-                                                    ((numberp (css:cstyle-right kcs)) (- (css:cstyle-right kcs))) (t 0)))
-                                    (round (cond ((numberp (css:cstyle-top kcs)) (css:cstyle-top kcs))
-                                                 ((numberp (css:cstyle-bottom kcs)) (- (css:cstyle-bottom kcs))) (t 0)))))
-                       (push lb children)
-                       (let ((new-yy (+ (lbox-y lb) (lbox-h lb))))             ; border-bottom edge
-                         (incf content-h (- new-yy yy))
-                         (setf yy new-yy)
-                         (setf prev-mb this-mb))))))                           ; held to collapse with next sibling
+                 (let ((cleared nil))
+                   (when (and kcs (member (css:cstyle-clear kcs) '("left" "right" "both") :test #'string=))
+                     (let ((ny (clear-y yy cx (+ cx content-w)
+                                       (case (intern (string-upcase (css:cstyle-clear kcs)) :keyword)
+                                         (:left '(:left)) (:right '(:right)) (t '(:left :right))))))
+                       (when (> ny yy)                                          ; clearance: margins do not collapse across it
+                         (incf content-h (- ny yy)) (setf yy ny)
+                         (setf prev-mb nil cleared t))))
+                   (let ((own-mt (if kcs (css:cstyle-margin-top kcs) 0)))
+                     ;; lay the child out at YY, then SHIFT it so its border-top
+                     ;; lands at YY+GAP (GAP = the collapsed adjoining margin).
+                     ;; CMT/CMB are the child's *effective* margins (already
+                     ;; collapsed with its own first/last child).
+                     (multiple-value-bind (lb adv cmt cmb) (layout-node k styles cx yy content-w)
+                       (declare (ignore adv))
+                       (when lb
+                         (let* ((cmt (or cmt own-mt))
+                                (cmb (or cmb (if kcs (css:cstyle-margin-bottom kcs) 0)))
+                                ;; parent/first in-flow child top-margin collapse:
+                                ;; only with zero top border AND padding, at the
+                                ;; very start of flow (nothing precedes the child).
+                                (top-collapse (and (not content-started) (not cleared)
+                                                   (zerop bt) (zerop pt)))
+                                (gap (cond (prev-mb (collapse-margins prev-mb cmt))
+                                           (top-collapse 0)   ; margin bubbles to parent's mt-eff
+                                           (t cmt))))
+                           (when top-collapse (setf first-child-mt cmt))
+                           (shift-box lb 0 (round (- (+ yy gap) (lbox-y lb))))   ; flow placement
+                           (when (and kcs (string= pos "relative"))             ; visual shift, flow unchanged
+                             (shift-box lb (round (cond ((numberp (css:cstyle-left kcs)) (css:cstyle-left kcs))
+                                                        ((numberp (css:cstyle-right kcs)) (- (css:cstyle-right kcs))) (t 0)))
+                                        (round (cond ((numberp (css:cstyle-top kcs)) (css:cstyle-top kcs))
+                                                     ((numberp (css:cstyle-bottom kcs)) (- (css:cstyle-bottom kcs))) (t 0)))))
+                           (push lb children)
+                           (let ((new-yy (+ (lbox-y lb) (lbox-h lb))))          ; border-bottom edge
+                             (incf content-h (- new-yy yy))
+                             (setf yy new-yy)
+                             (setf prev-mb cmb)                                  ; held to collapse with next sibling
+                             (setf content-started t))))))))
                 ((or (eq (h:dnode-kind k) :text) (inline-level-p styles k)) (push k group)))))
           (flush-inline)
-          ;; the last in-flow block's bottom margin was held back from YY; add it
-          ;; to the content height (parent has bottom padding/border so it can't
-          ;; collapse out — parent/last-child collapse is handled separately).
-          (when prev-mb (incf content-h prev-mb))))
+          ;; The last in-flow block's bottom margin (PREV-MB) was held back from
+          ;; YY.  Parent/last-child collapse (CSS 2.1 8.3.1): when this box has
+          ;; auto height and zero bottom border AND padding, that margin sticks
+          ;; out below and collapses into MB-EFF; otherwise it is contained and
+          ;; adds to the content height.
+          (when prev-mb
+            (let ((height-auto (not (numberp (css::resolve-size (css:cstyle-height cs) avail-w)))))
+              (if (and height-auto (zerop bb) (zerop pb))
+                  (setf mb-eff (collapse-margins mb prev-mb))
+                  (incf content-h prev-mb))))
+          ;; parent/first-child collapse: first child's top margin bubbled up.
+          (when first-child-mt
+            (setf mt-eff (collapse-margins mt first-child-mt)))))
       (let* ((exp-h (css::resolve-size (css:cstyle-height cs) avail-w))   ; explicit height (px) or nil
              (content-final (cond ((numberp exp-h) (if border-box (- exp-h pad-bord) exp-h)) (t content-h)))
              (box-h0 (+ content-final pt pb bt bb))
@@ -400,7 +425,7 @@ Returns (values lbox advance-height)."
              (lb (make-lbox :x box-x :y box-y :w width :h box-h
                             :style cs :node node :kind :block :children (nreverse children)
                             :marker (when list-item (css:cstyle-list-style cs)))))
-        (values lb (+ mt (lbox-h lb) mb))))))
+        (values lb (+ mt (lbox-h lb) mb) mt-eff mb-eff)))))
 
 (defun shift-box (lb dx dy)
   "Recursively offset LB and its descendants by (DX,DY)."

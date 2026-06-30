@@ -693,20 +693,45 @@ forms its own stacking level above in-flow siblings."
 (defun lbox-z (lb)
   (let ((cs (lbox-style lb))) (if cs (or (css:cstyle-z-index cs) 0) 0)))
 
+(defun lbox-float-p (lb)
+  "True when LB is a floated box (CSS float:left|right)."
+  (let ((cs (and (eq (lbox-kind lb) :block) (lbox-style lb))))
+    (and cs (member (css:cstyle-float cs) '("left" "right") :test #'string=))))
+
+(defun lbox-inline-level-p (lb)
+  "True when LB paints in the inline-level phase: a line box, or a block-kind box
+whose display is an inline/inline-block kind (an atomic inline)."
+  (or (eq (lbox-kind lb) :line)
+      (let ((cs (lbox-style lb)))
+        (and cs (member (css:cstyle-display cs)
+                        '("inline" "inline-block" "inline-table" "inline-flex")
+                        :test #'string=)))))
+
 (defun paint-children (cv children)
   "Paint CHILDREN in a simplified CSS stacking order (appendix E): negative
-z-index positioned boxes, then in-flow content in tree order, then >=0
-positioned boxes ordered by z-index.  Equal z-index keeps tree order (stable)."
+z-index positioned boxes; then, among IN-FLOW content, block-level boxes, then
+floats, then inline-level boxes (each phase in tree order); then >=0 positioned
+boxes by z-index.  The block<float<inline split is what lets a float's background
+cover an earlier block sibling's background (Acid2's eyes: the float's yellow
+must paint over #eyes-c's red) and keeps inline content on top of floats.  Equal
+z-index keeps tree order (stable)."
   (let ((flow '()) (pos '()))
     (dolist (c children) (if (lbox-positioned-p c) (push c pos) (push c flow)))
     (setf flow (nreverse flow) pos (nreverse pos))
-    (let ((neg    (stable-sort (remove-if-not (lambda (c) (minusp (lbox-z c))) (copy-list pos))
-                               #'< :key #'lbox-z))
-          (nonneg (stable-sort (remove-if     (lambda (c) (minusp (lbox-z c))) (copy-list pos))
-                               #'< :key #'lbox-z)))
-      (dolist (c neg)    (paint-box cv c))
-      (dolist (c flow)   (paint-box cv c))
-      (dolist (c nonneg) (paint-box cv c)))))
+    (let ((blocks '()) (floats '()) (inlines '()))
+      (dolist (c flow)
+        (cond ((lbox-float-p c)        (push c floats))
+              ((lbox-inline-level-p c) (push c inlines))
+              (t                       (push c blocks))))
+      (let ((neg    (stable-sort (remove-if-not (lambda (c) (minusp (lbox-z c))) (copy-list pos))
+                                 #'< :key #'lbox-z))
+            (nonneg (stable-sort (remove-if     (lambda (c) (minusp (lbox-z c))) (copy-list pos))
+                                 #'< :key #'lbox-z)))
+        (dolist (c neg)              (paint-box cv c))
+        (dolist (c (nreverse blocks))  (paint-box cv c))
+        (dolist (c (nreverse floats))  (paint-box cv c))
+        (dolist (c (nreverse inlines)) (paint-box cv c))
+        (dolist (c nonneg)          (paint-box cv c))))))
 
 (defun marker-glyph (kind) (cond ((string= kind "circle") "o") ((string= kind "square") "#")
                                  ((string= kind "none") "") (t "•")))

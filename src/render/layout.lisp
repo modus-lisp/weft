@@ -126,8 +126,21 @@ URI, else NIL (so the object falls back to its child content)."
 Carries the object's own style so its background (e.g. Acid2's fixed eye tile)
 and borders paint behind/around the image."
   (declare (ignore node))
-  (make-lbox :x 0 :y 0 :w (img-w decoded) :h (img-h decoded)
-             :style cs :kind :block :img decoded))
+  (let* ((iw (img-w decoded)) (ih (img-h decoded))
+         (bl (used-border cs :l)) (br (used-border cs :r))
+         (bt (used-border cs :t)) (bb (used-border cs :b))
+         (pl (max 0 (css:cstyle-padding-left cs))) (pr (max 0 (css:cstyle-padding-right cs)))
+         (pt (max 0 (css:cstyle-padding-top cs))) (pb (max 0 (css:cstyle-padding-bottom cs)))
+         (inner (let ((c (css::copy-cstyle cs)))
+                  (setf (css:cstyle-background c) nil (css:cstyle-bg-image c) nil
+                        (css:cstyle-bg-gradient c) nil
+                        (css:cstyle-border-top-width c) 0 (css:cstyle-border-right-width c) 0
+                        (css:cstyle-border-bottom-width c) 0 (css:cstyle-border-left-width c) 0)
+                  c)))
+    (make-lbox :x 0 :y 0 :w (+ bl pl iw pr br) :h (+ bt pt ih pb bb)
+               :style cs :kind :block
+               :children (list (make-lbox :x (+ bl pl) :y (+ bt pt) :w iw :h ih
+                                          :style inner :kind :block :img decoded)))))
 
 (defun make-pseudo-node (content)
   "A synthetic inline element carrying generated CONTENT as its only text child,
@@ -823,6 +836,13 @@ whose display is an inline/inline-block kind (an atomic inline)."
                         '("inline" "inline-block" "inline-table" "inline-flex")
                         :test #'string=)))))
 
+(defun lbox-img-anywhere-p (lb)
+  "True when LB or any descendant carries a replaced image (the <object> image
+box now nests its image in an inner child to inset it under its padding)."
+  (and (lbox-p lb)
+       (or (lbox-img lb)
+           (some #'lbox-img-anywhere-p (lbox-children lb)))))
+
 (defun block-has-replaced-inline-p (lb)
   "True when LB is a background-less block whose direct content is a line box
 carrying a replaced atomic inline (an <img>/<object> image box).  Per CSS
@@ -834,7 +854,7 @@ floats — so the block must be ordered with the inlines, not the blocks (Acid2'
          (and cs (not (css:cstyle-background cs)) (not (css:cstyle-bg-image cs))))
        (some (lambda (c)
                (and (lbox-p c) (eq (lbox-kind c) :line)
-                    (some (lambda (it) (and (lbox-p it) (lbox-img it)))
+                    (some (lambda (it) (and (lbox-p it) (lbox-img-anywhere-p it)))
                           (lbox-children c))))
              (lbox-children lb))))
 

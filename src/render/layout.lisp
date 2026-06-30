@@ -251,12 +251,19 @@ and resolve them once this box's geometry is known (then a later unit-shift of
 this box, if any, carries them along correctly)."
   (let ((cs (st styles node)))
     (if (and cs (member (css:cstyle-position cs) '("relative" "absolute" "fixed") :test #'string=))
-        (let ((*abs-pending* nil))
-          (multiple-value-bind (lb adv mt-eff mb-eff) (%layout-core node styles x y avail-w avail-h)
+        (let ((*abs-pending* nil)
+              ;; Absolutely-positioned and fixed boxes establish a new block
+              ;; formatting context (CSS 2.1 9.4.1): floats inside them must not
+              ;; interact with floats in the surrounding BFC, and vice versa.
+              ;; Rebind *FLOATS* to NIL so e.g. the float inside Acid2's absolute
+              ;; .eyes box does not shove the .nose float sideways in the picture.
+              (*floats* (if (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)
+                            nil *floats*)))
+          (multiple-value-bind (lb adv mt-eff mb-eff mneg) (%layout-core node styles x y avail-w avail-h)
             (when (and lb *abs-pending*)
               (let ((cb (pad-box lb cs)))
                 (dolist (p *abs-pending*) (resolve-positioned (car p) cb (cdr p)))))
-            (values lb adv mt-eff mb-eff)))
+            (values lb adv mt-eff mb-eff mneg)))
         (%layout-core node styles x y avail-w avail-h))))
 
 (defun collapse-margins (&rest ms)
@@ -318,6 +325,9 @@ Returns (values lbox advance-height)."
            ;; effective (collapsed) outer margins reported up to the parent:
            ;; default to this box's own margins, raised by parent/child collapse.
            (mt-eff mt) (mb-eff mb)
+           ;; most-negative collapsing margin anywhere in this box's adjoining set,
+           ;; surfaced so a self-collapsing parent can keep it alive (see PREV-MB).
+           (box-mneg (min mt mb))
            (children '()) (content-h 0))
       ;; <pre>/white-space:pre — preserve newlines, no wrapping
       (when (and (string= (css:cstyle-white-space cs) "pre") (not (has-block-children styles node)))
@@ -354,7 +364,14 @@ Returns (values lbox advance-height)."
                     (append (when before (list before))
                             (coerce (h:dnode-children node) 'list)
                             (when after (list after)))))
-            (group '()) (yy cy) (prev-mb nil) (content-started nil) (first-child-mt nil))
+            ;; PREV-MB is the pending collapsible margin of the last in-flow
+            ;; block, kept as a (max-positive . min-negative) pair (NIL = none) so
+            ;; that a negative margin which is momentarily dominated by a larger
+            ;; positive one still survives to collapse with a later sibling
+            ;; (CSS 2.1 8.3.1).  MIN-CN tracks the most-negative collapsing margin
+            ;; anywhere inside, surfaced as MNEG for a self-collapsing parent.
+            (group '()) (yy cy) (prev-mb nil) (content-started nil) (first-child-mt nil)
+            (min-cn 0))
         (flet ((flush-inline ()
                  (when group
                    (let ((words (loop for g in (nreverse group) append (collect-words g styles cs content-w))))
@@ -387,45 +404,68 @@ Returns (values lbox advance-height)."
                    (when lb (push lb children))))
                 ((block-level-p styles k)
                  (flush-inline)
-                 (let ((cleared nil))
-                   (when (and kcs (member (css:cstyle-clear kcs) '("left" "right" "both") :test #'string=))
-                     (let ((ny (clear-y yy cx (+ cx content-w)
-                                       (case (intern (string-upcase (css:cstyle-clear kcs)) :keyword)
-                                         (:left '(:left)) (:right '(:right)) (t '(:left :right))))))
-                       (when (> ny yy)                                          ; clearance: margins do not collapse across it
-                         (incf content-h (- ny yy)) (setf yy ny)
-                         (setf prev-mb nil cleared t))))
-                   (let ((own-mt (if kcs (css:cstyle-margin-top kcs) 0)))
+                 (let ((own-mt (if kcs (css:cstyle-margin-top kcs) 0))
+                       (clear-sides (and kcs (member (css:cstyle-clear kcs) '("left" "right" "both") :test #'string=)
+                                         (case (intern (string-upcase (css:cstyle-clear kcs)) :keyword)
+                                           (:left '(:left)) (:right '(:right)) (t '(:left :right))))))
                      ;; lay the child out at YY, then SHIFT it so its border-top
-                     ;; lands at YY+GAP (GAP = the collapsed adjoining margin).
-                     ;; CMT/CMB are the child's *effective* margins (already
-                     ;; collapsed with its own first/last child).
-                     (multiple-value-bind (lb adv cmt cmb) (layout-node k styles cx yy content-w child-avail-h)
+                     ;; lands at FINAL-TOP (= YY+GAP, GAP = the collapsed adjoining
+                     ;; margin; pushed down by clearance if a cleared box must drop
+                     ;; below a float).  CMT/CMB are the child's *effective* margins
+                     ;; (already collapsed with its own first/last child).
+                     (multiple-value-bind (lb adv cmt cmb cmneg) (layout-node k styles cx yy content-w child-avail-h)
                        (declare (ignore adv))
                        (when lb
                          (let* ((cmt (or cmt own-mt))
                                 (cmb (or cmb (if kcs (css:cstyle-margin-bottom kcs) 0)))
+                                (cmneg (or cmneg 0))
                                 ;; parent/first in-flow child top-margin collapse:
                                 ;; only with zero top border AND padding, at the
                                 ;; very start of flow (nothing precedes the child).
-                                (top-collapse (and (not content-started) (not cleared)
+                                (top-collapse (and (not content-started)
                                                    (zerop bt) (zerop pt)))
-                                (gap (cond (prev-mb (collapse-margins prev-mb cmt))
+                                (gap (cond (prev-mb (+ (max (car prev-mb) (max 0 cmt))
+                                                       (min (cdr prev-mb) (min 0 cmt))))
                                            (top-collapse 0)   ; margin bubbles to parent's mt-eff
-                                           (t cmt))))
-                           (when top-collapse (setf first-child-mt cmt))
-                           (shift-box lb 0 (round (- (+ yy gap) (lbox-y lb))))   ; flow placement
+                                           (t cmt)))
+                                (natural-top (+ yy gap))
+                                ;; Clearance (CSS 2.1 9.5.2 / 8.3.1) only ever moves
+                                ;; a cleared box DOWN to clear floats: if its natural
+                                ;; (margin-collapsed) top is already at or below the
+                                ;; relevant float bottom, clearance is zero/negative
+                                ;; and the box stays at its natural position — the
+                                ;; negative-clearance case Acid2's smile depends on.
+                                (float-bottom (and clear-sides
+                                                   (clear-y yy cx (+ cx content-w) clear-sides)))
+                                (cleared (and float-bottom (> float-bottom (max yy natural-top))))
+                                (final-top (if cleared float-bottom natural-top)))
+                           (when (and top-collapse (not cleared)) (setf first-child-mt cmt))
+                           (shift-box lb 0 (round (- final-top (lbox-y lb))))   ; flow placement
                            (when (and kcs (string= pos "relative"))             ; visual shift, flow unchanged
                              (shift-box lb (round (cond ((numberp (css:cstyle-left kcs)) (css:cstyle-left kcs))
                                                         ((numberp (css:cstyle-right kcs)) (- (css:cstyle-right kcs))) (t 0)))
                                         (round (cond ((numberp (css:cstyle-top kcs)) (css:cstyle-top kcs))
                                                      ((numberp (css:cstyle-bottom kcs)) (- (css:cstyle-bottom kcs))) (t 0)))))
                            (push lb children)
-                           (let ((new-yy (+ (lbox-y lb) (lbox-h lb))))          ; border-bottom edge
-                             (incf content-h (- new-yy yy))
-                             (setf yy new-yy)
-                             (setf prev-mb cmb)                                  ; held to collapse with next sibling
-                             (setf content-started t))))))))
+                           (setf min-cn (min min-cn 0 cmt cmb cmneg))
+                           (if (and (zerop (lbox-h lb)) (not cleared))
+                               ;; Self-collapsing block (CSS 2.1 8.3.1): a zero-
+                               ;; height, border/padding-free box has its top and
+                               ;; bottom margins adjoining, so they collapse with
+                               ;; BOTH the previous block's pending margin and the
+                               ;; next block's top margin.  Do not advance the flow
+                               ;; position; instead fold this box's margins (keeping
+                               ;; the most-negative one, CMNEG) into the pending pair
+                               ;; so the next sibling collapses through it (this is
+                               ;; what lets Acid2's empty .empty box pull the smile
+                               ;; up to clear-abut the nose instead of voiding below).
+                               (setf prev-mb (cons (max (if prev-mb (car prev-mb) 0) (max 0 cmt cmb))
+                                                   (min (if prev-mb (cdr prev-mb) 0) (min 0 cmt cmb cmneg))))
+                               (let ((new-yy (+ (lbox-y lb) (lbox-h lb))))      ; border-bottom edge
+                                 (incf content-h (- new-yy yy))
+                                 (setf yy new-yy)
+                                 (setf prev-mb (cons (max 0 cmb) (min 0 cmb))) ; held to collapse with next sibling
+                                 (setf content-started t))))))))
                 ((or (eq (h:dnode-kind k) :text) (inline-level-p styles k)) (push k group)))))
           (flush-inline)
           ;; The last in-flow block's bottom margin (PREV-MB) was held back from
@@ -434,13 +474,15 @@ Returns (values lbox advance-height)."
           ;; out below and collapses into MB-EFF; otherwise it is contained and
           ;; adds to the content height.
           (when prev-mb
-            (let ((height-auto (not (numberp exp-h))))
+            (let ((height-auto (not (numberp exp-h)))
+                  (pm (+ (car prev-mb) (cdr prev-mb))))
               (if (and height-auto (zerop bb) (zerop pb))
-                  (setf mb-eff (collapse-margins mb prev-mb))
-                  (incf content-h prev-mb))))
+                  (setf mb-eff (collapse-margins mb (car prev-mb) (cdr prev-mb)))
+                  (incf content-h pm))))
           ;; parent/first-child collapse: first child's top margin bubbled up.
           (when first-child-mt
-            (setf mt-eff (collapse-margins mt first-child-mt)))))
+            (setf mt-eff (collapse-margins mt first-child-mt)))
+          (setf box-mneg (min mt mb min-cn))))
       (let* ((content-final (cond ((numberp exp-h) (if border-box (- exp-h pad-bord) exp-h)) (t content-h)))
              (box-h0 (+ content-final pt pb bt bb))
              ;; min/max-height as box-height floor/ceiling (CSS 2.1 10.7): a
@@ -456,7 +498,7 @@ Returns (values lbox advance-height)."
              (lb (make-lbox :x box-x :y box-y :w width :h box-h
                             :style cs :node node :kind :block :children (nreverse children)
                             :marker (when list-item (css:cstyle-list-style cs)))))
-        (values lb (+ mt (lbox-h lb) mb) mt-eff mb-eff)))))
+        (values lb (+ mt (lbox-h lb) mb) mt-eff mb-eff box-mneg)))))
 
 (defun shift-box (lb dx dy)
   "Recursively offset LB and its descendants by (DX,DY)."

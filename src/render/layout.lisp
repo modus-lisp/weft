@@ -105,7 +105,7 @@ intrinsic size (or CSS/HTML override); else an alt-text placeholder."
       (setf (lbox-children lb)
             (when (and alt (plusp (length alt)))
               (list (make-lbox :x 2 :y (max 0 (floor (- hh *font-h*) 2)) :w (- w 4) :h *font-h* :kind :line
-                               :children (list (make-frag :x 2 :w (* (length alt) *font-w*) :text alt :style cs)))))))
+                               :children (list (make-frag :x 2 :w (word-w alt cs) :text alt :style cs)))))))
     lb))
 
 (defun make-pseudo-node (content)
@@ -128,8 +128,19 @@ synthetic node's style in STYLES so the normal classifier handles it."
                  (setf (gethash pn styles) pcs) pn)))))
     (values (mk :before) (mk :after))))
 
-(defun word-w (word) (* (length word) *font-w*))
-(defun space-w () *font-w*)
+(defun style-size (style)
+  "Font-size (px) of a token's style, defaulting to 16 when style is missing."
+  (if style (css:cstyle-font-size style) 16))
+
+(defun word-w (word &optional style)
+  "Reserved width for WORD at its style's font-size — the width scribe will paint
+\(falls back to the bitmap metric inside MEASURE-TEXT-WIDTH on font failure)."
+  (round (measure-text-width word (style-size style))))
+
+(defun space-w (&optional style)
+  "Reserved inter-word space width at STYLE's font-size (the font's space-glyph
+advance), defaulting to the bitmap metric."
+  (round (measure-text-width " " (style-size style))))
 
 (defun next-float-bottom (y)
   "Smallest float bottom strictly greater than Y, or NIL."
@@ -156,10 +167,11 @@ text-align.  Returns (values line-boxes total-height)."
         (let* ((avail (- rx lx)) (cur '()) (cx lx) (line-h lh))
           (loop while (< i n) do
             (let* ((wd (aref ws i)) (atomic (eq (car wd) :atomic))
-                   (ww (if atomic (lbox-w (cdr wd)) (word-w (car wd))))
-                   (need (if cur (+ (space-w) ww) ww)))
+                   (sw (space-w (if atomic base-cs (cdr wd))))
+                   (ww (if atomic (lbox-w (cdr wd)) (word-w (car wd) (cdr wd))))
+                   (need (if cur (+ sw ww) ww)))
               (when (and cur (not nowrap) (> (+ (- cx lx) need) avail)) (return))
-              (when (> (- cx lx) 0) (incf cx (space-w)))
+              (when (> (- cx lx) 0) (incf cx sw))
               (if atomic
                   (let ((lb (cdr wd)))
                     (shift-box lb (round (- cx (lbox-x lb))) 0)
@@ -170,7 +182,7 @@ text-align.  Returns (values line-boxes total-height)."
             (let* ((wd (aref ws i)))
               (if (eq (car wd) :atomic) (let ((lb (cdr wd))) (shift-box lb (round (- lx (lbox-x lb))) 0)
                                           (setf line-h (max line-h (lbox-h lb))) (push lb cur))
-                  (push (make-frag :x lx :w (word-w (car wd)) :text (car wd) :style (cdr wd)) cur))
+                  (push (make-frag :x lx :w (word-w (car wd) (cdr wd)) :text (car wd) :style (cdr wd)) cur))
               (incf i)))
           (let* ((items (nreverse cur))
                  (lastx (let ((it (car (last items)))) (if (frag-p it) (+ (frag-x it) (frag-w it)) (+ (lbox-x it) (lbox-w it)))))
@@ -314,7 +326,7 @@ Returns (values lbox advance-height)."
           (dolist (ln (split-newlines text))
             (push (make-lbox :x cx :y yy :w content-w :h lh :kind :line
                              :children (when (plusp (length ln))
-                                         (list (make-frag :x cx :w (word-w ln) :text ln :style cs))))
+                                         (list (make-frag :x cx :w (word-w ln cs) :text ln :style cs))))
                   children)
             (incf yy lh) (incf content-h lh)))
         (let* ((box-h (+ content-h pt pb bt bb))
@@ -457,11 +469,11 @@ Returns (values lbox advance-height)."
 
 (defun est-content-width (node styles)
   "Rough shrink-to-fit width estimate for a flex item."
-  (let ((words (collect-words node styles (st styles node) 600)) (w 0))
+  (let* ((base (st styles node)) (words (collect-words node styles base 600)) (w 0))
     (dolist (wd words)
       (if (eq (car wd) :atomic)
-          (incf w (+ (lbox-w (cdr wd)) (space-w)))
-          (incf w (+ (word-w (car wd)) (space-w)))))
+          (incf w (+ (lbox-w (cdr wd)) (space-w base)))
+          (incf w (+ (word-w (car wd) (cdr wd)) (space-w (cdr wd))))))
     (min w 600)))
 
 (defun item-base (item styles content-w)
@@ -559,7 +571,8 @@ Returns (values cell-lboxes content-height)."
 on a single (unwrapped) line."
   (let ((words (collect-words node styles cs content-w)) (w 0))
     (dolist (wd words)
-      (incf w (+ (if (eq (car wd) :atomic) (lbox-w (cdr wd)) (word-w (car wd))) (space-w))))
+      (incf w (+ (if (eq (car wd) :atomic) (lbox-w (cdr wd)) (word-w (car wd) (cdr wd)))
+                 (space-w (if (eq (car wd) :atomic) cs (cdr wd))))))
     w))
 
 (defun pref-content-width (node styles content-w &optional (depth 0))
@@ -788,16 +801,18 @@ image paints nothing (the bg color shows through)."
                (paint-children cv (lbox-children lb)))
              (paint-children cv (lbox-children lb)))))
       (:line
-       (let ((yoff (max 0 (floor (- (lbox-h lb) *font-h*) 2))))
-         (dolist (it (lbox-children lb))
-           (if (frag-p it)
-               (let ((cs (frag-style it)))
-                 (draw-text-scribe cv (frag-text it) (round (frag-x it)) (round (+ (lbox-y lb) yoff))
-                            (rgb (css:cstyle-color cs))
-                            (css:cstyle-font-size cs)
-                            :bold (>= (css:cstyle-font-weight cs) 600)
-                            :underline (member "underline" (css:cstyle-text-decoration cs) :test #'string=)))
-               (paint-box cv it))))))))   ; atomic inline-block / img box
+       (dolist (it (lbox-children lb))
+         (if (frag-p it)
+             (let ((cs (frag-style it)))
+               ;; pass the line box geometry so scribe centers the real font
+               ;; em-box (ascent+descent at font-size) within it.
+               (draw-text-scribe cv (frag-text it) (round (frag-x it))
+                          (lbox-y lb) (lbox-h lb)
+                          (rgb (css:cstyle-color cs))
+                          (css:cstyle-font-size cs)
+                          :bold (>= (css:cstyle-font-weight cs) 600)
+                          :underline (member "underline" (css:cstyle-text-decoration cs) :test #'string=)))
+             (paint-box cv it)))))))   ; atomic inline-block / img box
 
 (defun percent-decode (s)
   "Decode %XX escapes in a URI component (leaves '+' literal — data: URIs are not

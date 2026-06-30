@@ -186,7 +186,15 @@ advance), defaulting to the bitmap metric."
 (defun layout-inline (words content-x start-y content-w base-cs)
   "Greedy-wrap WORDS into line boxes, flowing around active floats and honoring
 text-align.  Returns (values line-boxes total-height)."
-  (let* ((lh (max *font-h* (round (* (css:cstyle-font-size base-cs) (css:cstyle-line-height base-cs)))))
+  (let* (;; Line-box height is the used line-height = font-size x line-height
+         ;; (CSS 2.1 10.8).  The legacy *FONT-H* (bitmap glyph height) floor is
+         ;; gone: with real scribe metrics a small font must honour its small
+         ;; line box, e.g. Acid2's .chin (font-size 12, line-height 1em -> 12px,
+         ;; not 13) so its single line clears the float just below it instead of
+         ;; overlapping by 1px and being pushed a full float-height down.  Normal
+         ;; 16px text (line-height 1.2 -> 19) is unaffected; only sub-13px lines
+         ;; change, and toward the correct (tighter) value.
+         (lh (max 1 (round (* (css:cstyle-font-size base-cs) (css:cstyle-line-height base-cs)))))
          (align (css:cstyle-text-align base-cs))
          (nowrap (member (css:cstyle-white-space base-cs) '("nowrap" "pre") :test #'string=))
          (cright (+ content-x content-w))

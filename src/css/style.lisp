@@ -21,6 +21,10 @@
   (flex-wrap "nowrap") (flex-grow 0.0) (flex-shrink 1.0) (flex-basis "auto") (gap 0.0)
   (top :auto) (left :auto) (right :auto) (bottom :auto) (z-index 0)
   (bg-gradient nil)   ; (dir from-rgba to-rgba), dir :vertical | :horizontal
+  (bg-image nil)      ; raw url() string of a background image (data: URI), decoded at paint
+  (bg-repeat "repeat") ; repeat | repeat-x | repeat-y | no-repeat
+  (bg-position nil)   ; ((xval xunit) (yval yunit)) or NIL = 0,0
+  (bg-attachment "scroll") ; scroll | fixed (fixed images are not painted; see paint)
   (min-height 0.0) (max-height :none)
   (content nil))      ; generated-content string for ::before/::after (NIL = no box)
 
@@ -246,12 +250,28 @@ Ignores the system-font keywords (caption/icon/...)."
         ((string= prop "color") (let ((c (resolve-color value))) (when c (setf (cstyle-color cs) c))))
         ((member prop '("background-color" "background" "background-image") :test #'string=)
          (let ((grad (parse-linear-gradient value))
+               (url (extract-css-url value))
                (tok (string-downcase (string-trim '(#\Space) (first-token value)))))
            (cond (grad (setf (cstyle-bg-gradient cs) grad))
                  ;; `none`/`transparent` clear any background set by an earlier rule
                  ((member tok '("none" "transparent") :test #'string=)
-                  (setf (cstyle-background cs) nil (cstyle-bg-gradient cs) nil))
-                 (t (let ((c (resolve-color (first-token value)))) (when c (setf (cstyle-background cs) c)))))))
+                  (setf (cstyle-background cs) nil (cstyle-bg-gradient cs) nil (cstyle-bg-image cs) nil))
+                 (t (let ((c (resolve-color (first-token value)))) (when c (setf (cstyle-background cs) c)))))
+           ;; capture a url() image (data: URI) from `background`/`background-image`
+           (when url
+             (setf (cstyle-bg-image cs) url)
+             (when (string= prop "background")
+               ;; pull repeat/attachment keywords out of the shorthand
+               (let ((toks (css-background-tokens value)))
+                 (when (member "fixed" toks :test #'string=) (setf (cstyle-bg-attachment cs) "fixed"))
+                 (let ((r (find-if (lambda (tk) (member tk '("repeat" "repeat-x" "repeat-y" "no-repeat") :test #'string=)) toks)))
+                   (when r (setf (cstyle-bg-repeat cs) r))))))))
+        ((string= prop "background-repeat")
+         (let ((v (parse-value "background-repeat" value))) (when (stringp v) (setf (cstyle-bg-repeat cs) v))))
+        ((string= prop "background-position")
+         (let ((v (parse-value "background-position" value))) (when (and (consp v) (not (eq v :invalid))) (setf (cstyle-bg-position cs) v))))
+        ((string= prop "background-attachment")
+         (setf (cstyle-bg-attachment cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "font-size")
          (let ((base (if parent-cs (cstyle-font-size parent-cs) 16.0)))
            (cond ((search "%" value) (let ((p (parse-value "percentage" value))) (when (numberp p) (setf (cstyle-font-size cs) (* base (/ p 100.0))))))
@@ -330,6 +350,32 @@ Ignores the system-font keywords (caption/icon/...)."
         ((string= prop "border-width") (let ((v (len))) (when v (setf (cstyle-border-top-width cs) v (cstyle-border-right-width cs) v (cstyle-border-bottom-width cs) v (cstyle-border-left-width cs) v))))))))
 
 (defun first-token (s) (let ((p (position #\Space (string-trim '(#\Space) s)))) (if p (subseq (string-trim '(#\Space) s) 0 p) (string-trim '(#\Space) s))))
+
+(defun extract-css-url (value)
+  "Return the URL inside the first url(...) in VALUE (surrounding quotes stripped),
+or NIL.  Stops at the first ')' — data: URIs use base64/percent-encoding and never
+contain a literal ')'.  The URL is returned raw (e.g. still %-encoded)."
+  (let ((p (search "url(" value :test #'char-equal)))
+    (when p
+      (let* ((start (+ p 4))
+             (end (position #\) value :start start)))
+        (when end
+          (let ((inner (string-trim '(#\Space #\Tab #\Newline #\Return) (subseq value start end))))
+            (when (and (>= (length inner) 2)
+                       (let ((c0 (char inner 0)))
+                         (and (or (char= c0 #\") (char= c0 #\')) (char= c0 (char inner (1- (length inner)))))))
+              (setf inner (subseq inner 1 (1- (length inner)))))
+            (when (plusp (length inner)) inner)))))))
+
+(defun css-background-tokens (value)
+  "Whitespace-split a `background` shorthand VALUE into lowercase tokens, with the
+url(...) chunk removed (so its contents aren't mistaken for keywords)."
+  (let* ((p (search "url(" value :test #'char-equal))
+         (v (if p
+                (let ((end (position #\) value :start (+ p 4))))
+                  (if end (concatenate 'string (subseq value 0 p) " " (subseq value (1+ end))) value))
+                value)))
+    (remove "" (split-ws (string-downcase v)) :test #'string=)))
 
 (defun split-tokens (s)
   (remove "" (loop with start = 0 for i from 0 to (length s)

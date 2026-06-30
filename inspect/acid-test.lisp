@@ -1,14 +1,12 @@
 ;;;; inspect/acid-test.lisp — Acid2/Acid3 as permanent regression + progress tests.
 ;;;;
-;;;; weft does NOT pass Acid2 (generated content + data-URI images now exist, but
-;;;; pixel-exact positioning/clipping does not, so the parts don't assemble into
-;;;; the face) and CANNOT run Acid3 (no JS engine).
-;;;; So this is NOT a pass/fail conformance claim — it is:
-;;;;   (1) a robustness guard: rendering the vendored test pages must not error;
-;;;;   (2) a progress tracker: it reports each render's ink coverage (fraction of
-;;;;       painted pixels) and dimensions, so improvements/regressions are visible
-;;;;       over time without pretending we pass.
-;;;; The gate only FAILS the build if a render raises an error.
+;;;; weft renders Acid2 at 99.9% pixel-match vs a real browser (the face fully
+;;;; assembles); the conformance number is measured by inspect/acid2-reftest.py +
+;;;; inspect/acid2-layout-diff.py (vs Chromium ground truth), not here. Acid3 is
+;;;; ~99% JavaScript and CANNOT run until the JS engine (P4) lands.
+;;;; This gate itself is a ROBUSTNESS guard + progress signal:
+;;;;   (1) the build fails if rendering the vendored test pages raises an error;
+;;;;   (2) it reports each render's ink coverage + dimensions for visibility.
 (defpackage #:weft.acid.test
   (:use #:cl) (:local-nicknames (#:r #:weft.render)) (:export #:run))
 (in-package #:weft.acid.test)

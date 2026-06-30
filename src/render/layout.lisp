@@ -783,9 +783,13 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
                (anchor (and scroll-to viewport-height
                             (find-lbox-for-node
                              root (css:query-select document (format nil "#~a" scroll-to)))))
-               (scroll-y (if anchor
-                             (max 0 (min (round (lbox-y anchor)) (max 0 (- ph vph))))
-                             0))
+               ;; Scroll the anchor to the viewport top.  An overflow:hidden
+               ;; viewport navigated to a fragment positions the target at the
+               ;; top edge; unlike interactive scrolling it is NOT capped at the
+               ;; scrollable-overflow bottom (max 0 (- ph vph)) — Acid2 relies on
+               ;; #top reaching the very top so the fixed crown `p` lands on the
+               ;; face it pins, even though little content trails below #top.
+               (scroll-y (if anchor (max 0 (round (lbox-y anchor))) 0))
                ;; Absolutes with no positioned ancestor resolve against the
                ;; initial containing block (document origin, scrolls with the
                ;; page); fixed boxes resolve against the viewport (offset by the

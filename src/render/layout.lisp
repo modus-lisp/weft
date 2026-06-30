@@ -379,11 +379,19 @@ Returns (values lbox advance-height)."
            ;; shrink-to-fit (CSS 10.3.7): min(available, preferred max-content).
            (shrink (and (null spec-w)
                         (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)))
+           ;; a display:table box with auto width is shrink-to-fit (CSS 17.5.2):
+           ;; it sizes to the sum of its column widths, not the available width.
+           (table-shrink (and (null spec-w) (string= (cdisplay cs) "table")))
            ;; border-box width of this element
            (width (let ((bw (cond ((numberp spec-w) (if border-box spec-w (+ spec-w pad-bord)))
                                   (shrink (min (- avail-w ml mr)
                                                (+ (pref-content-width node styles (- avail-w ml mr))
                                                   pad-bord)))
+                                  (table-shrink
+                                   (let ((nat (table-natural-width node styles (- avail-w ml mr))))
+                                     (if (plusp nat)
+                                         (min (- avail-w ml mr) (+ nat pad-bord))
+                                         (- avail-w ml mr))))
                                   (t (- avail-w ml mr)))))
                     (when (numberp max-w) (setf bw (min bw (if border-box max-w (+ max-w pad-bord)))))
                     (when (numberp min-w) (setf bw (max bw (if border-box min-w (+ min-w pad-bord)))))
@@ -665,17 +673,58 @@ Returns (values lbox advance-height)."
                 (incf y (+ adv gap))))
             (values (nreverse boxes) (- y cy gap)))))))
 
+(defun cell-like-p (c styles)
+  "True when child C of a table participates as a cell — i.e. it is not itself an
+internal-table box (row/row-group/column/caption) nor display:none.  Anything
+else (table-cell, or a stray block/list-item/table) is wrapped in an anonymous
+cell per CSS 17.2.1."
+  (let ((d (cdisplay (st styles c))))
+    (not (member d '("table-row" "table-row-group" "table-header-group"
+                     "table-footer-group" "table-column" "table-column-group"
+                     "table-caption" "none")
+                 :test #'string=))))
 (defun table-rows (node styles)
-  "Collect <tr> rows directly under NODE or within row-groups."
+  "Collect <tr> rows directly under NODE or within row-groups.  When the table
+has no explicit row boxes but does carry cell-like children, CSS 17.2.1 wraps
+them in an anonymous table-row — represented here by the table NODE itself."
   (let ((rows '()))
     (dolist (c (child-elements node))
       (let ((d (cdisplay (st styles c))))
         (cond ((string= d "table-row") (push c rows))
-              ((string= d "table-row-group")
+              ((member d '("table-row-group" "table-header-group" "table-footer-group")
+                       :test #'string=)
                (dolist (r (child-elements c)) (when (string= (cdisplay (st styles r)) "table-row") (push r rows)))))))
-    (nreverse rows)))
-(defun row-cells (row styles)
-  (remove-if-not (lambda (c) (string= (cdisplay (st styles c)) "table-cell")) (child-elements row)))
+    (or (nreverse rows)
+        (when (some (lambda (c) (cell-like-p c styles)) (child-elements node))
+          (list node)))))
+(defun row-cells (row styles &optional table)
+  "Cells of ROW.  A real <tr> contributes its table-cell children; an anonymous
+row (ROW eq the TABLE node) wraps every cell-like child as a cell."
+  (if (and table (eq row table))
+      (remove-if (lambda (c) (not (cell-like-p c styles))) (child-elements row))
+      (remove-if-not (lambda (c) (string= (cdisplay (st styles c)) "table-cell")) (child-elements row))))
+
+(defun cell-natural-width (cell styles avail)
+  "Max-content border-box width of a table CELL (explicit width wins)."
+  (let* ((cs (st styles cell))
+         (w (and cs (css:cstyle-width cs)))
+         (pad-bord (if cs (+ (css:cstyle-padding-left cs) (css:cstyle-padding-right cs)
+                             (used-border cs :l) (used-border cs :r))
+                       0)))
+    (max 0 (+ pad-bord (if (numberp w) w (pref-content-width cell styles avail))))))
+
+(defun table-natural-width (node styles avail)
+  "Shrink-to-fit CONTENT width of a display:table NODE: the sum of its column
+widths, each column as wide as its widest cell.  0 when it has no cells."
+  (let ((rows (table-rows node styles)))
+    (if (null rows) 0
+        (let ((cols (make-hash-table)) (ncols 0))
+          (dolist (row rows)
+            (loop for cell in (row-cells row styles node) for i from 0 do
+              (setf ncols (max ncols (1+ i)))
+              (setf (gethash i cols)
+                    (max (or (gethash i cols) 0) (cell-natural-width cell styles avail)))))
+          (loop for i from 0 below ncols sum (or (gethash i cols) 0))))))
 
 (defun layout-table (node styles cx cy content-w base-cs)
   "Fixed table layout: equal columns, rows stacked, cells stretched to row height.
@@ -683,10 +732,10 @@ Returns (values cell-lboxes content-height)."
   (declare (ignore base-cs))
   (let* ((rows (table-rows node styles)))
     (when (null rows) (return-from layout-table (values nil 0)))
-    (let* ((ncols (reduce #'max (mapcar (lambda (r) (length (row-cells r styles))) rows) :initial-value 1))
+    (let* ((ncols (reduce #'max (mapcar (lambda (r) (length (row-cells r styles node))) rows) :initial-value 1))
            (colw (max 1 (floor content-w ncols))) (y cy) (boxes '()))
       (dolist (row rows)
-        (let ((cells (row-cells row styles)) (rowh 0) (rowboxes '()) (col 0))
+        (let ((cells (row-cells row styles node)) (rowh 0) (rowboxes '()) (col 0))
           (dolist (cell cells)
             (multiple-value-bind (lb adv) (layout-node cell styles (+ cx (* col colw)) y colw)
               (declare (ignore adv))

@@ -820,6 +820,24 @@ painting is clipped to LB's border box (default background-clip)."
                   (when (and (> (+ tx iw) bx0) (> (+ ty ih) by0))
                     (blit-img cv img tx ty)))))))))))
 
+(defun border-edge-color (cs edge)
+  "RGB list for EDGE (:t :r :b :l): the per-edge color, falling back to BORDER-COLOR."
+  (rgb (or (case edge
+             (:t (css:cstyle-border-top-color cs)) (:r (css:cstyle-border-right-color cs))
+             (:b (css:cstyle-border-bottom-color cs)) (:l (css:cstyle-border-left-color cs)))
+           (css:cstyle-border-color cs))))
+
+(defun paint-borders (cv lb cs)
+  "Paint the four border edges, each with its own color (overlapping rectangles)."
+  (let* ((bt (css:cstyle-border-top-width cs)) (br (css:cstyle-border-right-width cs))
+         (bb (css:cstyle-border-bottom-width cs)) (bl (css:cstyle-border-left-width cs))
+         (x0 (lbox-x lb)) (y0 (lbox-y lb)) (w (lbox-w lb)) (h (lbox-h lb))
+         (x1 (+ x0 w)) (y1 (+ y0 h)))
+    (when (plusp bt) (fill-rect cv x0 y0 w bt (border-edge-color cs :t)))
+    (when (plusp bb) (fill-rect cv x0 (- y1 bb) w bb (border-edge-color cs :b)))
+    (when (plusp bl) (fill-rect cv x0 y0 bl h (border-edge-color cs :l)))
+    (when (plusp br) (fill-rect cv (- x1 br) y0 br h (border-edge-color cs :r)))))
+
 (defun paint-box (cv lb)
   (handler-case (%paint-box cv lb) (error () nil)))
 (defun %paint-box (cv lb)
@@ -843,11 +861,7 @@ painting is clipped to LB's border box (default background-clip)."
          (when (lbox-img lb)
            (blit-img cv (lbox-img lb) (round (lbox-x lb)) (round (lbox-y lb))
                      (round (lbox-w lb)) (round (lbox-h lb))))
-         (let ((bc (rgb (css:cstyle-border-color cs))))
-           (when (plusp (css:cstyle-border-top-width cs)) (fill-rect cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (css:cstyle-border-top-width cs) bc))
-           (when (plusp (css:cstyle-border-bottom-width cs)) (fill-rect cv (lbox-x lb) (- (+ (lbox-y lb) (lbox-h lb)) (css:cstyle-border-bottom-width cs)) (lbox-w lb) (css:cstyle-border-bottom-width cs) bc))
-           (when (plusp (css:cstyle-border-left-width cs)) (fill-rect cv (lbox-x lb) (lbox-y lb) (css:cstyle-border-left-width cs) (lbox-h lb) bc))
-           (when (plusp (css:cstyle-border-right-width cs)) (fill-rect cv (- (+ (lbox-x lb) (lbox-w lb)) (css:cstyle-border-right-width cs)) (lbox-y lb) (css:cstyle-border-right-width cs) (lbox-h lb) bc)))
+         (paint-borders cv lb cs)
          (when (and (lbox-marker lb) (plusp (length (marker-glyph (lbox-marker lb)))))
            (draw-text cv (marker-glyph (lbox-marker lb))
                       (round (- (+ (lbox-x lb) (css:cstyle-padding-left cs)) (* 2 *font-w*)))

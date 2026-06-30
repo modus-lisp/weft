@@ -19,6 +19,9 @@
            #:cstyle-padding-right #:cstyle-padding-bottom #:cstyle-padding-left
            #:cstyle-border-top-width #:cstyle-border-right-width #:cstyle-border-bottom-width
            #:cstyle-border-left-width #:cstyle-border-color #:cstyle-text-align #:cstyle-white-space
+           #:cstyle-border-top-color #:cstyle-border-right-color #:cstyle-border-bottom-color #:cstyle-border-left-color
+           #:cstyle-border-top-style #:cstyle-border-right-style #:cstyle-border-bottom-style #:cstyle-border-left-style
+           #:border-edge-painted-p
            #:cstyle-text-decoration #:cstyle-list-style
            #:cstyle-max-width #:cstyle-min-width #:cstyle-margin-left-auto #:cstyle-margin-right-auto
            #:cstyle-float #:cstyle-clear #:cstyle-position #:cstyle-box-sizing #:cstyle-overflow

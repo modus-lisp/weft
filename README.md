@@ -9,6 +9,13 @@ This is the start of a long program, not a toy. The goal is an independent
 engine in the spirit of [Ladybird](https://ladybird.org/): own your entire view
 of the web, top to bottom, auditable.
 
+**Why "weft"?** In weaving, the *warp* is the fixed lengthwise thread held under
+tension; the *weft* is drawn crosswise through it, and that crossing is what turns
+loose threads into cloth. A web is woven — and a browser is where every thread
+(fetch, encoding, DOM, CSS, layout, paint) is finally drawn together into the
+fabric of a page. The specs are the warp we can't move; weft is what we thread
+across them, by hand, in pure Lisp.
+
 ## Status — P0–P3: fetch → DOM → CSS → layout → **pixels** ✅
 
 weft now renders styled pages to PNG images, in pure Common Lisp, no browser

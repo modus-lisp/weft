@@ -52,8 +52,20 @@ def main():
                   f"weft @({w['x']:>4},{w['y']:>4}) {w['w']:>3}x{w['h']:>3}   "
                   f"d=({dx:+d},{dy:+d},{dw:+d},{dh:+d})")
         rows.append((err, name, detail))
+    # FACE-region error: only elements the smiley is made of — browser-visible
+    # (w>0,h>0) AND within the ~168px face (browser y < 190). Excludes the
+    # invisible quirk table and the ul/image-height-test scaffolding below the
+    # face, which the pixel oracle also ignores. This is the number to drive.
+    face = 0
+    for i in range(n):
+        b, w = bels[i], weft[i]
+        if not isinstance(w, dict) or w.get("box", 0) is None: continue
+        if "x" not in w: continue
+        if b["w"] > 0 and b["h"] > 0 and b["y"] < 190:
+            face += abs(w["x"]-b["x"])+abs(w["y"]-b["y"])+abs(w["w"]-b["w"])+abs(w["h"]-b["h"])
     rows.sort(key=lambda r: -r[0])
-    print(f"TOTAL GEOMETRY ERROR: {total}  (sum |dx|+|dy|+|dw|+|dh| over boxed elements; drive to 0)\n")
+    print(f"FACE GEOMETRY ERROR : {face}  (visible elements within the face; THE number to drive to 0)")
+    print(f"total (incl. below-face scaffolding + invisible quirks): {total}\n")
     shown = 0
     for err, name, detail in rows:
         if err == 0 and not show_all:

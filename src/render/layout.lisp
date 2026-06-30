@@ -820,23 +820,31 @@ painting is clipped to LB's border box (default background-clip)."
                   (when (and (> (+ tx iw) bx0) (> (+ ty ih) by0))
                     (blit-img cv img tx ty)))))))))))
 
+(defun border-edge-raw-color (cs edge)
+  "The stored (r g b a) color for EDGE, falling back to BORDER-COLOR, or NIL."
+  (or (case edge
+        (:t (css:cstyle-border-top-color cs)) (:r (css:cstyle-border-right-color cs))
+        (:b (css:cstyle-border-bottom-color cs)) (:l (css:cstyle-border-left-color cs)))
+      (css:cstyle-border-color cs)))
+
 (defun border-edge-color (cs edge)
   "RGB list for EDGE (:t :r :b :l): the per-edge color, falling back to BORDER-COLOR."
-  (rgb (or (case edge
-             (:t (css:cstyle-border-top-color cs)) (:r (css:cstyle-border-right-color cs))
-             (:b (css:cstyle-border-bottom-color cs)) (:l (css:cstyle-border-left-color cs)))
-           (css:cstyle-border-color cs))))
+  (rgb (border-edge-raw-color cs edge)))
 
 (defun border-edge-width (cs edge)
   "Effective border width for EDGE: the declared width, or 0 when the edge's
-border-style is none/hidden."
+border-style is none/hidden, or when its color is fully transparent (alpha 0,
+e.g. Acid2's smile spans whose left/right borders are `solid transparent`)."
   (multiple-value-bind (w sty)
       (case edge
         (:t (values (css:cstyle-border-top-width cs) (css:cstyle-border-top-style cs)))
         (:r (values (css:cstyle-border-right-width cs) (css:cstyle-border-right-style cs)))
         (:b (values (css:cstyle-border-bottom-width cs) (css:cstyle-border-bottom-style cs)))
         (:l (values (css:cstyle-border-left-width cs) (css:cstyle-border-left-style cs))))
-    (if (css:border-edge-painted-p sty) w 0.0)))
+    (let ((col (border-edge-raw-color cs edge)))
+      (if (and (css:border-edge-painted-p sty)
+               (not (and col (fourth col) (<= (fourth col) 0))))
+          w 0.0))))
 
 (defun paint-borders (cv lb cs)
   "Paint the four border edges, each with its own color.  Edges whose

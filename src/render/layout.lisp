@@ -698,6 +698,55 @@ positioned boxes ordered by z-index.  Equal z-index keeps tree order (stable)."
 (defun marker-glyph (kind) (cond ((string= kind "circle") "o") ((string= kind "square") "#")
                                  ((string= kind "none") "") (t "•")))
 
+(defun bg-pos-offset (comp avail)
+  "Resolve one background-position component COMP = (value unit) to a px offset
+within AVAIL (= box-dim - image-dim).  Honors px and % (and 0); other units 0."
+  (if (and (consp comp) (>= (length comp) 2))
+      (let ((val (first comp)) (unit (second comp)))
+        (cond ((string= unit "%") (round (* (/ val 100.0) (max 0 avail))))
+              ((or (string= unit "px") (string= unit "")) (round val))
+              (t 0)))
+      0))
+
+(defun paint-bg-image (cv lb cs url)
+  "Decode the data: URI URL and tile it across LB's padding box honoring
+background-repeat and a simple background-position.  Best-effort: an undecodable
+image paints nothing (the bg color shows through)."
+  (let* ((duri (if (find #\% url) (percent-decode url) url))
+         (img (and (>= (length duri) 5) (string-equal (subseq duri 0 5) "data:")
+                   (ignore-errors (decode-image duri)))))
+    (when (and img (plusp (img-w img)) (plusp (img-h img)))
+      (let* ((iw (img-w img)) (ih (img-h img))
+             (rep (css:cstyle-bg-repeat cs))
+             (repx (member rep '("repeat" "repeat-x") :test #'string=))
+             (repy (member rep '("repeat" "repeat-y") :test #'string=))
+             ;; padding box (inside the borders)
+             (px0 (round (+ (lbox-x lb) (css:cstyle-border-left-width cs))))
+             (py0 (round (+ (lbox-y lb) (css:cstyle-border-top-width cs))))
+             (px1 (round (- (+ (lbox-x lb) (lbox-w lb)) (css:cstyle-border-right-width cs))))
+             (py1 (round (- (+ (lbox-y lb) (lbox-h lb)) (css:cstyle-border-bottom-width cs))))
+             (pos (css:cstyle-bg-position cs))
+             (offx (if pos (bg-pos-offset (first pos) (- (- px1 px0) iw)) 0))
+             (offy (if pos (bg-pos-offset (second pos) (- (- py1 py0) ih)) 0))
+             (ox (+ px0 offx)) (oy (+ py0 offy)))
+        (when (and (> px1 px0) (> py1 py0))
+          ;; clip tiles to the padding box so they never bleed out
+          (let ((*clip* (clip-intersect px0 py0 px1 py1)))
+            ;; common case: a 1x1 image filling the box — paint a solid rect.
+            (if (and (= iw 1) (= ih 1) (>= (aref (img-rgba img) 3) 255))
+                (let ((r (aref (img-rgba img) 0)) (g (aref (img-rgba img) 1)) (b (aref (img-rgba img) 2)))
+                  (fill-rect cv (if repx px0 ox) (if repy py0 oy)
+                             (if repx (- px1 px0) 1) (if repy (- py1 py0) 1) (list r g b)))
+                ;; general tiling
+                (let ((startx (if repx (- ox (* iw (ceiling (- ox px0) iw))) ox))
+                      (starty (if repy (- oy (* ih (ceiling (- oy py0) ih))) oy)))
+                  (loop for ty = starty then (+ ty ih)
+                        while (and (< ty py1) (or repy (= ty starty))) do
+                    (loop for tx = startx then (+ tx iw)
+                          while (and (< tx px1) (or repx (= tx startx))) do
+                      (when (and (> (+ tx iw) px0) (> (+ ty ih) py0))
+                        (blit-img cv img tx ty))))))))))))
+
 (defun paint-box (cv lb)
   (handler-case (%paint-box cv lb) (error () nil)))
 (defun %paint-box (cv lb)
@@ -710,6 +759,13 @@ positioned boxes ordered by z-index.  Equal z-index keeps tree order (stable)."
                   (fill-gradient cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) dir (rgb from) (rgb to))))
                ((css:cstyle-background cs)
                 (fill-rect cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) (rgb (css:cstyle-background cs)))))
+         ;; CSS background image: over the bg color, under the borders, tiled and
+         ;; clipped to this box's padding box.  Fixed-attachment images are not
+         ;; painted (out of scope) — for Acid2 that is the correct result (their
+         ;; images are positioned to the viewport, off this element).
+         (when (and (css:cstyle-bg-image cs)
+                    (not (string-equal (css:cstyle-bg-attachment cs) "fixed")))
+           (paint-bg-image cv lb cs (css:cstyle-bg-image cs)))
          (when (lbox-img lb)
            (blit-img cv (lbox-img lb) (round (lbox-x lb)) (round (lbox-y lb))
                      (round (lbox-w lb)) (round (lbox-h lb))))

@@ -265,7 +265,15 @@ Ignores the system-font keywords (caption/icon/...)."
                (let ((toks (css-background-tokens value)))
                  (when (member "fixed" toks :test #'string=) (setf (cstyle-bg-attachment cs) "fixed"))
                  (let ((r (find-if (lambda (tk) (member tk '("repeat" "repeat-x" "repeat-y" "no-repeat") :test #'string=)) toks)))
-                   (when r (setf (cstyle-bg-repeat cs) r))))))))
+                   (when r (setf (cstyle-bg-repeat cs) r)))
+                 ;; pull a background-position (length/percent/keyword pair, e.g.
+                 ;; the `1px 0` in Acid2's eye images) out of the shorthand
+                 (let ((postoks (remove-if-not #'bg-position-token-p toks)))
+                   (when postoks
+                     (let ((v (parse-value "background-position"
+                                           (format nil "~{~a~^ ~}" postoks))))
+                       (when (and (consp v) (not (eq v :invalid)))
+                         (setf (cstyle-bg-position cs) v))))))))))
         ((string= prop "background-repeat")
          (let ((v (parse-value "background-repeat" value))) (when (stringp v) (setf (cstyle-bg-repeat cs) v))))
         ((string= prop "background-position")
@@ -366,6 +374,14 @@ contain a literal ')'.  The URL is returned raw (e.g. still %-encoded)."
                          (and (or (char= c0 #\") (char= c0 #\')) (char= c0 (char inner (1- (length inner)))))))
               (setf inner (subseq inner 1 (1- (length inner)))))
             (when (plusp (length inner)) inner)))))))
+
+(defun bg-position-token-p (tok)
+  "True when TOK could be a background-position component (a length/percentage or
+a position keyword), so it can be pulled out of a `background` shorthand."
+  (or (member tok '("left" "right" "top" "bottom" "center") :test #'string=)
+      (and (plusp (length tok))
+           (let ((c (char tok 0)))
+             (or (digit-char-p c) (char= c #\.) (char= c #\-) (char= c #\+))))))
 
 (defun css-background-tokens (value)
   "Whitespace-split a `background` shorthand VALUE into lowercase tokens, with the

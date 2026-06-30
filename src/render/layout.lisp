@@ -760,6 +760,41 @@ image paints nothing (the bg color shows through)."
                       (when (and (> (+ tx iw) px0) (> (+ ty ih) py0))
                         (blit-img cv img tx ty))))))))))))
 
+(defun paint-bg-image-fixed (cv lb cs url)
+  "Tile URL's image as a background-attachment:fixed background: the tile grid is
+anchored to the VIEWPORT origin (canvas 0,0) plus the background-position offset,
+NOT to LB's box — so overlapping fixed-bg elements share one continuous tiling
+(this is what fuses Acid2's two offset 2x2 images into a solid yellow fill).  The
+painting is clipped to LB's border box (default background-clip)."
+  (let* ((duri (if (find #\% url) (percent-decode url) url))
+         (img (and (>= (length duri) 5) (string-equal (subseq duri 0 5) "data:")
+                   (ignore-errors (decode-image duri)))))
+    (when (and img (plusp (img-w img)) (plusp (img-h img)))
+      (let* ((iw (img-w img)) (ih (img-h img))
+             (rep (css:cstyle-bg-repeat cs))
+             (repx (member rep '("repeat" "repeat-x") :test #'string=))
+             (repy (member rep '("repeat" "repeat-y") :test #'string=))
+             ;; border box of the element (the clip region)
+             (bx0 (round (lbox-x lb))) (by0 (round (lbox-y lb)))
+             (bx1 (round (+ (lbox-x lb) (lbox-w lb))))
+             (by1 (round (+ (lbox-y lb) (lbox-h lb))))
+             ;; tile origin: anchored to the viewport (canvas 0,0) plus the
+             ;; background-position offset, computed against the viewport (canvas).
+             (pos (css:cstyle-bg-position cs))
+             (offx (if pos (bg-pos-offset (first pos)  (- (canvas-width cv) iw)) 0))
+             (offy (if pos (bg-pos-offset (second pos) (- (canvas-height cv) ih)) 0)))
+        (when (and (> bx1 bx0) (> by1 by0))
+          (let ((*clip* (clip-intersect bx0 by0 bx1 by1)))
+            ;; walk the viewport-aligned tile grid over LB's border box
+            (let ((startx (if repx (+ offx (* iw (floor (- bx0 offx) iw))) offx))
+                  (starty (if repy (+ offy (* ih (floor (- by0 offy) ih))) offy)))
+              (loop for ty = starty then (+ ty ih)
+                    while (and (< ty by1) (or repy (= ty starty))) do
+                (loop for tx = startx then (+ tx iw)
+                      while (and (< tx bx1) (or repx (= tx startx))) do
+                  (when (and (> (+ tx iw) bx0) (> (+ ty ih) by0))
+                    (blit-img cv img tx ty)))))))))))
+
 (defun paint-box (cv lb)
   (handler-case (%paint-box cv lb) (error () nil)))
 (defun %paint-box (cv lb)
@@ -776,9 +811,10 @@ image paints nothing (the bg color shows through)."
          ;; clipped to this box's padding box.  Fixed-attachment images are not
          ;; painted (out of scope) — for Acid2 that is the correct result (their
          ;; images are positioned to the viewport, off this element).
-         (when (and (css:cstyle-bg-image cs)
-                    (not (string-equal (css:cstyle-bg-attachment cs) "fixed")))
-           (paint-bg-image cv lb cs (css:cstyle-bg-image cs)))
+         (when (css:cstyle-bg-image cs)
+           (if (string-equal (css:cstyle-bg-attachment cs) "fixed")
+               (paint-bg-image-fixed cv lb cs (css:cstyle-bg-image cs))
+               (paint-bg-image cv lb cs (css:cstyle-bg-image cs))))
          (when (lbox-img lb)
            (blit-img cv (lbox-img lb) (round (lbox-x lb)) (round (lbox-y lb))
                      (round (lbox-w lb)) (round (lbox-h lb))))

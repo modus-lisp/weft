@@ -51,8 +51,17 @@ respects *CLIP*.  Used for mitered border trapezoids/triangles."
            (ys (map 'list #'cdr pts))
            (y0 (max 0 (floor (reduce #'min ys))))
            (y1 (min (canvas-height cv) (ceiling (reduce #'max ys)))))
+      ;; Sample each scanline at the pixel's TOP edge (yc = yy), not its centre
+      ;; (yy+0.5).  For two triangles that meet on a shared horizontal base at an
+      ;; integer y (e.g. Acid2's nose diamond: an up-triangle whose base is the
+      ;; down-triangle's top, both at y=192), centre sampling straddles the base
+      ;; row — 191.5 and 192.5 both reach full width — so the diamond renders
+      ;; symmetric about y+0.5 (two equal widest rows) and half a pixel too high.
+      ;; Top-edge sampling lands one scanline exactly on the base, giving a single
+      ;; widest row and a diamond symmetric about the integer centre — matching
+      ;; the reference rasteriser pixel-for-pixel.
       (loop for yy from y0 below y1
-            for yc = (+ yy 0.5)
+            for yc = yy
             do (let ((xs '()))
                  (dotimes (i n)
                    (let* ((p1 (aref pts i)) (p2 (aref pts (mod (1+ i) n)))

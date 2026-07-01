@@ -21,6 +21,9 @@
 (defparameter *max-face-geom*    220) ; visible-face box error         (now 166)
 (defparameter *max-total-geom*   2100); total box error vs browser     (now 1886)
 (defparameter *max-table-geom*   1150); table-test box error vs browser (now 960)
+(defparameter *max-hn-geom*      13500); Hacker News box error vs browser (now 11917;
+                                       ; headroom absorbs the font-metric floor — this
+                                       ; catches STRUCTURAL regressions, e.g. @media re-breaking)
 
 ;;; ---- small helpers -------------------------------------------------------
 (defun rel (p) (asdf:system-relative-pathname "weft" p))
@@ -170,18 +173,26 @@ elements weft boxes, vs the vendored browser layout. FACE = browser-visible
       (let ((bb (gethash body n->b))) (walk body (if bb (r::lbox-x bb) 0) (if bb (r::lbox-y bb) 0)))
       (nreverse out))))
 
-(defun table-geometry-error ()
-  "Total box error of the controlled table-test page vs the vendored browser
-layout — guards the automatic-table-layout implementation."
-  (let* ((brow (json-parse (slurp (rel "inspect/vectors/pages/table-test-layout.json"))))
-         (els (field brow "els"))
-         (weft (body-boxes (rel "inspect/vectors/pages/table-test.html") 800)) (total 0))
+(defun page-box-error (html-json layout-json)
+  "Total |box delta| of a vendored page (HTML + Chromium layout JSON) at width 800."
+  (let* ((brow (json-parse (slurp (rel layout-json)))) (els (field brow "els"))
+         (weft (body-boxes (rel html-json) 800)) (total 0))
     (loop for be in els for wb in weft
           for bx = (field be "x") when (and wb bx) do
             (destructuring-bind (wx wy ww wh) wb
               (incf total (+ (abs (- wx bx)) (abs (- wy (field be "y")))
                              (abs (- ww (field be "w"))) (abs (- wh (field be "h")))))))
     total))
+
+(defun table-geometry-error ()
+  "Total box error of the controlled table-test page vs the vendored browser
+layout — guards the automatic-table-layout implementation."
+  (page-box-error "inspect/vectors/pages/table-test.html" "inspect/vectors/pages/table-test-layout.json"))
+
+(defun hn-geometry-error ()
+  "Total box error of the vendored Hacker News snapshot vs Chromium — guards the
+real-page structural layout (@media evaluation, inline shrink-wrap, table width)."
+  (page-box-error "inspect/vectors/pages/hn.html" "inspect/vectors/pages/hn-layout.json"))
 
 ;;; ---- gate ----------------------------------------------------------------
 (defun run ()
@@ -207,5 +218,11 @@ layout — guards the automatic-table-layout implementation."
           (format t "  ~a table   : box error ~d vs browser [bound <= ~d]~%"
                   (if ok "ok  " "FAIL") te *max-table-geom*))
       (error (e) (incf fails) (format t "  FAIL table gate errored: ~a~%" e)))
+    (handler-case
+        (let* ((he (hn-geometry-error)) (ok (<= he *max-hn-geom*)))
+          (unless ok (incf fails))
+          (format t "  ~a HN page : box error ~d vs browser [bound <= ~d]  (structural; font floor absorbed)~%"
+                  (if ok "ok  " "FAIL") he *max-hn-geom*))
+      (error (e) (incf fails) (format t "  FAIL HN gate errored: ~a~%" e)))
     (format t "~a~%" (if (zerop fails) "Acid2 conformance: PASS" "Acid2 conformance: FAIL"))
     (values (if (zerop fails) 1 0) fails)))

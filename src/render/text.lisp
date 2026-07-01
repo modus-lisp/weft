@@ -22,7 +22,18 @@
   font                     ; scribe open-font
   (ascent-ratio 0.8d0)     ; hhea ascent / units-per-em
   (descent-ratio 0.2d0)    ; |hhea descent| / units-per-em
+  (line-gap-ratio 0.0d0)   ; hhea line-gap / units-per-em
   (upem 1000d0))           ; units-per-em
+
+(defun face-normal-lh-factor (face)
+  "The `line-height: normal` multiplier for FACE: the font's own line spacing,
+(ascent + |descent| + line-gap) / units-per-em (hhea metrics, what a browser uses
+for `normal`).  ~1.15 for Liberation Sans, vs the flat 1.2 fallback for no face."
+  (if face
+      (let ((f (+ (face-ascent-ratio face) (face-descent-ratio face)
+                  (face-line-gap-ratio face))))
+        (if (plusp f) f 1.2d0))
+      1.2d0))
 
 (defvar *face-cache* (make-hash-table :test 'equal)
   "Cache of (family-list weight style-kw) -> FACE (or :FAILED).")
@@ -34,9 +45,11 @@
              (upem (float (scribe:font-units-per-em font) 1d0))
              (asc (scribe:font-ascent font))
              (desc (scribe:font-descent font))
+             (gap (scribe:font-line-gap font))
              (f (%make-face :font font :upem (if (plusp upem) upem 1000d0))))
         (when (and asc (plusp upem)) (setf (face-ascent-ratio f) (/ asc upem)))
         (when (and desc (plusp upem)) (setf (face-descent-ratio f) (/ (abs desc) upem)))
+        (when (and gap (plusp upem)) (setf (face-line-gap-ratio f) (/ (abs gap) upem)))
         f)
     (error () nil)))
 

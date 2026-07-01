@@ -170,6 +170,14 @@ synthetic node's style in STYLES so the normal classifier handles it."
   "Font-size (px) of a token's style, defaulting to 16 when style is missing."
   (if style (css:cstyle-font-size style) 16))
 
+(defun used-line-height (cs &optional (face (style-face cs)))
+  "Used line-height in px for CS (CSS 2.1 10.8): font-size x multiplier.  An
+explicit <number>/<length>/<percentage> multiplier is used as-is; `normal`
+(stored as the keyword :NORMAL) resolves to the font's own metric factor —
+(ascent+|descent|+line-gap)/upem from FACE — instead of a flat 1.2."
+  (let ((lh (css:cstyle-line-height cs)) (fs (css:cstyle-font-size cs)))
+    (* fs (if (eq lh :normal) (face-normal-lh-factor face) lh))))
+
 (defun word-w (word &optional style)
   "Reserved width for WORD at its style's font-size, measured in the style's
 resolved face — the width scribe will paint (falls back to the bitmap metric
@@ -199,7 +207,7 @@ text-align.  Returns (values line-boxes total-height)."
          ;; overlapping by 1px and being pushed a full float-height down.  Normal
          ;; 16px text (line-height 1.2 -> 19) is unaffected; only sub-13px lines
          ;; change, and toward the correct (tighter) value.
-         (lh (max 1 (round (* (css:cstyle-font-size base-cs) (css:cstyle-line-height base-cs)))))
+         (lh (max 1 (round (used-line-height base-cs))))
          (align (css:cstyle-text-align base-cs))
          (nowrap (member (css:cstyle-white-space base-cs) '("nowrap" "pre") :test #'string=))
          (cright (+ content-x content-w))
@@ -433,7 +441,7 @@ Returns (values lbox advance-height)."
       ;; <pre>/white-space:pre — preserve newlines, no wrapping
       (when (and (string= (css:cstyle-white-space cs) "pre") (not (has-block-children styles node)))
         (let* ((text (collect-raw node)) (yy cy)
-               (lh (max *font-h* (round (* (css:cstyle-font-size cs) (css:cstyle-line-height cs))))))
+               (lh (max *font-h* (round (used-line-height cs)))))
           (dolist (ln (split-newlines text))
             (push (make-lbox :x cx :y yy :w content-w :h lh :kind :line
                              :children (when (plusp (length ln))
@@ -1278,7 +1286,7 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
              (draw-text-scribe cv (marker-glyph (lbox-marker lb))
                                (round (- (+ (lbox-x lb) (css:cstyle-padding-left cs)) (* 1.3 fs)))
                                (round (+ (lbox-y lb) (css:cstyle-padding-top cs)))
-                               (round (* fs (css:cstyle-line-height cs)))
+                               (round (used-line-height cs))
                                (rgb (css:cstyle-color cs)) fs)))
          ;; overflow:hidden/clip/scroll clips descendants to this box's padding box.
          (if (member (css:cstyle-overflow cs) '("hidden" "clip" "scroll") :test #'string=)

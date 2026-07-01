@@ -8,7 +8,7 @@
 
 (defstruct cstyle
   (display "inline") (color '(0 0 0 1.0)) background
-  (font-size 16.0) (font-weight 400) (line-height 1.2)
+  (font-size 16.0) (font-weight 400) (line-height :normal)
   (font-family nil)   ; ordered list of lowercased family names, NIL = generic sans-serif
   (font-style "normal") ; normal | italic | oblique
   (width :auto) (height :auto)
@@ -143,11 +143,12 @@
 
 (defun line-height-multiplier (value font-size)
   "Parse a line-height VALUE into a multiplier of FONT-SIZE (weft stores
-line-height as a number that LAYOUT multiplies by font-size).  A bare <number>
-IS the multiplier; `normal` -> 1.2; a <percentage> -> its fraction; a <length>
+line-height as a number that LAYOUT multiplies by font-size, or the keyword
+:NORMAL which LAYOUT resolves from the font's real metrics).  A bare <number>
+IS the multiplier; `normal` -> :NORMAL; a <percentage> -> its fraction; a <length>
 -> length/font-size (CSS 2.1 10.8.1).  Returns NIL when unparseable."
   (let ((tt (string-downcase (string-trim '(#\Space) value))))
-    (cond ((string= tt "normal") 1.2)
+    (cond ((string= tt "normal") :normal)
           ((and (plusp (length tt)) (char= (char tt (1- (length tt))) #\%))
            (let ((n (ignore-errors (read-from-string (subseq tt 0 (1- (length tt)))))))
              (when (realp n) (/ (float n) 100.0))))

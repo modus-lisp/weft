@@ -9,6 +9,8 @@
 (defstruct cstyle
   (display "inline") (color '(0 0 0 1.0)) background
   (font-size 16.0) (font-weight 400) (line-height 1.2)
+  (font-family nil)   ; ordered list of lowercased family names, NIL = generic sans-serif
+  (font-style "normal") ; normal | italic | oblique
   (width :auto) (height :auto)
   (margin-top 0.0) (margin-right 0.0) (margin-bottom 0.0) (margin-left 0.0)
   (padding-top 0.0) (padding-right 0.0) (padding-bottom 0.0) (padding-left 0.0)
@@ -32,7 +34,8 @@
   (min-height 0.0) (max-height :none)
   (content nil))      ; generated-content string for ::before/::after (NIL = no box)
 
-(defparameter *inherited* '(:color :font-size :font-weight :line-height :text-align :white-space))
+(defparameter *inherited* '(:color :font-size :font-weight :line-height :text-align :white-space
+                            :font-family :font-style))
 
 ;;; ---- UA defaults --------------------------------------------------------
 (defparameter *block-tags*
@@ -50,6 +53,8 @@
             (cstyle-font-size cs) (cstyle-font-size parent-cs)
             (cstyle-font-weight cs) (cstyle-font-weight parent-cs)
             (cstyle-line-height cs) (cstyle-line-height parent-cs)
+            (cstyle-font-family cs) (cstyle-font-family parent-cs)
+            (cstyle-font-style cs) (cstyle-font-style parent-cs)
             (cstyle-text-align cs) (cstyle-text-align parent-cs)
             (cstyle-white-space cs) (cstyle-white-space parent-cs)))
     (cond ((member tag *none-tags* :test #'string=) (setf (cstyle-display cs) "none"))
@@ -78,6 +83,12 @@
                                  (cstyle-border-color cs) '(170 170 180 1.0) (cstyle-color cs) '(110 110 120 1.0)))
       ((string= tag "li") (setf (cstyle-margin-left cs) 24.0))
       ((string= tag "pre") (setf (cstyle-white-space cs) "pre")))
+    ;; UA monospace default for code-ish elements (browsers use monospace here).
+    (when (member tag '("pre" "code" "tt" "kbd" "samp") :test #'string=)
+      (setf (cstyle-font-family cs) '("monospace")))
+    ;; italic default for emphasis/citation elements.
+    (when (member tag '("i" "em" "cite" "var" "dfn" "address") :test #'string=)
+      (setf (cstyle-font-style cs) "italic"))
     cs))
 
 (defun set-margin (cs v) (setf (cstyle-margin-top cs) v (cstyle-margin-right cs) v
@@ -245,7 +256,13 @@ Ignores the system-font keywords (caption/icon/...)."
           (dolist (k (subseq toks 0 size-pos))
             (let ((kl (string-downcase k)))
               (cond ((member kl '("bold" "bolder") :test #'string=) (setf (cstyle-font-weight cs) 700))
+                    ((member kl '("italic" "oblique") :test #'string=) (setf (cstyle-font-style cs) kl))
                     ((every #'digit-char-p kl) (setf (cstyle-font-weight cs) (parse-integer kl))))))
+          ;; trailing tokens after size[/lh] are the font-family list
+          (let ((fam-toks (subseq toks (1+ size-pos))))
+            (when fam-toks
+              (let ((v (parse-value "font-family" (format nil "~{~a~^ ~}" fam-toks))))
+                (when (and (listp v) v) (setf (cstyle-font-family cs) v)))))
           ;; size[/line-height]
           (let* ((stok (nth size-pos toks)) (slash (position #\/ stok))
                  (size-s (if slash (subseq stok 0 slash) stok))
@@ -325,6 +342,12 @@ Ignores the system-font keywords (caption/icon/...)."
            (cond ((search "%" value) (let ((p (parse-value "percentage" value))) (when (numberp p) (setf (cstyle-font-size cs) (* base (/ p 100.0))))))
                  (t (let ((px (resolve-len value base))) (when px (setf (cstyle-font-size cs) px)))))))
         ((string= prop "font") (apply-font-shorthand cs value parent-cs))
+        ((string= prop "font-family")
+         (let ((v (parse-value "font-family" value)))
+           (when (and (listp v) v) (setf (cstyle-font-family cs) v))))
+        ((string= prop "font-style")
+         (let ((v (parse-value "font-style" value)))
+           (when (stringp v) (setf (cstyle-font-style cs) v))))
         ((string= prop "font-weight")
          (setf (cstyle-font-weight cs)
                (cond ((string-equal value "bold") 700) ((string-equal value "normal") 400)
@@ -583,7 +606,8 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                "Build a CSTYLE for a ::before/::after box, or NIL if no content."
                (when matched
                  (let ((cs (make-cstyle :color (cstyle-color parent-cs) :font-size (cstyle-font-size parent-cs)
-                                        :font-weight (cstyle-font-weight parent-cs) :line-height (cstyle-line-height parent-cs))))
+                                        :font-weight (cstyle-font-weight parent-cs) :line-height (cstyle-line-height parent-cs)
+                                        :font-family (cstyle-font-family parent-cs) :font-style (cstyle-font-style parent-cs))))
                    (dolist (m (sort-matched matched))
                      (dolist (d (third m)) (apply-decl cs (css-decl-prop d) (css-decl-value d) parent-cs)))
                    (and (cstyle-content cs) cs))))

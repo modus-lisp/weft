@@ -14,6 +14,7 @@
            ;; computed style
            #:compute-styles #:cstyle #:cstyle-display #:cstyle-color #:cstyle-background
            #:cstyle-font-size #:cstyle-font-weight #:cstyle-line-height
+           #:cstyle-font-family #:cstyle-font-style
            #:cstyle-width #:cstyle-height #:cstyle-margin-top #:cstyle-margin-right
            #:cstyle-margin-bottom #:cstyle-margin-left #:cstyle-padding-top
            #:cstyle-padding-right #:cstyle-padding-bottom #:cstyle-padding-left

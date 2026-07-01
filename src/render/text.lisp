@@ -1,62 +1,91 @@
 ;;;; src/render/text.lisp — real shaped, anti-aliased glyphs via scribe.
 ;;;;
-;;;; Phase A: paint quality only.  Layout still computes all glyph positions with
-;;;; the old fixed-metric math; here we just draw prettier glyphs at those spots
-;;;; using scribe's analytic rasterizer + gamma-correct compositing.
+;;;; Text is measured and painted with the concrete face scribe's MATCH-FONT
+;;;; resolves for the fragment's (font-family, weight, style): a page that asks
+;;;; for Arial/Helvetica/Verdana gets LiberationSans (the browser's Linux
+;;;; metric-compatible substitute), Times -> LiberationSerif, Courier/monospace
+;;;; -> LiberationMono.  This makes weft's text widths match a real browser.
 ;;;;
-;;;; Everything here is paint code: a font-load failure, a missing glyph, or any
-;;;; error degrades to the bitmap DRAW-TEXT path — it must never crash a render.
+;;;; Everything here is resilient: a font-load failure, a missing glyph, or any
+;;;; error degrades to the bitmap DRAW-TEXT path or the bitmap metric — it must
+;;;; never crash a render or a layout.
 (in-package #:weft.render)
 
-(defvar *scribe-font* :unset
-  "Cached scribe font object, NIL if loading failed, :UNSET before first try.")
-(defvar *scribe-ascent-ratio* 0.8d0
-  "Cached ascender / units-per-em — baseline = text-top + ratio*ppem.")
-(defvar *scribe-descent-ratio* 0.2d0)
+;;; ---- resolved faces -------------------------------------------------------
+;;; A FACE bundles the open scribe font with its ascent/descent ratios (a
+;;; fraction of the em), so the painter can position the baseline and layout can
+;;; derive line metrics.  Faces are resolved once per (family weight style) key
+;;; and cached; MATCH-FONT ships the Liberation faces so resolution effectively
+;;; never fails, but every entry point still tolerates a NIL face.
 
-(defun scribe-font ()
-  "Lazily load and cache the vendored DejaVu Sans font.  Returns the scribe font,
-or NIL if it could not be loaded (callers then fall back to the bitmap path)."
-  (when (eq *scribe-font* :unset)
-    (setf *scribe-font*
-          (handler-case
-              (let* ((path (asdf:system-relative-pathname
-                            "weft" "src/render/fonts/DejaVuSans.ttf"))
-                     (bytes (with-open-file (s path :element-type '(unsigned-byte 8))
-                              (let ((v (make-array (file-length s)
-                                                   :element-type '(unsigned-byte 8))))
-                                (read-sequence v s) v)))
-                     (font (scribe:open-font bytes))
-                     (upem (float (scribe:font-units-per-em font) 1d0))
-                     (hhea (scribe::parse-hhea font))
-                     (asc (cdr (assoc "ascent" hhea :test #'string=)))
-                     (desc (cdr (assoc "descent" hhea :test #'string=))))
-                (when (and asc (plusp upem))
-                  (setf *scribe-ascent-ratio* (/ asc upem)))
-                (when (and desc (plusp upem))
-                  (setf *scribe-descent-ratio* (/ (abs desc) upem)))
-                font)
-            (error () nil))))
-  *scribe-font*)
+(defstruct (face (:constructor %make-face))
+  font                     ; scribe open-font
+  (ascent-ratio 0.8d0)     ; hhea ascent / units-per-em
+  (descent-ratio 0.2d0)    ; |hhea descent| / units-per-em
+  (upem 1000d0))           ; units-per-em
 
+(defvar *face-cache* (make-hash-table :test 'equal)
+  "Cache of (family-list weight style-kw) -> FACE (or :FAILED).")
+
+(defun %build-face (family-list weight style-kw)
+  "Resolve a FACE via scribe:match-font, or NIL on any failure."
+  (handler-case
+      (let* ((font (scribe:match-font family-list :weight weight :style style-kw))
+             (upem (float (scribe:font-units-per-em font) 1d0))
+             (asc (scribe:font-ascent font))
+             (desc (scribe:font-descent font))
+             (f (%make-face :font font :upem (if (plusp upem) upem 1000d0))))
+        (when (and asc (plusp upem)) (setf (face-ascent-ratio f) (/ asc upem)))
+        (when (and desc (plusp upem)) (setf (face-descent-ratio f) (/ (abs desc) upem)))
+        f)
+    (error () nil)))
+
+(defun resolve-face (family-list weight style-kw)
+  "Return the cached FACE for (FAMILY-LIST WEIGHT STYLE-KW), resolving+caching on
+first use.  Returns NIL if the face could not be resolved (callers fall back to
+the bitmap path)."
+  (let ((key (list family-list weight style-kw)))
+    (multiple-value-bind (v present) (gethash key *face-cache*)
+      (if present
+          (unless (eq v :failed) v)
+          (let ((f (%build-face family-list weight style-kw)))
+            (setf (gethash key *face-cache*) (or f :failed))
+            f)))))
+
+(defun style-face (style)
+  "Resolve the FACE for a computed STYLE (its font-family/weight/style).  A NIL
+style (or one with no font-family) resolves the generic sans-serif face."
+  (let* ((family (and style (css:cstyle-font-family style)))
+         (weight (if style (css:cstyle-font-weight style) 400))
+         (sstr (and style (css:cstyle-font-style style)))
+         (style-kw (if (and sstr (member sstr '("italic" "oblique") :test #'string=))
+                       :italic :normal)))
+    (resolve-face family (if (integerp weight) weight 400) style-kw)))
+
+;;; The generic default face (sans-serif) — used when no face/style is supplied.
+(defun default-face () (resolve-face nil 400 :normal))
+
+;;; ---- measurement ----------------------------------------------------------
 (defun glyph-advance-px (font gid ppem upem)
-  "Advance in px for GID at PPEM — the SAME value DRAW-TEXT-SCRIBE advances the
-pen by, so measured widths match painted widths to the pixel.  .notdef (gid 0)
+  "Advance in px for GID at PPEM — the SAME value the painter advances the pen
+by, so measured widths match painted widths to the pixel.  .notdef (gid 0)
 advances half an em, matching the painter's tofu-suppression."
   (if (zerop gid)
       (* 0.5d0 ppem)
       (* (scribe::glyph-advance font gid) (/ ppem upem))))
 
-(defun measure-text-width (text size)
-  "Sum of per-glyph advances for TEXT at px SIZE — the width scribe will actually
-paint.  Falls back to the bitmap metric (LEN*7) if the font is unavailable or
-anything errors, so layout never depends on the font succeeding."
-  (let ((font (scribe-font)))
-    (if (or (null font) (zerop (length text)))
+(defun measure-text-width (text size &optional face)
+  "Sum of per-glyph advances for TEXT at px SIZE in FACE — the width scribe will
+actually paint.  FACE defaults to the generic sans-serif face.  Falls back to
+the bitmap metric (LEN*7) if no face is available or anything errors, so layout
+never depends on the font succeeding."
+  (let ((face (or face (default-face))))
+    (if (or (null face) (zerop (length text)))
         (* (length text) *font-w*)
         (handler-case
-            (let* ((ppem (float (max 1 size) 1d0))
-                   (upem (float (scribe:font-units-per-em font) 1d0))
+            (let* ((font (face-font face))
+                   (ppem (float (max 1 size) 1d0))
+                   (upem (face-upem face))
                    (w 0d0))
               (loop for ch across text do
                 (incf w (glyph-advance-px font (scribe:font-glyph-index font (char-code ch))
@@ -68,30 +97,39 @@ anything errors, so layout never depends on the font succeeding."
   "Where the bitmap DRAW-TEXT path centers its fixed *FONT-H* slot in a line box."
   (+ line-top (max 0 (floor (- line-h *font-h*) 2))))
 
-(defun draw-text-scribe (cv text x line-top line-h color size &key bold underline)
-  "Paint TEXT with scribe glyphs.  X is the left edge; LINE-TOP/LINE-H are the
-line box's top and height — the real font em-box (ascent+descent at SIZE px) is
-centered within it, so large text lands correctly instead of being pinned to a
-13px slot.  SIZE is the px font-size used as the rasterization ppem.  Returns the
-pen x at end.
+(defun draw-text-scribe (cv text x line-top line-h color size
+                         &key bold underline face)
+  "Paint TEXT with scribe glyphs from FACE (defaulting to the generic sans-serif
+face).  X is the left edge; LINE-TOP/LINE-H are the line box's top and height —
+the real font em-box (ascent+descent at SIZE px) is centered within it, so large
+text lands correctly instead of being pinned to a 13px slot.  SIZE is the px
+font-size used as the rasterization ppem.  Returns the pen x at end.
 
-Degrades to the bitmap DRAW-TEXT for the whole string if the font is unavailable
-or anything goes wrong; respects weft's *CLIP* rect per pixel."
-  (let ((font (scribe-font)))
-    (if (or (null font) (zerop (length text)))
+Degrades to the bitmap DRAW-TEXT for the whole string if no face is available or
+anything goes wrong; respects weft's *CLIP* rect per pixel."
+  (let ((face (or face (default-face))))
+    (if (or (null face) (zerop (length text)))
         (draw-text cv text x (bitmap-top line-top line-h) color :bold bold :underline underline)
         (handler-case
-            (let* ((ppem (float (max 1 size) 1d0))
+            (let* ((font (face-font face))
+                   (ppem (float (max 1 size) 1d0))
+                   (asc-ratio (face-ascent-ratio face))
+                   (desc-ratio (face-descent-ratio face))
+                   (upem (face-upem face))
                    ;; center the font's em-box (ascent+descent) in the line box,
                    ;; then the baseline sits ascent px below the box's top.
-                   (text-h (* (+ *scribe-ascent-ratio* *scribe-descent-ratio*) ppem))
+                   (text-h (* (+ asc-ratio desc-ratio) ppem))
                    (baseline (round (+ line-top (/ (- line-h text-h) 2)
-                                       (* *scribe-ascent-ratio* ppem))))
+                                       (* asc-ratio ppem))))
                    ;; zero-copy view of weft's pixel buffer as a scribe canvas
                    (scv (scribe::%make-canvas :width (canvas-width cv)
                                               :height (canvas-height cv)
                                               :pixels (canvas-pixels cv)))
-                   (scribe::*stem-darkening* (if bold 0.6d0 scribe::*stem-darkening*))
+                   ;; Bold is rendered with the REAL bold FACE (match-font picks
+                   ;; LiberationSans-Bold etc.), so keep scribe's default
+                   ;; geometric stem darkening — no synthetic thickening, which
+                   ;; would double-weight bold at dpr=1.  BOLD is only consulted
+                   ;; by the bitmap fallback below, which has no bold face.
                    ;; clip bounds (or full canvas)
                    (cx0 (if *clip* (the fixnum (first *clip*)) 0))
                    (cy0 (if *clip* (the fixnum (second *clip*)) 0))

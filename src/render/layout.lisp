@@ -171,14 +171,15 @@ synthetic node's style in STYLES so the normal classifier handles it."
   (if style (css:cstyle-font-size style) 16))
 
 (defun word-w (word &optional style)
-  "Reserved width for WORD at its style's font-size — the width scribe will paint
-\(falls back to the bitmap metric inside MEASURE-TEXT-WIDTH on font failure)."
-  (round (measure-text-width word (style-size style))))
+  "Reserved width for WORD at its style's font-size, measured in the style's
+resolved face — the width scribe will paint (falls back to the bitmap metric
+inside MEASURE-TEXT-WIDTH on font failure)."
+  (round (measure-text-width word (style-size style) (style-face style))))
 
 (defun space-w (&optional style)
-  "Reserved inter-word space width at STYLE's font-size (the font's space-glyph
-advance), defaulting to the bitmap metric."
-  (round (measure-text-width " " (style-size style))))
+  "Reserved inter-word space width at STYLE's font-size in its resolved face (the
+font's space-glyph advance), defaulting to the bitmap metric."
+  (round (measure-text-width " " (style-size style) (style-face style))))
 
 (defun next-float-bottom (y)
   "Smallest float bottom strictly greater than Y, or NIL."
@@ -1282,6 +1283,7 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                           (lbox-y lb) (lbox-h lb)
                           (rgb (css:cstyle-color cs))
                           (css:cstyle-font-size cs)
+                          :face (style-face cs)
                           :bold (>= (css:cstyle-font-weight cs) 600)
                           :underline (member "underline" (css:cstyle-text-decoration cs) :test #'string=)))
              (paint-box cv it)))))))   ; atomic inline-block / img box

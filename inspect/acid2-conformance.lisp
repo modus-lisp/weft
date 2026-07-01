@@ -19,11 +19,14 @@
 ;;; ---- bounds (current actuals in comments; fail if exceeded) --------------
 (defparameter *max-mismatch-px* 40)   ; face colour-class mismatches   (now 0)
 (defparameter *max-face-geom*    220) ; visible-face box error         (now 166)
-(defparameter *max-total-geom*   2100); total box error vs browser     (now 1886)
-(defparameter *max-table-geom*   1150); table-test box error vs browser (now 960)
-(defparameter *max-hn-geom*      13500); Hacker News box error vs browser (now 11917;
-                                       ; headroom absorbs the font-metric floor — this
-                                       ; catches STRUCTURAL regressions, e.g. @media re-breaking)
+(defparameter *max-total-geom*   2100); total box error vs browser     (now 1854)
+(defparameter *max-table-geom*   1150); table-test box error vs browser (now 316)
+(defparameter *max-hn-geom*       7600); Hacker News box error vs browser (now 6713;
+                                       ; dropped from 11917 once text renders in the
+                                       ; browser's metric-compatible faces — HN asks for
+                                       ; Verdana -> LiberationSans.  Remaining error is
+                                       ; structural; this catches STRUCTURAL regressions,
+                                       ; e.g. @media re-breaking)
 
 ;;; ---- small helpers -------------------------------------------------------
 (defun rel (p) (asdf:system-relative-pathname "weft" p))

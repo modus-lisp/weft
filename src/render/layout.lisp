@@ -75,17 +75,21 @@ text runs and (:atomic . lbox) for inline-block / replaced boxes."
                     (cond
                       ((and cs (string= (cdisplay cs) "none")))
                       ((member (h:dnode-name n) '("script" "style") :test #'string=))
-                      ((and cs (member (cdisplay cs) '("inline-block" "flex" "table") :test #'string=))
-                       (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
-                         (declare (ignore adv))
-                         (when lb (push (cons :atomic lb) words))))
-                      ((string= (h:dnode-name n) "img")    ; replaced element placeholder
+                      ;; Replaced elements (img, decodable <object>) render at their
+                      ;; OWN intrinsic/attr size — checked BEFORE inline-block, because
+                      ;; <img> is UA display:inline-block and must not fall into generic
+                      ;; block layout, which collapses it to a ~0-height content box.
+                      ((string= (h:dnode-name n) "img")
                        (let ((lb (img-box n cs))) (when lb (push (cons :atomic lb) words))))
                       ;; <object data="data:...image..."> that decodes renders as a
                       ;; replaced image (with its own background, e.g. Acid2's eye
                       ;; tile); otherwise it falls back to its child content.
                       ((and (string= (h:dnode-name n) "object") (object-data-image n))
                        (let ((lb (object-box n cs (object-data-image n))))
+                         (when lb (push (cons :atomic lb) words))))
+                      ((and cs (member (cdisplay cs) '("inline-block" "flex" "table") :test #'string=))
+                       (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
+                         (declare (ignore adv))
                          (when lb (push (cons :atomic lb) words))))
                       (t (loop for c across (h:dnode-children n) do (rec c cs)))))))))
       (rec node (or (st styles node) default-style)))

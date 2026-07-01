@@ -67,22 +67,35 @@
           (t (setf (cstyle-display cs) "inline")))
     (when (string= tag "th") (setf (cstyle-font-weight cs) 700 (cstyle-text-align cs) "center"))
     (when (member tag '("td" "th") :test #'string=) (set-padding cs 2.0))
-    ;; a few UA margins / sizes
+    ;; UA margins / sizes / padding — matched to the browser default stylesheet
+    ;; (measured via getComputedStyle on bare elements).
     (cond
       ((string= tag "body") (set-margin cs 8.0))
-      ((member tag '("p" "ul" "ol" "blockquote" "dl") :test #'string=) (setf (cstyle-margin-top cs) 16.0 (cstyle-margin-bottom cs) 16.0))
+      ;; lists: the indent is padding-left:40 on the list (not a margin on the li),
+      ;; so the marker sits in that padding, outside the li content box.
+      ((member tag '("ul" "ol" "menu" "dir") :test #'string=)
+       (setf (cstyle-margin-top cs) 16.0 (cstyle-margin-bottom cs) 16.0 (cstyle-padding-left cs) 40.0))
+      ;; blockquote/figure indent 40 on both sides.
+      ((member tag '("blockquote" "figure") :test #'string=)
+       (setf (cstyle-margin-top cs) 16.0 (cstyle-margin-bottom cs) 16.0
+             (cstyle-margin-left cs) 40.0 (cstyle-margin-right cs) 40.0))
+      ((string= tag "dd") (setf (cstyle-margin-left cs) 40.0))
+      ((member tag '("p" "dl") :test #'string=) (setf (cstyle-margin-top cs) 16.0 (cstyle-margin-bottom cs) 16.0))
       ((string= tag "h1") (setf (cstyle-font-size cs) 32.0 (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 21.0 (cstyle-margin-bottom cs) 21.0))
       ((string= tag "h2") (setf (cstyle-font-size cs) 24.0 (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 20.0 (cstyle-margin-bottom cs) 20.0))
-      ((string= tag "h3") (setf (cstyle-font-size cs) 19.0 (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 18.0 (cstyle-margin-bottom cs) 18.0))
-      ((member tag '("h4" "h5" "h6") :test #'string=) (setf (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 16.0 (cstyle-margin-bottom cs) 16.0))
+      ((string= tag "h3") (setf (cstyle-font-size cs) 18.0 (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 18.0 (cstyle-margin-bottom cs) 18.0))
+      ((string= tag "h4") (setf (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 21.0 (cstyle-margin-bottom cs) 21.0))
+      ((string= tag "h5") (setf (cstyle-font-size cs) 13.0 (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 22.0 (cstyle-margin-bottom cs) 22.0))
+      ((string= tag "h6") (setf (cstyle-font-size cs) 11.0 (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 25.0 (cstyle-margin-bottom cs) 25.0))
       ((member tag '("b" "strong") :test #'string=) (setf (cstyle-font-weight cs) 700))
       ((member tag '("a") :test #'string=) (setf (cstyle-color cs) '(0 0 238 1.0) (cstyle-text-decoration cs) '("underline")))
       ((string= tag "img") (setf (cstyle-display cs) "inline-block" (cstyle-background cs) '(228 228 232 1.0)
                                  (cstyle-border-top-width cs) 1.0 (cstyle-border-right-width cs) 1.0
                                  (cstyle-border-bottom-width cs) 1.0 (cstyle-border-left-width cs) 1.0
                                  (cstyle-border-color cs) '(170 170 180 1.0) (cstyle-color cs) '(110 110 120 1.0)))
-      ((string= tag "li") (setf (cstyle-margin-left cs) 24.0))
-      ((string= tag "pre") (setf (cstyle-white-space cs) "pre")))
+      ((string= tag "hr") (setf (cstyle-margin-top cs) 8.0 (cstyle-margin-bottom cs) 8.0))
+      ((string= tag "pre") (setf (cstyle-white-space cs) "pre" (cstyle-font-size cs) 13.0
+                                 (cstyle-margin-top cs) 13.0 (cstyle-margin-bottom cs) 13.0)))
     ;; UA monospace default for code-ish elements (browsers use monospace here).
     (when (member tag '("pre" "code" "tt" "kbd" "samp") :test #'string=)
       (setf (cstyle-font-family cs) '("monospace")))

@@ -412,7 +412,17 @@ Returns (values lbox advance-height)."
            (content-w (max 0 (- width pad-bord)))
            (box-x (+ x ml)) (box-y (+ y mt))
            (cx (+ box-x bl pl)) (cy (+ box-y bt pt))
-           (list-item (string= (cdisplay cs) "list-item"))
+           ;; a list-item generates a marker — UNLESS it's a direct child of a
+           ;; table box (it gets wrapped in an anonymous cell and the marker is
+           ;; suppressed, as browsers do; e.g. Acid2's display:table <ul> items).
+           (list-item (and (string= (cdisplay cs) "list-item")
+                           (not (let ((p (h:dnode-parent node)))
+                                  (and p (eq (h:dnode-kind p) :element)
+                                       (let ((pcs (st styles p)))
+                                         (and pcs (member (cdisplay pcs)
+                                                          '("table" "table-row" "table-row-group"
+                                                            "table-header-group" "table-footer-group")
+                                                          :test #'string=))))))))
            ;; effective (collapsed) outer margins reported up to the parent:
            ;; default to this box's own margins, raised by parent/child collapse.
            (mt-eff mt) (mb-eff mb)
@@ -1261,9 +1271,15 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                      (round (lbox-w lb)) (round (lbox-h lb))))
          (paint-borders cv lb cs)
          (when (and (lbox-marker lb) (plusp (length (marker-glyph (lbox-marker lb)))))
-           (draw-text cv (marker-glyph (lbox-marker lb))
-                      (round (- (+ (lbox-x lb) (css:cstyle-padding-left cs)) (* 2 *font-w*)))
-                      (round (+ (lbox-y lb) (css:cstyle-padding-top cs))) (rgb (css:cstyle-color cs))))
+           ;; the list marker (•, disc/circle/square) is painted via scribe so the
+           ;; real bullet glyph renders (the 7x13 bitmap has none); it sits ~1.3em
+           ;; left of the content, in the list's padding.
+           (let ((fs (css:cstyle-font-size cs)))
+             (draw-text-scribe cv (marker-glyph (lbox-marker lb))
+                               (round (- (+ (lbox-x lb) (css:cstyle-padding-left cs)) (* 1.3 fs)))
+                               (round (+ (lbox-y lb) (css:cstyle-padding-top cs)))
+                               (round (* fs (css:cstyle-line-height cs)))
+                               (rgb (css:cstyle-color cs)) fs)))
          ;; overflow:hidden/clip/scroll clips descendants to this box's padding box.
          (if (member (css:cstyle-overflow cs) '("hidden" "clip" "scroll") :test #'string=)
              (let ((*clip* (clip-intersect

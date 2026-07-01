@@ -1,6 +1,6 @@
 ;;;; inspect/acid-test.lisp — Acid2/Acid3 as permanent regression + progress tests.
 ;;;;
-;;;; weft renders Acid2 at 99.9% pixel-match vs a real browser (the face fully
+;;;; weft renders Acid2 at 100% pixel-match vs a real browser (the face fully
 ;;;; assembles); the conformance number is measured by inspect/acid2-reftest.py +
 ;;;; inspect/acid2-layout-diff.py (vs Chromium ground truth), not here. Acid3 is
 ;;;; ~99% JavaScript and CANNOT run until the JS engine (P4) lands.

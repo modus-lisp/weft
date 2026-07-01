@@ -102,7 +102,14 @@
        (some (lambda (cx) (match-complex (cx-compounds cx) (cx-combs cx)
                                          (1- (length (cx-compounds cx))) n))
              arg))
-      ;; unknown / link/hover/etc — treat as non-matching (no interactive state)
+      ;; :link matches any hyperlink (a/area/link with href). We have no history,
+      ;; so every link is unvisited: :link matches, :visited never does.  (Sites
+      ;; routinely colour links via a:link — without this they keep the UA blue.)
+      ((string= nm "link")
+       (and (member (string-downcase (el-name n)) '("a" "area" "link") :test #'string=)
+            (el-attr n "href") t))
+      ((string= nm "visited") nil)
+      ;; unknown / hover/active/focus/etc — non-matching (no interactive state)
       (t nil))))
 
 (defun match-simple (n simple)

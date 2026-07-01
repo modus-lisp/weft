@@ -363,6 +363,10 @@ Returns (values lbox advance-height)."
            (bt (used-border cs :t)) (bb (used-border cs :b))
            (bl (used-border cs :l)) (br (used-border cs :r))
            (border-box (string= (css:cstyle-box-sizing cs) "border-box"))
+           ;; a table-cell fills the column width its table assigned it (AVAIL-W):
+           ;; the column model already folded in any specified cell width, so the
+           ;; cell itself must ignore its own width and stretch to the column.
+           (table-cell (string= (cdisplay cs) "table-cell"))
            (pad-bord (+ pl pr bl br))
            ;; explicit height (CSS 2.1 10.5): a px length, or a percentage resolved
            ;; against the containing-block height AVAIL-H when definite — else NIL
@@ -376,7 +380,7 @@ Returns (values lbox advance-height)."
                                        (- exp-h (+ (css:cstyle-padding-top cs) (css:cstyle-padding-bottom cs)
                                                    (used-border cs :t) (used-border cs :b)))
                                        exp-h))))
-           (spec-w (css::resolve-size (css:cstyle-width cs) avail-w))      ; px or nil
+           (spec-w (unless table-cell (css::resolve-size (css:cstyle-width cs) avail-w))) ; px or nil
            (max-w (css::resolve-size (css:cstyle-max-width cs) avail-w))
            (min-w (css::resolve-size (css:cstyle-min-width cs) avail-w))
            ;; an absolutely-positioned / fixed box with width:auto is sized
@@ -708,47 +712,184 @@ row (ROW eq the TABLE node) wraps every cell-like child as a cell."
       (remove-if (lambda (c) (not (cell-like-p c styles))) (child-elements row))
       (remove-if-not (lambda (c) (string= (cdisplay (st styles c)) "table-cell")) (child-elements row))))
 
-(defun cell-natural-width (cell styles avail)
+(defun cell-pad-bord (cs)
+  "Left+right padding + border of a cell's box."
+  (if cs (+ (css:cstyle-padding-left cs) (css:cstyle-padding-right cs)
+            (used-border cs :l) (used-border cs :r))
+      0))
+
+(defun cell-colspan (cell)
+  "The td/th colspan (>=1)."
+  (let ((v (cdr (assoc "colspan" (h:dnode-attrs cell) :test #'string-equal))))
+    (max 1 (or (and v (ignore-errors (parse-integer (string-trim '(#\Space) v) :junk-allowed t))) 1))))
+
+(defun min-inline-width (node styles cs content-w)
+  "Min-content width of NODE's inline content: the widest single unbreakable
+token (word or atomic box)."
+  (let ((words (collect-words node styles cs content-w)) (w 0))
+    (dolist (wd words)
+      (setf w (max w (if (eq (car wd) :atomic) (lbox-w (cdr wd)) (word-w (car wd) (cdr wd))))))
+    w))
+
+(defun min-content-width (node styles content-w &optional (depth 0))
+  "Min-content CONTENT width of element NODE (widest unbreakable run)."
+  (let ((cs (st styles node)))
+    (if (or (> depth 6) (not (eq (h:dnode-kind node) :element)) (null cs))
+        0
+        (let ((block-kids (remove-if-not (lambda (k) (or (block-level-p styles k) (float-p styles k)))
+                                         (child-elements node))))
+          (min content-w
+               (if block-kids
+                   (loop for k in block-kids
+                         maximize (+ (css:cstyle-padding-left (st styles k)) (css:cstyle-padding-right (st styles k))
+                                     (used-border (st styles k) :l) (used-border (st styles k) :r)
+                                     (min-content-width k styles content-w (1+ depth))))
+                   (min-inline-width node styles cs content-w)))))))
+
+(defun cell-max-content-width (cell styles avail)
   "Max-content border-box width of a table CELL (explicit width wins)."
-  (let* ((cs (st styles cell))
-         (w (and cs (css:cstyle-width cs)))
-         (pad-bord (if cs (+ (css:cstyle-padding-left cs) (css:cstyle-padding-right cs)
-                             (used-border cs :l) (used-border cs :r))
-                       0)))
-    (max 0 (+ pad-bord (if (numberp w) w (pref-content-width cell styles avail))))))
+  (let* ((cs (st styles cell)) (w (and cs (css:cstyle-width cs))))
+    (max 0 (+ (cell-pad-bord cs)
+              (if (numberp w) w (pref-content-width cell styles avail))))))
+
+(defun cell-min-content-width (cell styles avail)
+  "Min-content border-box width of a table CELL."
+  (let* ((cs (st styles cell)) (w (and cs (css:cstyle-width cs))))
+    (max 0 (+ (cell-pad-bord cs)
+              (if (numberp w) w (min-content-width cell styles avail))))))
+
+(defun cell-spec-width (cell styles)
+  "Specified column width contributed by CELL: NIL, a border-box px number, or
+a (:percent P) form."
+  (let* ((cs (st styles cell)) (w (and cs (css:cstyle-width cs))))
+    (cond ((numberp w) (+ w (cell-pad-bord cs)))
+          ((and (consp w) (eq (car w) :percent)) (list :percent (second w)))
+          (t nil))))
+
+(defun spec-combine (a b)
+  "Combine two column spec widths (prefer a fixed px over a percent, else max px)."
+  (cond ((null a) b) ((null b) a)
+        ((and (numberp a) (numberp b)) (max a b))
+        ((numberp a) a) (t b)))
+
+(defun resolve-spec (sp table-w)
+  "Resolve a column spec (px | (:percent P)) to a border-box px width, or NIL."
+  (cond ((numberp sp) sp)
+        ((and (consp sp) (eq (car sp) :percent)) (* table-w (/ (second sp) 100.0)))
+        (t nil)))
+
+(defun table-column-model (node styles avail)
+  "Analyse a display:table NODE's cells into per-column requirements.  Returns
+ (values MAXS MINS SPECS NCOLS): parallel simple-vectors of border-box
+max-content, min-content, and specified-width (NIL | px | (:percent P)) per
+column, colspans distributed across the columns they span (CSS 2.1 17.5.2)."
+  (let* ((rows (table-rows node styles)) (recs '()) (ncols 0))
+    (dolist (row rows)
+      (let ((col 0))
+        (dolist (cell (row-cells row styles node))
+          (let ((span (cell-colspan cell)))
+            (push (list cell col span) recs)
+            (incf col span)
+            (setf ncols (max ncols col))))))
+    (setf recs (nreverse recs))
+    (when (zerop ncols) (setf ncols 1))
+    (let ((maxs (make-array ncols :initial-element 0.0))
+          (mins (make-array ncols :initial-element 0.0))
+          (specs (make-array ncols :initial-element nil)))
+      ;; single-column cells first
+      (dolist (r recs)
+        (destructuring-bind (cell col span) r
+          (when (= span 1)
+            (setf (aref maxs col) (max (aref maxs col) (cell-max-content-width cell styles avail)))
+            (setf (aref mins col) (max (aref mins col) (cell-min-content-width cell styles avail)))
+            (setf (aref specs col) (spec-combine (aref specs col) (cell-spec-width cell styles))))))
+      ;; spanning cells: widen the spanned columns if they don't already suffice
+      (dolist (r recs)
+        (destructuring-bind (cell col span) r
+          (when (> span 1)
+            (let* ((cols (loop for i from col below (min ncols (+ col span)) collect i))
+                   (k (length cols)))
+              (when (plusp k)
+                (let ((cmax (cell-max-content-width cell styles avail))
+                      (cmin (cell-min-content-width cell styles avail))
+                      (cur-max (loop for i in cols sum (aref maxs i)))
+                      (cur-min (loop for i in cols sum (aref mins i))))
+                  (when (> cmax cur-max)
+                    (let ((add (/ (- cmax cur-max) k))) (dolist (i cols) (incf (aref maxs i) add))))
+                  (when (> cmin cur-min)
+                    (let ((add (/ (- cmin cur-min) k))) (dolist (i cols) (incf (aref mins i) add))))))))))
+      (values maxs mins specs ncols))))
 
 (defun table-natural-width (node styles avail)
   "Shrink-to-fit CONTENT width of a display:table NODE: the sum of its column
-widths, each column as wide as its widest cell.  0 when it has no cells."
-  (let ((rows (table-rows node styles)))
-    (if (null rows) 0
-        (let ((cols (make-hash-table)) (ncols 0))
-          (dolist (row rows)
-            (loop for cell in (row-cells row styles node) for i from 0 do
-              (setf ncols (max ncols (1+ i)))
-              (setf (gethash i cols)
-                    (max (or (gethash i cols) 0) (cell-natural-width cell styles avail)))))
-          (loop for i from 0 below ncols sum (or (gethash i cols) 0))))))
+max-content (or fixed) widths.  0 when it has no cells."
+  (multiple-value-bind (maxs mins specs ncols) (table-column-model node styles avail)
+    (declare (ignore mins))
+    (loop for i below ncols
+          sum (let ((sp (aref specs i)))
+                (if (numberp sp) (max sp (aref maxs i)) (aref maxs i))))))
+
+(defun fit-columns (rspecs maxs mins target ncols)
+  "Fit per-column widths to a TARGET total (CSS 2.1 17.5.2 pragmatic).  RSPECS is
+a list of resolved px specs (NIL for auto columns); MAXS/MINS are lists of
+border-box max/min-content widths.  Auto columns absorb any surplus; a deficit
+is taken proportionally from auto columns' shrink room (fixed columns kept)."
+  (let ((w (make-array ncols)))
+    (loop for i below ncols
+          do (setf (aref w i) (float (or (nth i rspecs) (nth i maxs) 0))))
+    (let ((sum (loop for i below ncols sum (aref w i))))
+      (cond
+        ((< (abs (- sum target)) 0.5))
+        ((< sum target)                         ; grow: give surplus to auto cols
+         (let* ((auto (loop for i below ncols unless (nth i rspecs) collect i))
+                (idxs (or auto (loop for i below ncols collect i)))
+                (basis (loop for i in idxs sum (max 1.0 (aref w i))))
+                (extra (- target sum)))
+           (loop for i in idxs
+                 do (incf (aref w i) (* extra (/ (max 1.0 (aref w i)) basis))))))
+        (t                                       ; shrink: pull from auto shrink room
+         (let* ((room (loop for i below ncols
+                            collect (if (nth i rspecs) 0.0
+                                        (max 0.0 (- (aref w i) (float (or (nth i mins) 0)))))))
+                (troom (reduce #'+ room))
+                (deficit (- sum target)))
+           (if (> troom 0.5)
+               (loop for i below ncols
+                     do (decf (aref w i) (* deficit (/ (nth i room) troom))))
+               (loop for i below ncols
+                     do (setf (aref w i) (* (aref w i) (/ target sum)))))))))
+    (loop for i below ncols collect (max 1.0 (aref w i)))))
 
 (defun layout-table (node styles cx cy content-w base-cs)
-  "Fixed table layout: equal columns, rows stacked, cells stretched to row height.
-Returns (values cell-lboxes content-height)."
-  (declare (ignore base-cs))
-  (let* ((rows (table-rows node styles)))
+  "Automatic table layout (CSS 2.1 17.5.2): columns sized to their content (or a
+specified width), rows stacked, cells stretched to row height.  Returns
+ (values cell-lboxes content-height)."
+  (let ((rows (table-rows node styles)))
     (when (null rows) (return-from layout-table (values nil 0)))
-    (let* ((ncols (reduce #'max (mapcar (lambda (r) (length (row-cells r styles node))) rows) :initial-value 1))
-           (colw (max 1 (floor content-w ncols))) (y cy) (boxes '()))
-      (dolist (row rows)
-        (let ((cells (row-cells row styles node)) (rowh 0) (rowboxes '()) (col 0))
-          (dolist (cell cells)
-            (multiple-value-bind (lb adv) (layout-node cell styles (+ cx (* col colw)) y colw)
-              (declare (ignore adv))
-              (when lb (push lb rowboxes) (setf rowh (max rowh (lbox-h lb))))
-              (incf col)))
-          (dolist (lb rowboxes) (setf (lbox-h lb) rowh))   ; stretch to row height
-          (setf boxes (nconc boxes (nreverse rowboxes)))
-          (incf y rowh)))
-      (values boxes (- y cy)))))
+    (multiple-value-bind (maxs mins specs ncols) (table-column-model node styles content-w)
+      (let* ((rspecs (loop for i below ncols collect (resolve-spec (aref specs i) content-w)))
+             (colw (fit-columns rspecs
+                                (loop for i below ncols collect (aref maxs i))
+                                (loop for i below ncols collect (aref mins i))
+                                content-w ncols))
+             (colx (make-array (1+ ncols) :initial-element 0.0))
+             (y cy) (boxes '()))
+        (loop for i below ncols do (setf (aref colx (1+ i)) (+ (aref colx i) (nth i colw))))
+        (dolist (row rows)
+          (let ((cells (row-cells row styles node)) (rowh 0) (rowboxes '()) (col 0))
+            (dolist (cell cells)
+              (let* ((span (cell-colspan cell))
+                     (x0 (aref colx (min ncols col)))
+                     (x1 (aref colx (min ncols (+ col span))))
+                     (cw (max 1 (round (- x1 x0)))))
+                (multiple-value-bind (lb adv) (layout-node cell styles (round (+ cx x0)) y cw)
+                  (declare (ignore adv))
+                  (when lb (push lb rowboxes) (setf rowh (max rowh (lbox-h lb)))))
+                (incf col span)))
+            (dolist (lb rowboxes) (setf (lbox-h lb) rowh))   ; stretch to row height
+            (setf boxes (nconc boxes (nreverse rowboxes)))
+            (incf y rowh)))
+        (values boxes (- y cy))))))
 
 (defun pref-inline-width (node styles cs content-w)
   "Max-content width of NODE's inline content: word + atomic-box widths summed

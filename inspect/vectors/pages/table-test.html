@@ -1,0 +1,23 @@
+<!DOCTYPE html><html><head><meta charset=utf-8><style>
+ body { margin: 0; font: 16px sans-serif; }
+ table { border-collapse: collapse; }
+ td, th { border: 1px solid #888; padding: 4px; }
+ .fixed { width: 120px; }
+ .pct { width: 40%; }
+</style></head><body>
+<h2>auto columns size to content (HN-style)</h2>
+<table id="auto"><tbody>
+ <tr><td>1.</td><td>A short title</td><td>50 pts</td></tr>
+ <tr><td>22.</td><td>A considerably longer story title that should widen this column</td><td>3</td></tr>
+ <tr><td>3.</td><td>Mid</td><td>120 comments</td></tr>
+</tbody></table>
+<h2>fixed + percentage widths</h2>
+<table id="mixed" style="width:600px"><tbody>
+ <tr><td class="fixed">fixed 120</td><td class="pct">40 percent</td><td>the rest</td></tr>
+</tbody></table>
+<h2>colspan</h2>
+<table id="span"><tbody>
+ <tr><td>a</td><td>b</td><td>c</td></tr>
+ <tr><td colspan="2">spans two</td><td>c2</td></tr>
+</tbody></table>
+</body></html>

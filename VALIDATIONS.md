@@ -81,9 +81,11 @@ said we lacked — two independent pixel/geometry oracles against a **real brows
   **per-element** diff: every `.picture` descendant's box (x,y,w,h) vs Chromium's
   ground truth (`acid2-browser-layout.json`), so a regression names the element
   and the delta. This generalizes to a layout reftest for **any** page.
-On Acid2 these reached **99.9% pixel match** (the 0.1% residual is the reference
-browser's edge anti-aliasing, which weft's hard-edged fill can't bit-match — an
-asymptote, not a defect). This is the first *independent, exact* validation of
+On Acid2 these reached **100% pixel match** — 0 of 21,160 non-white face pixels
+disagree with the reference (colour-class). The final 24-pixel residual was *not*
+anti-aliasing (we checked: every pixel was pure black or yellow) but a genuine
+half-pixel scanline-sampling bug in the polygon rasterizer, found and fixed. This
+is the first *independent, exact* validation of
 weft's layout+paint. The caveat stands for everything ELSE: general layout
 correctness on arbitrary pages is still author-eyeballed — but the tooling to
 diff any page against a real browser now exists.
@@ -95,11 +97,11 @@ diff any page against a real browser now exists.
 - **Acid3 cannot run** — it is ~99% JavaScript (183 `createElement`, 14
   `<script>` blocks). weft renders only its static pre-script state. See the Acid
   gate below.
-- **Acid2 renders at 99.9% pixel-match vs a real browser** (up from ~0%). Driven
+- **Acid2 renders at 100% pixel-match vs a real browser** (up from ~0%). Driven
   to convergence by an objective oracle (the per-element + colour-class diffs
   above), the face assembles correctly: crown, two green-pupil eyes, black
-  diamond nose, curved smile, chin — colour-class agreement **99.9%**, stray-red
-  (Acid2's error colour) **0%**. Getting here built and verified a long list of
+  diamond nose, curved smile, chin — colour-class agreement **100%** (0/21,160
+  face pixels mismatched), stray-red (Acid2's error colour) **0%**. Getting here built and verified a long list of
   *general* engine features, each oracle-gated and re-checked in the canonical
   tree: generated content, data-URI/element/**fixed**-attachment background
   images (+ PNG tRNS/Adam7), `<object>` images, the full positioning + viewport +
@@ -107,11 +109,11 @@ diff any page against a real browser now exists.
   per-edge/mitered **border model**, appendix-E paint order, anonymous table rows
   + shrink-to-fit, line-box metrics from real fonts, **standards/quirks-mode
   DOCTYPE** determination, and several CSS parser/selector conformance fixes.
-  Honest limits: the remaining 0.1% is edge anti-aliasing (asymptote); the match
-  is against the reference *image* (colour classes), not a byte-identical
-  framebuffer; and Acid2's interactive `:hover` sub-tests are not exercised
-  (static render only). We do not call it an official "pass" — we call it
-  **99.9% pixel-match, independently measured**.
+  Honest limits: the match is by *colour class* (yellow/black/green/red/white)
+  against the reference *image*, not a byte-identical framebuffer diff — though
+  the mismatched-pixel count is a literal 0; and Acid2's interactive `:hover`
+  sub-tests are not exercised (static render only). With those caveats stated, it
+  is **a 100% pixel-match, independently measured against a real browser**.
 - **No CSS grid, no `inline-block` baseline alignment.** Text is real now
   (scribe: anti-aliased, font-metric-driven advances/wrapping); remaining text
   gaps are **fake-bold** (stem-darkening, no bold font vendored) and **per-line
@@ -137,8 +139,8 @@ real, gnarly pages ever *error*. Conformance is measured separately and honestly
 
 - **Acid2** — `inspect/acid2-reftest.py` (colour-class match vs the reference
   smiley) and `inspect/acid2-layout-diff.py` (per-element box diff vs Chromium
-  ground truth). Currently **99.9% pixel-match, 0% stray red** (the 0.1% is edge
-  AA). The grind from ~0% → 99.9% is recorded commit-by-commit (each subject
+  ground truth). Currently **100% pixel-match, 0% stray red** (0/21,160 face pixels
+  mismatched). The grind from ~0% → 100% is recorded commit-by-commit (each subject
   carries its `face-ink`/`face-geom` delta). Re-run: render via
   `(weft.acid.test:run)`, then the two scripts.
 - **Acid3** — still ~99% JavaScript; weft renders only its static pre-script
@@ -146,6 +148,6 @@ real, gnarly pages ever *error*. Conformance is measured separately and honestly
 
 ---
 
-*Last updated alongside the Acid2 grind (→ 99.9% pixel-match). If a number here
+*Last updated alongside the Acid2 grind (→ 100% pixel-match). If a number here
 disagrees with `asdf:test-system` or the `inspect/acid2-*` oracles, those are
 right and this file is stale — fix this file.*

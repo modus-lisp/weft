@@ -53,6 +53,7 @@ caught and fixed rather than papered over.
 |---|---|---|
 | Resource loader | fetches and decodes **live pages** end-to-end (example.com over our own Brotli; Wikipedia 413 KB over gzip) | asserts "decodes to text + doesn't crash", not byte-correctness of every page |
 | Layout robustness | renders live 400 KB+ pages and the vendored Acid tests **without crashing** (error-resilient: a bad subtree degrades to an empty box) | "doesn't crash" ≠ "lays out correctly" |
+| **Real-page fidelity** | the same browser-diff reftest, pointed at real sites (Playwright screenshot + CSS-inlined HTML → weft renders it → compare). motherfuckingwebsite.com renders near-identically; **Hacker News** renders faithfully (orange header, content-sized table columns, correct link colours) after the fixes it surfaced (rgb() colours, `bgcolor`, `vw/vh`, automatic table layout, `:link`). A controlled `table-test` is a **CI gate** (box error vs Chromium ≤ 1150). | Static/server-rendered pages only — **JS-driven pages (SPAs) render blank** (no P4 engine); very large pages (Wikipedia 946 KB inlined) are slow; default serif-vs-sans font and 1px `border-collapse` edges differ; external images/fonts aren't fetched. |
 
 ## Weak — self-asserted, NO independent oracle ⚠️
 

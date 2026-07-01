@@ -146,6 +146,19 @@ real, gnarly pages ever *error*. Conformance is measured separately and honestly
 - **Acid3** — still ~99% JavaScript; weft renders only its static pre-script
   state until the JS engine (P4) lands. Not runnable yet.
 
+**These are now permanent CI gates.** `inspect/acid2-conformance.lisp`
+(`weft.acid2.conformance:run`, wired into `test-op`) re-runs both checks in pure
+CL on every `asdf:test-system` — no Python at run time. It decodes the vendored
+reference PNG with weft's own `png-decode`, colour-class matches the rendered
+face (bounded auto-align), and diffs every element's box against the vendored
+`acid2-browser-layout.json`. It **fails the build** if face-pixel mismatch, the
+visible-face geometry error, or the total geometry error exceed their bounds
+(currently 0 / 166 / 1886, with modest headroom). The remaining geometry error
+is deliberately-unfixed Acid2 scaffolding (the parser-quirk table, the giant-font
+image-height torture line, the fixed-`p` coordinate-frame offset) — not a defect,
+which is why the bound has headroom rather than being driven to 0. The `.py`
+scripts remain for ad-hoc inspection / regenerating the browser ground truth.
+
 ---
 
 *Last updated alongside the Acid2 grind (→ 100% pixel-match). If a number here

@@ -1205,7 +1205,9 @@ Two height models:
     VIEWPORT-HEIGHT rectangle and all painting is clipped to it.  This is how
     a real browser tames Acid2's giant margins and lands fixed boxes at fixed
     viewport coordinates."
-  (let* ((doc (h:parse-html html))
+  (let* ((css::*viewport-w* (float width))                 ; vw / vmin / vmax basis
+         (css::*viewport-h* (float (or viewport-height 600))) ; vh basis
+         (doc (h:parse-html html))
          (sheet (css:parse-stylesheet (concatenate 'string (or css "") (string #\Newline)
                                                    (collect-stylesheets doc))))
          (styles (css:compute-styles doc sheet))

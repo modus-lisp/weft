@@ -86,6 +86,9 @@
                                 (cstyle-padding-bottom cs) v (cstyle-padding-left cs) v))
 
 ;;; ---- value resolution ---------------------------------------------------
+(defvar *viewport-w* nil "Initial containing block width in px (for vw/vmin/vmax); NIL until set by the renderer.")
+(defvar *viewport-h* nil "Viewport height in px (for vh/vmin/vmax); NIL until set by the renderer.")
+
 (defun resolve-len (text font-size &optional (auto-ok nil))
   "Resolve a length string to px (float), or :auto, or NIL if unparseable."
   (let ((tt (string-downcase (string-trim '(#\Space) text))))
@@ -105,6 +108,11 @@
                        ((string= unit "q")  (* num 0.94488))   ; 96/101.6 (quarter-mm)
                        ((string= unit "pt") (* num 1.33333))   ; 96/72
                        ((string= unit "pc") (* num 16.0))      ; 12pt
+                       ;; viewport units (resolve against the viewport when known)
+                       ((and (string= unit "vw") *viewport-w*) (* num (/ *viewport-w* 100.0)))
+                       ((and (string= unit "vh") *viewport-h*) (* num (/ *viewport-h* 100.0)))
+                       ((and (string= unit "vmin") *viewport-w* *viewport-h*) (* num (/ (min *viewport-w* *viewport-h*) 100.0)))
+                       ((and (string= unit "vmax") *viewport-w* *viewport-h*) (* num (/ (max *viewport-w* *viewport-h*) 100.0)))
                        ((member unit '("" ) :test #'string=) num)
                        (t num)))   ; treat unknown abs units as px-ish
                nil))))))

@@ -415,7 +415,16 @@ Ignores the system-font keywords (caption/icon/...)."
                (setf (cstyle-border-top-width cs) a (cstyle-border-right-width cs) b
                      (cstyle-border-bottom-width cs) c (cstyle-border-left-width cs) d)))))))))
 
-(defun first-token (s) (let ((p (position #\Space (string-trim '(#\Space) s)))) (if p (subseq (string-trim '(#\Space) s) 0 p) (string-trim '(#\Space) s))))
+(defun first-token (s)
+  "First whitespace-delimited token of S, but treating a parenthesised group as
+part of one token — so rgb(238, 238, 238) / url(a b) stay intact (browsers
+serialise every colour as rgb(r, g, b), which has spaces inside the parens)."
+  (let* ((s (string-trim '(#\Space) s)) (depth 0) (n (length s)))
+    (dotimes (i n s)
+      (let ((c (char s i)))
+        (cond ((char= c #\() (incf depth))
+              ((char= c #\)) (when (plusp depth) (decf depth)))
+              ((and (char= c #\Space) (zerop depth)) (return (subseq s 0 i))))))))
 
 (defun extract-css-url (value)
   "Return the URL inside the first url(...) in VALUE (surrounding quotes stripped),
@@ -452,9 +461,19 @@ url(...) chunk removed (so its contents aren't mistaken for keywords)."
     (remove "" (split-ws (string-downcase v)) :test #'string=)))
 
 (defun split-tokens (s)
-  (remove "" (loop with start = 0 for i from 0 to (length s)
-                   when (or (= i (length s)) (char= (char s i) #\Space))
-                     collect (prog1 (subseq s start i) (setf start (1+ i)))) :test #'string=))
+  "Split S on spaces, but keep parenthesised groups intact — so a value like
+`1px solid rgb(255, 102, 0)` yields (\"1px\" \"solid\" \"rgb(255, 102, 0)\")
+rather than splitting the colour on the spaces inside its parens."
+  (let ((out '()) (start 0) (depth 0) (n (length s)))
+    (dotimes (i n)
+      (let ((c (char s i)))
+        (cond ((char= c #\() (incf depth))
+              ((char= c #\)) (when (plusp depth) (decf depth)))
+              ((and (char= c #\Space) (zerop depth))
+               (when (> i start) (push (subseq s start i) out))
+               (setf start (1+ i))))))
+    (when (> n start) (push (subseq s start n) out))
+    (nreverse out)))
 
 (defun apply-box (value fs cs top right bottom left)
   "Apply a 1-4 value box shorthand (top right bottom left CSS order)."

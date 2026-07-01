@@ -4,3 +4,5 @@
 .cache/
 inspect/vectors/acid/*-weft.png
 inspect/vectors/acid/acid2-weft-layout.json
+
+inspect/vectors/pages/*-ref.png

@@ -21,12 +21,16 @@
 (defparameter *max-face-geom*    220) ; visible-face box error         (now 166)
 (defparameter *max-total-geom*   2100); total box error vs browser     (now 1854)
 (defparameter *max-table-geom*   1150); table-test box error vs browser (now 316)
-(defparameter *max-hn-geom*       7600); Hacker News box error vs browser (now 6713;
+(defparameter *max-hn-geom*       5500); Hacker News box error vs browser (now 4487;
                                        ; dropped from 11917 once text renders in the
-                                       ; browser's metric-compatible faces — HN asks for
-                                       ; Verdana -> LiberationSans.  Remaining error is
-                                       ; structural; this catches STRUCTURAL regressions,
-                                       ; e.g. @media re-breaking)
+                                       ; browser's metric-compatible faces (HN asks for
+                                       ; Verdana -> LiberationSans), then 6713 -> 4487 once
+                                       ; `line-height: normal` resolves from the font's own
+                                       ; (ascent+|descent|+line-gap)/upem instead of a flat
+                                       ; 1.2.  Remaining error is structural / font-env noise
+                                       ; (column widths from Verdana->Liberation auto-table
+                                       ; measuring); headroom left so this still catches
+                                       ; STRUCTURAL regressions, e.g. @media re-breaking.)
 
 ;;; ---- small helpers -------------------------------------------------------
 (defun rel (p) (asdf:system-relative-pathname "weft" p))

@@ -540,6 +540,22 @@ Invalid/unparseable components are left as NIL (= fall back to BORDER-COLOR)."
             ((string= prop "border-left") (setw :l) (setc :l) (sets :l))
             ((string= prop "border-right") (setw :r) (setc :r) (sets :r))))))
 
+(defun apply-presentational-hints (cs node)
+  "Map legacy HTML presentational attributes to computed style (bgcolor, text,
+width/height on table/replaced elements). Precedence is below author CSS, so
+this is applied before author rules."
+  (let ((tag (string-downcase (weft.html:dnode-name node))))
+    (let ((bg (el-attr node "bgcolor")))
+      (when bg (let ((c (resolve-color bg))) (when c (setf (cstyle-background cs) c)))))
+    (when (string= tag "body")
+      (let ((tx (el-attr node "text")))
+        (when tx (let ((c (resolve-color tx))) (when c (setf (cstyle-color cs) c))))))
+    (when (member tag '("table" "td" "th" "col" "colgroup" "hr") :test #'string=)
+      (let ((w (el-attr node "width")))
+        (when w (let ((pw (parse-size w (cstyle-font-size cs) nil))) (when pw (setf (cstyle-width cs) pw)))))
+      (let ((hh (el-attr node "height")))
+        (when hh (let ((ph (parse-size hh (cstyle-font-size cs) nil))) (when ph (setf (cstyle-height cs) ph))))))))
+
 ;;; ---- the cascade --------------------------------------------------------
 (defun compute-styles (document stylesheet)
   "Compute a CSTYLE for every element under DOCUMENT, applying STYLESHEET (a list
@@ -567,6 +583,8 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                (when (eq (weft.html:dnode-kind n) :element)
                  (let* ((tag (string-downcase (weft.html:dnode-name n)))
                         (cs (ua-style tag parent-cs)))
+                   ;; legacy presentational attributes (bgcolor, width, ...) — below author CSS
+                   (apply-presentational-hints cs n)
                    ;; collect matching author rules, splitting element vs pseudo-element
                    (let ((matched '()) (m-before '()) (m-after '()))
                      (dolist (ru rules)

@@ -20,6 +20,7 @@
 (defparameter *max-mismatch-px* 40)   ; face colour-class mismatches   (now 0)
 (defparameter *max-face-geom*    220) ; visible-face box error         (now 166)
 (defparameter *max-total-geom*   2100); total box error vs browser     (now 1886)
+(defparameter *max-table-geom*   1150); table-test box error vs browser (now 960)
 
 ;;; ---- small helpers -------------------------------------------------------
 (defun rel (p) (asdf:system-relative-pathname "weft" p))
@@ -143,9 +144,48 @@ elements weft boxes, vs the vendored browser layout. FACE = browser-visible
                 (when (and (> bw 0) (> bh 0) (< by 190)) (incf face err)))))
     (values face total)))
 
+;;; ---- (3) TABLE LAYOUT: box error of a real table page vs the browser -----
+(defun body-boxes (html-path width)
+  "weft's element boxes (x y w h) or NIL, in document order relative to <body>."
+  (let* ((doc (h:parse-html (slurp html-path)))
+         (styles (css:compute-styles doc (css:parse-stylesheet
+                                          (concatenate 'string (r::collect-stylesheets doc) (string #\Newline)))))
+         (root (r::layout-tree doc styles width))
+         (n->b (make-hash-table :test 'eq)) (body nil) (out '()))
+    (labels ((index (lb)
+               (when lb
+                 (when (and (eq (r::lbox-kind lb) :block) (r::lbox-node lb) (not (gethash (r::lbox-node lb) n->b)))
+                   (setf (gethash (r::lbox-node lb) n->b) lb))
+                 (when (eq (r::lbox-kind lb) :line) (dolist (it (r::lbox-children lb)) (unless (r::frag-p it) (index it))))
+                 (when (eq (r::lbox-kind lb) :block) (dolist (c (r::lbox-children lb)) (index c)))))
+             (find-body (n) (when (and (eq (h:dnode-kind n) :element) (string-equal (h:dnode-name n) "body")) (setf body n))
+               (loop for c across (h:dnode-children n) do (find-body c)))
+             (walk (n px py)
+               (when (eq (h:dnode-kind n) :element)
+                 (let ((lb (gethash n n->b)))
+                   (push (when lb (list (round (- (r::lbox-x lb) px)) (round (- (r::lbox-y lb) py))
+                                        (round (r::lbox-w lb)) (round (r::lbox-h lb)))) out))
+                 (loop for c across (h:dnode-children n) do (walk c px py)))))
+      (index root) (find-body doc)
+      (let ((bb (gethash body n->b))) (walk body (if bb (r::lbox-x bb) 0) (if bb (r::lbox-y bb) 0)))
+      (nreverse out))))
+
+(defun table-geometry-error ()
+  "Total box error of the controlled table-test page vs the vendored browser
+layout — guards the automatic-table-layout implementation."
+  (let* ((brow (json-parse (slurp (rel "inspect/vectors/pages/table-test-layout.json"))))
+         (els (field brow "els"))
+         (weft (body-boxes (rel "inspect/vectors/pages/table-test.html") 800)) (total 0))
+    (loop for be in els for wb in weft
+          for bx = (field be "x") when (and wb bx) do
+            (destructuring-bind (wx wy ww wh) wb
+              (incf total (+ (abs (- wx bx)) (abs (- wy (field be "y")))
+                             (abs (- ww (field be "w"))) (abs (- wh (field be "h")))))))
+    total))
+
 ;;; ---- gate ----------------------------------------------------------------
 (defun run ()
-  (format t "~&=== Acid2 conformance gate (pixel + geometry vs a real browser) ===~%")
+  (format t "~&=== browser-diff conformance gate (Acid2 pixel/geometry + table layout) ===~%")
   (let ((fails 0))
     (handler-case
         (multiple-value-bind (mis refn) (pixel-mismatch (render-canvas))
@@ -161,5 +201,11 @@ elements weft boxes, vs the vendored browser layout. FACE = browser-visible
             (format t "  ~a geometry: face error ~d [bound <= ~d], total ~d [bound <= ~d]~%"
                     (if (and fok tok) "ok  " "FAIL") face *max-face-geom* total *max-total-geom*)))
       (error (e) (incf fails) (format t "  FAIL geometry gate errored: ~a~%" e)))
+    (handler-case
+        (let* ((te (table-geometry-error)) (ok (<= te *max-table-geom*)))
+          (unless ok (incf fails))
+          (format t "  ~a table   : box error ~d vs browser [bound <= ~d]~%"
+                  (if ok "ok  " "FAIL") te *max-table-geom*))
+      (error (e) (incf fails) (format t "  FAIL table gate errored: ~a~%" e)))
     (format t "~a~%" (if (zerop fails) "Acid2 conformance: PASS" "Acid2 conformance: FAIL"))
     (values (if (zerop fails) 1 0) fails)))

@@ -599,7 +599,17 @@ this is applied before author rules."
       (let ((w (el-attr node "width")))
         (when w (let ((pw (parse-size w (cstyle-font-size cs) nil))) (when pw (setf (cstyle-width cs) pw)))))
       (let ((hh (el-attr node "height")))
-        (when hh (let ((ph (parse-size hh (cstyle-font-size cs) nil))) (when ph (setf (cstyle-height cs) ph))))))))
+        (when hh (let ((ph (parse-size hh (cstyle-font-size cs) nil))) (when ph (setf (cstyle-height cs) ph))))))
+    ;; table cell / row / etc. align= -> text-align (HTML §14.3 presentational).
+    ;; (We deliberately do NOT map cellpadding here: HN sets cellpadding=0, but
+    ;; weft's default 2px td padding is currently compensating for Liberation's
+    ;; shorter normal line-height vs the browser's Verdana substitute — zeroing it
+    ;; exposes that font-environment gap and makes real pages worse.)
+    (when (member tag '("td" "th" "tr" "thead" "tbody" "tfoot" "col" "colgroup") :test #'string=)
+      (let ((al (el-attr node "align")))
+        (when al (let ((a (string-downcase (string-trim '(#\Space) al))))
+                   (when (member a '("left" "right" "center" "justify") :test #'string=)
+                     (setf (cstyle-text-align cs) a))))))))
 
 ;;; ---- the cascade --------------------------------------------------------
 (defun compute-styles (document stylesheet)

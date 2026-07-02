@@ -19,7 +19,11 @@
 ;;; ---- bounds (current actuals in comments; fail if exceeded) --------------
 (defparameter *max-mismatch-px* 40)   ; face colour-class mismatches   (now 0)
 (defparameter *max-face-geom*    220) ; visible-face box error         (now 166)
-(defparameter *max-total-geom*   2100); total box error vs browser     (now 1854)
+(defparameter *max-total-geom*   2200); total box error vs browser     (now 2072 — rose
+                                      ; from 1854 when <img> began reserving its border-box
+                                      ; (spec-correct); Acid2's ground-truth capture has those
+                                      ; broken-in-capture imgs at content size, so this is a
+                                      ; capture artifact, not a defect — the pixel face is 0)
 (defparameter *max-table-geom*   1150); table-test box error vs browser (now 316)
 (defparameter *max-hn-geom*       3900); Hacker News box error vs browser (now 3424;
                                        ; dropped from 11917 once text renders in the

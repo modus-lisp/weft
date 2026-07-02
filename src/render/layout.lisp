@@ -882,16 +882,22 @@ token (word or atomic box)."
                    (min-inline-width node styles cs content-w)))))))
 
 (defun cell-max-content-width (cell styles avail)
-  "Max-content border-box width of a table CELL (explicit width wins)."
+  "Max-content border-box width of a table CELL.  An explicit width is the target,
+but never below the cell's unshrinkable min-content."
   (let* ((cs (st styles cell)) (w (and cs (css:cstyle-width cs))))
     (max 0 (+ (cell-pad-bord cs)
-              (if (numberp w) w (pref-content-width cell styles avail))))))
+              (if (numberp w) (max w (min-content-width cell styles avail))
+                  (pref-content-width cell styles avail))))))
 
 (defun cell-min-content-width (cell styles avail)
-  "Min-content border-box width of a table CELL."
+  "Min-content border-box width of a table CELL.  An explicit width is honored as
+a floor, but a cell can never be narrower than its unshrinkable content — e.g.
+HN's logo cell is width:18px yet holds a 20px (bordered) <img>, so the column
+must be 20, not 18 (matching how the browser widens the column to fit it)."
   (let* ((cs (st styles cell)) (w (and cs (css:cstyle-width cs))))
     (max 0 (+ (cell-pad-bord cs)
-              (if (numberp w) w (min-content-width cell styles avail))))))
+              (if (numberp w) (max w (min-content-width cell styles avail))
+                  (min-content-width cell styles avail))))))
 
 (defun cell-spec-width (cell styles)
   "Specified column width contributed by CELL: NIL, a border-box px number, or
@@ -971,7 +977,11 @@ border-box max/min-content widths.  Auto columns absorb any surplus; a deficit
 is taken proportionally from auto columns' shrink room (fixed columns kept)."
   (let ((w (make-array ncols)))
     (loop for i below ncols
-          do (setf (aref w i) (float (or (nth i rspecs) (nth i maxs) 0))))
+          ;; a column is never narrower than its min-content, even a fixed-width
+          ;; one: HN's logo cell is width:18 but holds a 20px <img>, so its column
+          ;; must be >= 20 (the browser widens it to fit).
+          do (setf (aref w i) (max (float (or (nth i rspecs) (nth i maxs) 0))
+                                   (float (or (nth i mins) 0)))))
     (let ((sum (loop for i below ncols sum (aref w i))))
       (cond
         ((< (abs (- sum target)) 0.5))

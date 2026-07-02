@@ -839,12 +839,24 @@ table cell defaults to vertical-align:baseline; with a single line of text in a
 cell stretched taller than that line (HN's title cell beside the 19px votearrow),
 the browser drops the line to the cell's baseline near the bottom, not the middle.
 Shift the content down by the slack so it tucks against the cell bottom; the box
-itself is then stretched to ROWH by the caller."
-  (let ((slack (- rowh (lbox-h lb))))
-    (when (and (> slack 0)
-               (not (cell-lbox-valign-top-p lb))
-               (cell-inline-only-p lb))
-      (dolist (c (lbox-children lb)) (shift-box c 0 slack)))))
+itself is then stretched to ROWH by the caller.
+
+The slack is measured against the cell's actual CONTENT height (its line boxes'
+extent), not LBOX-H.  A cell with an explicit height smaller than its content
+(HN's nav cell <td style=\"height:10px\"> holding a 15px line) has LBOX-H clamped
+to that 10px minimum, so rowh-LBOX-H would over-sink the line by the shortfall —
+dropping the nav text below the orange bar.  CSS treats the cell height as a
+minimum: the content still occupies its own line height, so that is what the
+line must tuck against the cell bottom by."
+  (when (and (not (cell-lbox-valign-top-p lb))
+             (cell-inline-only-p lb)
+             (lbox-children lb))
+    (let* ((content-bottom (loop for c in (lbox-children lb)
+                                 maximize (+ (lbox-y c) (lbox-h c))))
+           (content-h (- content-bottom (lbox-y lb)))
+           (slack (- rowh content-h)))
+      (when (> slack 0)
+        (dolist (c (lbox-children lb)) (shift-box c 0 slack))))))
 
 (defun min-inline-width (node styles cs content-w)
   "Min-content width of NODE's inline content: the widest single unbreakable

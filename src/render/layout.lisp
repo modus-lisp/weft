@@ -91,6 +91,32 @@ text runs and (:atomic . lbox) for inline-block / replaced boxes."
                        (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
                          (declare (ignore adv))
                          (when lb (push (cons :atomic lb) words))))
+                      ;; A block-level element with an explicit px width AND height
+                      ;; that appears in inline flow (e.g. HN's <div class=votearrow>
+                      ;; 10x10 inside an inline <a>) is not part of the surrounding
+                      ;; inline formatting context, but browsers still reserve its
+                      ;; principal box: it becomes an atomic inline occupying its
+                      ;; border-box plus margins and contributing that height to the
+                      ;; line.  Scoped to definite w AND h so ordinary block children
+                      ;; of an inline (rare) and Acid2's inline-blocks are untouched.
+                      ((and cs (member (cdisplay cs) '("block" "list-item") :test #'string=)
+                            (numberp (css:cstyle-width cs)) (numberp (css:cstyle-height cs)))
+                       (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
+                         (declare (ignore adv))
+                         (when lb
+                           (let ((ml (max 0 (css:cstyle-margin-left cs)))
+                                 (mr (max 0 (css:cstyle-margin-right cs)))
+                                 (mt (max 0 (css:cstyle-margin-top cs)))
+                                 (mb (max 0 (css:cstyle-margin-bottom cs))))
+                             ;; LAYOUT-NODE already positioned LB's border-box at
+                             ;; (ml,mt); wrap it in a marginless atomic box sized to
+                             ;; the full margin box so the line height counts margins.
+                             (push (cons :atomic
+                                         (make-lbox :x 0 :y 0
+                                                    :w (+ ml (lbox-w lb) mr)
+                                                    :h (+ mt (lbox-h lb) mb)
+                                                    :kind :block :children (list lb)))
+                                   words)))))
                       (t (loop for c across (h:dnode-children n) do (rec c cs)))))))))
       (rec node (or (st styles node) default-style)))
     (nreverse words)))
@@ -206,8 +232,12 @@ text-align.  Returns (values line-boxes total-height)."
          ;; not 13) so its single line clears the float just below it instead of
          ;; overlapping by 1px and being pushed a full float-height down.  Normal
          ;; 16px text (line-height 1.2 -> 19) is unaffected; only sub-13px lines
-         ;; change, and toward the correct (tighter) value.
-         (lh (max 1 (round (used-line-height base-cs))))
+         ;; change, and toward the correct (tighter) value.  The used value is
+         ;; TRUNCATED (floored) to the pixel, matching how the browser sizes a
+         ;; line box: e.g. HN's 7pt subtext (9.33px x 1.15 normal = 10.73) yields
+         ;; a 10px line, not 11 — a per-row 1px that otherwise compounds down the
+         ;; 30-story list.  Integer / clean-fraction line-heights are unaffected.
+         (lh (max 1 (floor (used-line-height base-cs))))
          (align (css:cstyle-text-align base-cs))
          (nowrap (member (css:cstyle-white-space base-cs) '("nowrap" "pre") :test #'string=))
          (cright (+ content-x content-w))
@@ -905,7 +935,22 @@ specified width), rows stacked, cells stretched to row height.  Returns
                   (declare (ignore adv))
                   (when lb (push lb rowboxes) (setf rowh (max rowh (lbox-h lb)))))
                 (incf col span)))
+            ;; Honor an explicit row height (CSS 2.1 17.5.3): the row is at least
+            ;; as tall as its specified height.  This is what materialises HN's
+            ;; empty 5px spacer <tr style="height:5px">, whose row-cells are empty
+            ;; so its height would otherwise collapse to 0 and pack the stories.
+            (let ((rcs (unless (eq row node) (st styles row))))
+              (when rcs
+                (let ((rh (css::resolve-height (css:cstyle-height rcs) nil)))
+                  (when (and (numberp rh) (> rh rowh)) (setf rowh (round rh))))))
             (dolist (lb rowboxes) (setf (lbox-h lb) rowh))   ; stretch to row height
+            ;; A row with no cell boxes but a positive height (an empty spacer row)
+            ;; still occupies its band; give it a box so it advances the flow and is
+            ;; recorded/painted like the browser's tr box.
+            (when (and (null rowboxes) (plusp rowh) (not (eq row node)))
+              (push (make-lbox :x (round cx) :y y :w (round content-w) :h rowh
+                               :style (st styles row) :node row :kind :block)
+                    rowboxes))
             (setf boxes (nconc boxes (nreverse rowboxes)))
             (incf y rowh)))
         (values boxes (- y cy))))))

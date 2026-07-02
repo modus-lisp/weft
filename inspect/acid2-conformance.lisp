@@ -21,15 +21,18 @@
 (defparameter *max-face-geom*    220) ; visible-face box error         (now 166)
 (defparameter *max-total-geom*   2100); total box error vs browser     (now 1854)
 (defparameter *max-table-geom*   1150); table-test box error vs browser (now 316)
-(defparameter *max-hn-geom*       5500); Hacker News box error vs browser (now 4487;
+(defparameter *max-hn-geom*       3900); Hacker News box error vs browser (now 3424;
                                        ; dropped from 11917 once text renders in the
                                        ; browser's metric-compatible faces (HN asks for
                                        ; Verdana -> LiberationSans), then 6713 -> 4487 once
                                        ; `line-height: normal` resolves from the font's own
                                        ; (ascent+|descent|+line-gap)/upem instead of a flat
-                                       ; 1.2.  Remaining error is structural / font-env noise
-                                       ; (column widths from Verdana->Liberation auto-table
-                                       ; measuring); headroom left so this still catches
+                                       ; 1.2, then 4487 -> 3424 once the votearrow div boxes in
+                                       ; inline flow, cellpadding=0 is honoured, empty spacer
+                                       ; <tr>s keep their height, and the line box floors to
+                                       ; the pixel.  Remaining error is structural / font-env
+                                       ; noise (column widths from Verdana->Liberation auto-
+                                       ; table measuring); headroom left so this still catches
                                        ; STRUCTURAL regressions, e.g. @media re-breaking.)
 
 ;;; ---- small helpers -------------------------------------------------------

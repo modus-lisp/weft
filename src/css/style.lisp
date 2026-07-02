@@ -600,11 +600,23 @@ this is applied before author rules."
         (when w (let ((pw (parse-size w (cstyle-font-size cs) nil))) (when pw (setf (cstyle-width cs) pw)))))
       (let ((hh (el-attr node "height")))
         (when hh (let ((ph (parse-size hh (cstyle-font-size cs) nil))) (when ph (setf (cstyle-height cs) ph))))))
+    ;; cellpadding=N on the nearest ancestor <table> sets each descendant cell's
+    ;; padding to N px (HTML §11.3.1), below author CSS.  HN sets cellpadding=0, so
+    ;; its story cells carry no padding and the row height comes from the votearrow.
+    (when (member tag '("td" "th") :test #'string=)
+      (let ((table (loop for a = (weft.html:dnode-parent node) then (weft.html:dnode-parent a)
+                         while a
+                         when (and (eq (weft.html:dnode-kind a) :element)
+                                   (string-equal (weft.html:dnode-name a) "table"))
+                           return a)))
+        (when table
+          (let ((cp (el-attr table "cellpadding")))
+            (when cp
+              (let ((n (ignore-errors (parse-integer (string-trim '(#\Space) cp) :junk-allowed t))))
+                (when (and n (>= n 0))
+                  (setf (cstyle-padding-top cs) n (cstyle-padding-right cs) n
+                        (cstyle-padding-bottom cs) n (cstyle-padding-left cs) n))))))))
     ;; table cell / row / etc. align= -> text-align (HTML §14.3 presentational).
-    ;; (We deliberately do NOT map cellpadding here: HN sets cellpadding=0, but
-    ;; weft's default 2px td padding is currently compensating for Liberation's
-    ;; shorter normal line-height vs the browser's Verdana substitute — zeroing it
-    ;; exposes that font-environment gap and makes real pages worse.)
     (when (member tag '("td" "th" "tr" "thead" "tbody" "tfoot" "col" "colgroup") :test #'string=)
       (let ((al (el-attr node "align")))
         (when al (let ((a (string-downcase (string-trim '(#\Space) al))))

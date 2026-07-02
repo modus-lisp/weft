@@ -110,6 +110,14 @@ never depends on the font succeeding."
   "Where the bitmap DRAW-TEXT path centers its fixed *FONT-H* slot in a line box."
   (+ line-top (max 0 (floor (- line-h *font-h*) 2))))
 
+(defparameter *stem-darkening* 0.75d0
+  "Coverage exponent handed to scribe when painting glyphs.  The browser's
+FreeType rendering thickens/darkens small text; scribe's geometric default (1.0)
+renders it washed-out and too light.  0.75 matches Chromium's ink density on
+small body text (calibrated against a real-page render) — applied uniformly to
+regular and bold (the browser darkens both; bold already uses the real bold face,
+so this is not synthetic double-weighting).")
+
 (defun draw-text-scribe (cv text x line-top line-h color size
                          &key bold underline face)
   "Paint TEXT with scribe glyphs from FACE (defaulting to the generic sans-serif
@@ -138,11 +146,10 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                    (scv (scribe::%make-canvas :width (canvas-width cv)
                                               :height (canvas-height cv)
                                               :pixels (canvas-pixels cv)))
-                   ;; Bold is rendered with the REAL bold FACE (match-font picks
-                   ;; LiberationSans-Bold etc.), so keep scribe's default
-                   ;; geometric stem darkening — no synthetic thickening, which
-                   ;; would double-weight bold at dpr=1.  BOLD is only consulted
-                   ;; by the bitmap fallback below, which has no bold face.
+                   ;; Match the browser's FreeType stroke darkening (scribe's
+                   ;; geometric default reads washed-out); see *STEM-DARKENING*.
+                   ;; BOLD is only consulted by the bitmap fallback below.
+                   (scribe::*stem-darkening* *stem-darkening*)
                    ;; clip bounds (or full canvas)
                    (cx0 (if *clip* (the fixnum (first *clip*)) 0))
                    (cy0 (if *clip* (the fixnum (second *clip*)) 0))

@@ -772,6 +772,35 @@ row (ROW eq the TABLE node) wraps every cell-like child as a cell."
   (let ((v (cdr (assoc "colspan" (h:dnode-attrs cell) :test #'string-equal))))
     (max 1 (or (and v (ignore-errors (parse-integer (string-trim '(#\Space) v) :junk-allowed t))) 1))))
 
+(defun cell-lbox-valign-top-p (lb)
+  "True when the cell box LB is TOP-aligned — legacy valign=\"top\" (HTML §14.3).
+Such a cell keeps its content at the cell top when the row is taller; every other
+cell (default vertical-align:baseline) sinks its single line to the cell bottom."
+  (let ((node (lbox-node lb)))
+    (and node (eq (h:dnode-kind node) :element)
+         (let ((v (cdr (assoc "valign" (h:dnode-attrs node) :test #'string-equal))))
+           (and v (string-equal (string-trim '(#\Space) v) "top"))))))
+
+(defun cell-inline-only-p (lb)
+  "True when cell box LB holds only inline content (its children are all line
+boxes).  A single line of such content is the case CSS baseline-aligns to the
+cell bottom; a cell with block children (HN's votearrow div) is left top-aligned."
+  (let ((kids (lbox-children lb)))
+    (and kids (every (lambda (c) (eq (lbox-kind c) :line)) kids))))
+
+(defun baseline-sink-cell (lb rowh)
+  "Sink a baseline-aligned cell's inline content to the bottom of the row.  A
+table cell defaults to vertical-align:baseline; with a single line of text in a
+cell stretched taller than that line (HN's title cell beside the 19px votearrow),
+the browser drops the line to the cell's baseline near the bottom, not the middle.
+Shift the content down by the slack so it tucks against the cell bottom; the box
+itself is then stretched to ROWH by the caller."
+  (let ((slack (- rowh (lbox-h lb))))
+    (when (and (> slack 0)
+               (not (cell-lbox-valign-top-p lb))
+               (cell-inline-only-p lb))
+      (dolist (c (lbox-children lb)) (shift-box c 0 slack)))))
+
 (defun min-inline-width (node styles cs content-w)
   "Min-content width of NODE's inline content: the widest single unbreakable
 token (word or atomic box)."
@@ -943,7 +972,9 @@ specified width), rows stacked, cells stretched to row height.  Returns
               (when rcs
                 (let ((rh (css::resolve-height (css:cstyle-height rcs) nil)))
                   (when (and (numberp rh) (> rh rowh)) (setf rowh (round rh))))))
-            (dolist (lb rowboxes) (setf (lbox-h lb) rowh))   ; stretch to row height
+            (dolist (lb rowboxes)
+              (baseline-sink-cell lb rowh)                   ; baseline cells: sink content to bottom
+              (setf (lbox-h lb) rowh))                       ; stretch box to row height
             ;; A row with no cell boxes but a positive height (an empty spacer row)
             ;; still occupies its band; give it a box so it advances the flow and is
             ;; recorded/painted like the browser's tr box.

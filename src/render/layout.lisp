@@ -126,8 +126,13 @@ text runs and (:atomic . lbox) for inline-block / replaced boxes."
     (when v (ignore-errors (parse-integer (string-trim '(#\Space #\p #\x) v) :junk-allowed t)))))
 
 (defun img-box (node cs)
-  "A box for <img>: if src is a decodable data: URI, paint real pixels at its
-intrinsic size (or CSS/HTML override); else an alt-text placeholder."
+  "An atomic replaced box for <img>, sized to its BORDER box: the layout footprint
+is the content WxH plus its border (and padding) widths, with the decoded image (or
+an alt-text placeholder) painted in the content area inset by that border/padding.
+Modelled on OBJECT-BOX so a bordered <img> (e.g. HN's `border:1px white` logo)
+reserves the browser's real box (20x20 for an 18x18 + 1px border) instead of just
+its content.  The decoded/CSS/HTML intrinsic size is the CONTENT size; else an
+alt-text placeholder."
   (let* ((src (cdr (assoc "src" (h:dnode-attrs node) :test #'string-equal)))
          (decoded (and src (>= (length src) 5) (string-equal (subseq src 0 5) "data:")
                        (ignore-errors (decode-image src))))
@@ -151,14 +156,35 @@ intrinsic size (or CSS/HTML override); else an alt-text placeholder."
                       ;; HN's logo `border:1px white`) stays, so the box is exactly
                       ;; the browser's reserved size (declared WxH + author border).
                       (setf (css:cstyle-background c) nil (css:cstyle-bg-image c) nil)
-                      (when (equal (css:cstyle-border-color cs) '(170 170 180 1.0))
+                      ;; Compare the EFFECTIVE per-edge colors (BORDER-EDGE-RAW-COLOR),
+                      ;; not the shorthand BORDER-COLOR slot: an author `border:1px
+                      ;; white solid` sets the per-side colors (leaving the UA gray in
+                      ;; the shorthand slot), so only strip when every edge is still the
+                      ;; UA default gray — HN's white logo border survives (box 20x20).
+                      (when (every (lambda (e) (equal (border-edge-raw-color cs e) '(170 170 180 1.0)))
+                                   '(:t :r :b :l))
                         (setf (css:cstyle-border-top-width c) 0.0 (css:cstyle-border-right-width c) 0.0
                               (css:cstyle-border-bottom-width c) 0.0 (css:cstyle-border-left-width c) 0.0))
                       c)
                     cs))
-         (lb (make-lbox :x 0 :y 0 :w w :h hh :style style :kind :block :img decoded)))
+         (bl (used-border style :l)) (br (used-border style :r))
+         (bt (used-border style :t)) (bb (used-border style :b))
+         (pl (max 0 (css:cstyle-padding-left style))) (pr (max 0 (css:cstyle-padding-right style)))
+         (pt (max 0 (css:cstyle-padding-top style))) (pb (max 0 (css:cstyle-padding-bottom style)))
+         ;; Inner content box holds the decoded pixels (or alt text); the outer
+         ;; box paints the background + border around it, so strip both here.
+         (inner (let ((c (css::copy-cstyle style)))
+                  (setf (css:cstyle-background c) nil (css:cstyle-bg-image c) nil
+                        (css:cstyle-bg-gradient c) nil
+                        (css:cstyle-border-top-width c) 0 (css:cstyle-border-right-width c) 0
+                        (css:cstyle-border-bottom-width c) 0 (css:cstyle-border-left-width c) 0)
+                  c))
+         (content (make-lbox :x (+ bl pl) :y (+ bt pt) :w w :h hh
+                             :style inner :kind :block :img decoded))
+         (lb (make-lbox :x 0 :y 0 :w (+ bl pl w pr br) :h (+ bt pt hh pb bb)
+                        :style style :node node :kind :block :children (list content))))
     (when (and (not decoded) has-alt)
-      (setf (lbox-children lb)
+      (setf (lbox-children content)
             (list (make-lbox :x 2 :y (max 0 (floor (- hh *font-h*) 2)) :w (- w 4) :h *font-h* :kind :line
                              :children (list (make-frag :x 2 :w (word-w alt cs) :text alt :style cs))))))
     lb))

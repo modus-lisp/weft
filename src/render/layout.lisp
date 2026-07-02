@@ -145,9 +145,15 @@ intrinsic size (or CSS/HTML override); else an alt-text placeholder."
          ;; The gray/bordered placeholder is kept only for images that carry alt.
          (style (if (and (not decoded) (not has-alt))
                     (let ((c (css::copy-cstyle cs)))
-                      (setf (css:cstyle-background c) nil (css:cstyle-bg-image c) nil
-                            (css:cstyle-border-top-width c) 0.0 (css:cstyle-border-right-width c) 0.0
-                            (css:cstyle-border-bottom-width c) 0.0 (css:cstyle-border-left-width c) 0.0)
+                      ;; Drop the UA gray placeholder FILL so the box shows nothing
+                      ;; visible, but keep the declared footprint: strip the border
+                      ;; only when it's the UA default gray — an AUTHOR border (e.g.
+                      ;; HN's logo `border:1px white`) stays, so the box is exactly
+                      ;; the browser's reserved size (declared WxH + author border).
+                      (setf (css:cstyle-background c) nil (css:cstyle-bg-image c) nil)
+                      (when (equal (css:cstyle-border-color cs) '(170 170 180 1.0))
+                        (setf (css:cstyle-border-top-width c) 0.0 (css:cstyle-border-right-width c) 0.0
+                              (css:cstyle-border-bottom-width c) 0.0 (css:cstyle-border-left-width c) 0.0))
                       c)
                     cs))
          (lb (make-lbox :x 0 :y 0 :w w :h hh :style style :kind :block :img decoded)))

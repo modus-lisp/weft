@@ -110,13 +110,16 @@ never depends on the font succeeding."
   "Where the bitmap DRAW-TEXT path centers its fixed *FONT-H* slot in a line box."
   (+ line-top (max 0 (floor (- line-h *font-h*) 2))))
 
-(defparameter *stem-darkening* 0.75d0
-  "Coverage exponent handed to scribe when painting glyphs.  The browser's
-FreeType rendering thickens/darkens small text; scribe's geometric default (1.0)
-renders it washed-out and too light.  0.75 matches Chromium's ink density on
-small body text (calibrated against a real-page render) — applied uniformly to
-regular and bold (the browser darkens both; bold already uses the real bold face,
-so this is not synthetic double-weighting).")
+(defparameter *blend-gamma* 1.5d0
+  "Gamma space scribe composites glyphs in (bound to scribe's *BLEND-GAMMA*).
+Linear-light AA (scribe's image default, ~2.2) renders dark-on-light text
+washed-out; naive sRGB blending (1.0) is too heavy; browsers sit between.  1.5 is
+calibrated against a real-page render so text reads at Chromium's weight — a touch
+heavier than a pure total-ink match, to make up for the browser's stem hinting
+(solid-black pixels) that weft's geometric raster can't reproduce.")
+(defparameter *stem-darkening* 1.0d0
+  "Extra coverage-exponent darkening on top of *BLEND-GAMMA* (1.0 = none).  The
+gamma carries the weight match; kept as a separate knob.")
 
 (defun draw-text-scribe (cv text x line-top line-h color size
                          &key bold underline face)
@@ -146,9 +149,11 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                    (scv (scribe::%make-canvas :width (canvas-width cv)
                                               :height (canvas-height cv)
                                               :pixels (canvas-pixels cv)))
-                   ;; Match the browser's FreeType stroke darkening (scribe's
-                   ;; geometric default reads washed-out); see *STEM-DARKENING*.
-                   ;; BOLD is only consulted by the bitmap fallback below.
+                   ;; Blend glyphs in an intermediate gamma space, not linear
+                   ;; light — browsers blend text this way; linear-light AA leaves
+                   ;; edges washed-out.  (BOLD is only consulted by the bitmap
+                   ;; fallback below.)
+                   (scribe::*blend-gamma* *blend-gamma*)
                    (scribe::*stem-darkening* *stem-darkening*)
                    ;; clip bounds (or full canvas)
                    (cx0 (if *clip* (the fixnum (first *clip*)) 0))

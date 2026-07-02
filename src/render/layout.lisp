@@ -136,12 +136,25 @@ intrinsic size (or CSS/HTML override); else an alt-text placeholder."
          (w (or cw (img-attr-num node "width") (and decoded (img-w decoded)) 120))
          (hh (or chh (img-attr-num node "height") (and decoded (img-h decoded)) 90))
          (alt (cdr (assoc "alt" (h:dnode-attrs node) :test #'string-equal)))
-         (lb (make-lbox :x 0 :y 0 :w w :h hh :style cs :kind :block :img decoded)))
-    (unless decoded
+         (has-alt (and alt (plusp (length alt))))
+         ;; An unfetchable image with NO alt text (HN's SVG logo, a 14x1 spacer
+         ;; gif) is not a broken-image placeholder — the browser reserves the
+         ;; declared box and shows nothing.  Drop the UA chrome (gray fill + 1px
+         ;; border) so the box is exactly WxH and paints no visible gray box; a
+         ;; spacer stays invisible and the logo footprint is just its own border.
+         ;; The gray/bordered placeholder is kept only for images that carry alt.
+         (style (if (and (not decoded) (not has-alt))
+                    (let ((c (css::copy-cstyle cs)))
+                      (setf (css:cstyle-background c) nil (css:cstyle-bg-image c) nil
+                            (css:cstyle-border-top-width c) 0.0 (css:cstyle-border-right-width c) 0.0
+                            (css:cstyle-border-bottom-width c) 0.0 (css:cstyle-border-left-width c) 0.0)
+                      c)
+                    cs))
+         (lb (make-lbox :x 0 :y 0 :w w :h hh :style style :kind :block :img decoded)))
+    (when (and (not decoded) has-alt)
       (setf (lbox-children lb)
-            (when (and alt (plusp (length alt)))
-              (list (make-lbox :x 2 :y (max 0 (floor (- hh *font-h*) 2)) :w (- w 4) :h *font-h* :kind :line
-                               :children (list (make-frag :x 2 :w (word-w alt cs) :text alt :style cs)))))))
+            (list (make-lbox :x 2 :y (max 0 (floor (- hh *font-h*) 2)) :w (- w 4) :h *font-h* :kind :line
+                             :children (list (make-frag :x 2 :w (word-w alt cs) :text alt :style cs))))))
     lb))
 
 (defun object-data-image (node)

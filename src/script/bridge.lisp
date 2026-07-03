@@ -60,6 +60,7 @@
     (install-on-handlers ctx ep)
     (install-on-handlers ctx dp)
     (install-table-interfaces ctx ep)
+    (register-parsed-inline-handlers ctx)
     (install-event-proto ctx evp)
     (install-events ctx np)
     (install-cssom ctx)

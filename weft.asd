@@ -86,7 +86,9 @@
   :depends-on ("weft/render" "shuttle")
   :components ((:module "src" :components
                 ((:module "script" :serial t
-                  :components ((:file "packages") (:file "bridge")))))))
+                  :components ((:file "packages") (:file "core") (:file "timers")
+                               (:file "events") (:file "cssom") (:file "dom")
+                               (:file "bridge")))))))
 
 (defsystem "weft/test"
   :depends-on ("weft" "weft/fetch" "weft/render")

@@ -1,135 +1,132 @@
-;;;; src/script/bridge.lisp — M1 of the weft/shuttle scripting seam.
-;;;;
-;;;; A per-document shuttle realm, a `document` host object whose
-;;;; getElementById returns an element host object backed by the weft DOM node,
-;;;; and the element's [[Set]] trap for textContent — which mutates the backing
-;;;; node and marks the document for relayout. Inline <script> nodes are then
-;;;; run against the realm after parse and before layout, so the render reflects
-;;;; whatever the script did.
-;;;;
-;;;; This is deliberately the minimum that proves the architecture end-to-end;
-;;;; the DOM/CSSOM/Events surface grows on top of these same primitives.
+;;;; src/script/bridge.lisp — the orchestrator: realm + DOM bindings, the script
+;;;; runner (inline and data: URL <script>), and the scripted render entry points.
 (in-package #:weft.script)
 
 ;;; ---------------------------------------------------------------------------
-;;; The per-document context
+;;; Realm + DOM binding construction
 ;;; ---------------------------------------------------------------------------
-(defstruct (context (:constructor %make-context))
-  realm                     ; the shuttle realm (one per document)
-  document                  ; the weft DOM document (an h:dnode of kind :document)
-  node-objs                 ; EQ hash: weft dnode -> its element host object (identity)
-  document-obj              ; the JS `document` host object
-  (dirty nil))              ; set by a mutating trap; a relayout is owed
-
-(defun js-arg (args n)
-  "The Nth positional argument of a native call, defaulting to undefined."
-  (let ((c (nthcdr n args))) (if c (car c) js:*undefined*)))
-
-;;; ---------------------------------------------------------------------------
-;;; textContent
-;;; ---------------------------------------------------------------------------
-(defun set-text-content (node text)
-  "The textContent setter: detach NODE's children and, if TEXT is non-empty,
-   give it a single text child holding TEXT (DOM `Node.textContent`)."
-  (let ((children (h:dnode-children node)))
-    (loop for c across children do (setf (h:dnode-parent c) nil))
-    (setf (fill-pointer children) 0)
-    (when (plusp (length text))
-      (h:dom-append node (h:make-text text)))))
-
-;;; ---------------------------------------------------------------------------
-;;; Element host objects (backed by a weft DOM node)
-;;; ---------------------------------------------------------------------------
-(defun element-set (ctx node object key value)
-  "The element's [[Set]] trap. textContent mutates the backing weft node and
-   marks the document dirty (a relayout is owed); any other property is stored
-   as an ordinary own data property so scripts can stash state on a node."
-  (cond
-    ((and (stringp key) (string= key "textContent"))
-     (set-text-content node (js:to-string value))
-     (setf (context-dirty ctx) t)
-     js:*true*)
-    (t
-     (js:js-define-own-property
-      object key (list :value value :writable t :enumerable t :configurable t))
-     js:*true*)))
-
-(defun element-object (ctx node)
-  "The element host object for weft node NODE, memoized so the same node always
-   yields the same JS object (DOM object identity: el === el)."
-  (or (gethash node (context-node-objs ctx))
-      (setf (gethash node (context-node-objs ctx))
-            (js:make-host-object
-             (context-realm ctx)
-             :set (lambda (object key value receiver)
-                    (declare (ignore receiver))
-                    (element-set ctx node object key value))))))
-
-;;; ---------------------------------------------------------------------------
-;;; The document host object + realm construction
-;;; ---------------------------------------------------------------------------
-(defun install-document (ctx)
-  "Build the JS `document` object and its methods, and the `window`/`document`
-   globals."
+(defun install-globals (ctx)
   (let* ((realm (context-realm ctx))
-         (document (context-document ctx))
-         (docobj (js:make-host-object realm)))
+         (window (proto ctx :window))
+         (docobj (wrap ctx (context-document ctx))))
     (setf (context-document-obj ctx) docobj)
-    (js:put docobj "getElementById"
-            (js:native-function realm "getElementById"
-              (lambda (this args)
-                (declare (ignore this))
-                (let ((el (dom:get-element-by-id
-                           document (js:to-string (js-arg args 0)))))
-                  (if el (element-object ctx el) js:*null*)))
-              1))
     (js:define-global realm "document" docobj)
-    ;; window === globalThis (the realm global object).
-    (js:define-global realm "window" (js:eval-script realm "globalThis"))
+    (js:define-global realm "window" window)
+    (js:define-global realm "self" window)
+    ;; A trivial navigator + location so feature-detecting scripts don't throw.
+    (let ((nav (js:make-object :proto (js:eval-script realm "Object.prototype"))))
+      (js:put nav "userAgent" "weft")
+      (js:define-global realm "navigator" nav))
     docobj))
 
-(defun make-context (document)
+(defun make-context (document &key (css "") (width 800))
   "Create a fresh scripting context for a parsed weft DOCUMENT: a realm with the
-   DOM bindings installed."
-  (let ((ctx (%make-context :realm (js:make-realm)
-                            :document document
-                            :node-objs (make-hash-table :test 'eq))))
-    (install-document ctx)
+   full DOM/CSSOM/Events surface installed and document/window globals bound."
+  (let* ((realm (js:make-realm))
+         (ctx (%make-context :realm realm :document document :css css :width width))
+         (op (js:eval-script realm "Object.prototype"))
+         (np (js:make-object :proto op))     ; Node.prototype
+         (ep (js:make-object :proto np))     ; Element.prototype
+         (dp (js:make-object :proto np))     ; Document.prototype
+         (cp (js:make-object :proto np))     ; CharacterData (Text/Comment)
+         (evp (js:make-object :proto op))    ; Event.prototype
+         (window (js:eval-script realm "globalThis")))
+    (setf (context-protos ctx)
+          (list :node np :element ep :document dp :text cp :comment cp
+                :fragment np :event evp :window window))
+    (install-node-proto ctx np)
+    (install-element-proto ctx ep)
+    (install-document-proto ctx dp)
+    (install-chardata-proto ctx cp)
+    (install-event-proto ctx evp)
+    (install-events ctx np)
+    (install-cssom ctx)
+    (install-timers ctx)
+    (install-globals ctx)
     ctx))
 
+;; Retained from M1: the element wrapper accessor.
+(defun element-object (ctx node) (wrap ctx node))
+
 ;;; ---------------------------------------------------------------------------
-;;; Running inline <script>
+;;; data: URL script decoding (Acid3 loads several script bodies this way)
 ;;; ---------------------------------------------------------------------------
+(defun percent-decode (s)
+  "Percent-decode S to a CL string (bytes interpreted as Latin-1/ASCII)."
+  (with-output-to-string (o)
+    (let ((i 0) (n (length s)))
+      (loop while (< i n)
+            do (let ((c (char s i)))
+                 (cond ((and (char= c #\%) (< (+ i 2) n)
+                             (digit-char-p (char s (+ i 1)) 16)
+                             (digit-char-p (char s (+ i 2)) 16))
+                        (write-char (code-char (parse-integer s :start (1+ i) :end (+ i 3) :radix 16)) o)
+                        (incf i 3))
+                       (t (write-char c o) (incf i))))))))
+
+(defparameter +b64+ "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
+(defun base64-decode (s)
+  "Decode base64 S (ignoring any non-alphabet chars, e.g. whitespace) to a string."
+  (let ((bits 0) (nbits 0) (out (make-string-output-stream)))
+    (loop for c across s
+          for v = (position c +b64+)
+          when v
+            do (setf bits (logior (ash bits 6) v)) (incf nbits 6)
+               (when (>= nbits 8)
+                 (decf nbits 8)
+                 (write-char (code-char (logand (ash bits (- nbits)) #xFF)) out)))
+    (get-output-stream-string out)))
+
+(defun data-url-script (src)
+  "The JavaScript source carried by a data: URL SRC (text or ;base64), or NIL."
+  (let ((body (subseq src 5)))                     ; drop "data:"
+    (let ((comma (position #\, body)))
+      (when comma
+        (let ((meta (subseq body 0 comma)) (data (subseq body (1+ comma))))
+          (if (search ";base64" meta)
+              (base64-decode (percent-decode data))
+              (percent-decode data)))))))
+
+;;; ---------------------------------------------------------------------------
+;;; Running <script>
+;;; ---------------------------------------------------------------------------
+(defun script-source (script)
+  "The JavaScript source of a <script> element: its inline text, or a decoded
+   data: URL src. Returns NIL for an (unsupported) external network src."
+  (let ((src (dom:get-attribute script "src")))
+    (cond ((null src) (dom:text-content script))
+          ((and (>= (length src) 5) (string-equal (subseq src 0 5) "data:"))
+           (data-url-script src))
+          (t nil))))
+
 (defun run-inline-scripts (ctx)
-  "Execute every inline <script> (no src attribute) in document order against
-   CTX's realm. A script error is reported but does not abort the render — a
-   broken script must not take the page down (browser behavior)."
+  "Execute every runnable <script> in document order against CTX's realm. A
+   script error is reported but does not abort (browser behavior)."
   (let ((realm (context-realm ctx)))
     (dolist (script (dom:get-elements-by-tag-name (context-document ctx) "script"))
-      (unless (dom:has-attribute script "src")
-        (let ((source (dom:text-content script)))
-          (when (plusp (length source))
-            (handler-case (js:eval-script realm source)
-              (js:shuttle-error (e)
-                (format *error-output* "~&weft.script: uncaught ~a~%" e))
-              (error (e)
-                (format *error-output* "~&weft.script: script error: ~a~%" e))))))))
+      (let ((source (script-source script)))
+        (when (and source (plusp (length source)))
+          (handler-case (js:eval-script realm source)
+            (js:shuttle-error (e)
+              (format *error-output* "~&weft.script: uncaught ~a~%" e))
+            (error (e)
+              (format *error-output* "~&weft.script: script error: ~a~%" e)))))))
   ctx)
 
 ;;; ---------------------------------------------------------------------------
-;;; The scripted render entry points
+;;; Scripted render
 ;;; ---------------------------------------------------------------------------
 (defun render-scripted-to-canvas (html css width &rest keys)
   "Like weft.render:render-to-canvas, but run inline <script> against the parsed
-   DOM before layout. Returns (values canvas context) — the context exposes the
-   realm and document for inspection. Passing HTML with no <script> renders
-   byte-identically to render-to-canvas."
+   DOM (then drain timers + microtasks) before layout. Returns (values canvas
+   context). A page with no <script> renders byte-identically to render-to-canvas."
   (let (ctx)
     (values
      (apply #'r:render-to-canvas html css width
             :before-layout (lambda (doc)
-                             (setf ctx (make-context doc))
-                             (run-inline-scripts ctx))
+                             (setf ctx (make-context doc :css (or css "") :width width))
+                             (run-inline-scripts ctx)
+                             (run-event-loop ctx :max-tasks 10000))
             keys)
      ctx)))
 

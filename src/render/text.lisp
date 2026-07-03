@@ -99,8 +99,28 @@ outline but keeps sub-pixel horizontal positioning, so spacing stays smooth."
       (* 0.5d0 ppem)
       (* (scribe::glyph-advance font gid) (/ ppem upem))))
 
+(defvar *shape-cache* (make-hash-table :test 'equal)
+  "Memo of (font text ppem) -> shaped px glyph list; a page repeats many words
+(\"points\", \"by\", \"hours\", \"comments\"), so shape each once.")
+
+(defun shape-px (font text ppem upem)
+  "Shape TEXT with scribe (GPOS kerning + GSUB ligatures) into a list of
+(GID XADV XOFF YOFF), metrics in px (memoized).  Shared by MEASURE-TEXT-WIDTH and
+DRAW-TEXT-SCRIBE so the kerned advances are identical (measure = paint).  A .notdef
+(gid 0) advances half an em (tofu suppression)."
+  (let ((key (list font text ppem)))
+    (or (gethash key *shape-cache*)
+        (setf (gethash key *shape-cache*)
+              (let ((s (/ ppem upem)))
+                (loop for g across (scribe:shape-run font text)
+                      for gid = (scribe::glyph-pos-gid g)
+                      collect (list gid
+                                    (if (zerop gid) (* 0.5d0 ppem) (* (scribe::glyph-pos-x-advance g) s))
+                                    (* (scribe::glyph-pos-x-offset g) s)
+                                    (* (scribe::glyph-pos-y-offset g) s))))))))
+
 (defun measure-text-width (text size &optional face)
-  "Sum of per-glyph advances for TEXT at px SIZE in FACE — the width scribe will
+  "Width of the shaped (kerned) TEXT at px SIZE in FACE — the width scribe will
 actually paint.  FACE defaults to the generic sans-serif face.  Falls back to
 the bitmap metric (LEN*7) if no face is available or anything errors, so layout
 never depends on the font succeeding."
@@ -112,9 +132,7 @@ never depends on the font succeeding."
                    (ppem (float (max 1 size) 1d0))
                    (upem (face-upem face))
                    (w 0d0))
-              (loop for ch across text do
-                (incf w (glyph-advance-px font (scribe:font-glyph-index font (char-code ch))
-                                          ppem upem)))
+              (dolist (g (shape-px font text ppem upem)) (incf w (second g)))
               w)
           (error () (* (length text) *font-w*))))))
 
@@ -178,17 +196,18 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                    (cx1 (if *clip* (the fixnum (third *clip*)) (canvas-width cv)))
                    (cy1 (if *clip* (the fixnum (fourth *clip*)) (canvas-height cv)))
                    (penx (float x 1d0)))
-              (loop for ch across text do
-                (let* ((gid (scribe:font-glyph-index font (char-code ch)))
-                       (sub (- penx (ffloor penx))))
-                  ;; gid 0 = .notdef: don't draw a tofu box, but still advance by a
-                  ;; space so the rest of the run keeps roughly its layout position.
+              (loop for (gid xadv xoff yoff) in (shape-px font text ppem upem) do
+                (let ((sub (- (+ penx xoff) (ffloor (+ penx xoff)))))
+                  ;; gid 0 = .notdef: don't draw a tofu box, but still advance so the
+                  ;; run keeps its layout position.  Advance by the SHAPED (kerned)
+                  ;; x-advance so painting matches MEASURE-TEXT-WIDTH to the pixel.
                   (if (zerop gid)
-                      (incf penx (* 0.5d0 ppem))
+                      (incf penx xadv)
                       (multiple-value-bind (cov w h left top adv)
                           (scribe:rasterize-glyph font gid ppem :subpixel sub)
+                        (declare (ignore adv))
                         (when cov
-                          (let ((ox (+ (floor penx) left)) (oy (+ baseline top)))
+                          (let ((ox (+ (floor (+ penx xoff)) left)) (oy (+ baseline top (- (round yoff)))))
                             (dotimes (yy h)
                               (let ((py (+ oy yy)))
                                 (when (and (>= py cy0) (< py cy1))
@@ -198,7 +217,7 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                                         (let ((c (aref cov (+ (* yy w) xx))))
                                           (when (> c 0d0)
                                             (scribe:blend-coverage scv px py c color)))))))))))
-                        (incf penx adv)))))
+                        (incf penx xadv)))))
               (when underline
                 (let ((uy (min (1- cy1) (+ baseline (max 1 (round (* 0.12d0 ppem)))))))
                   (fill-rect cv x uy (- (round penx) x) (max 1 (round (* 0.06d0 ppem))) color)))

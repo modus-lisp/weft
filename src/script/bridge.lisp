@@ -13,10 +13,24 @@
     (js:define-global realm "document" docobj)
     (js:define-global realm "window" window)
     (js:define-global realm "self" window)
-    ;; A trivial navigator + location so feature-detecting scripts don't throw.
+    ;; A trivial navigator so feature-detecting scripts don't throw.
     (let ((nav (js:make-object :proto (js:eval-script realm "Object.prototype"))))
       (js:put nav "userAgent" "weft")
       (js:define-global realm "navigator" nav))
+    ;; Interface objects carrying the Node type constants (Node.COMMENT_NODE …),
+    ;; with .prototype pointing at the shared prototypes.
+    (flet ((iface (name proto-key)
+             (let ((o (js:make-object :proto (js:eval-script realm "Function.prototype"))))
+               (js:put o "prototype" (proto ctx proto-key) :enumerable nil)
+               (js:define-global realm name o) o)))
+      (let ((node-iface (iface "Node" :node)))
+        (dolist (pair '(("ELEMENT_NODE" . 1) ("ATTRIBUTE_NODE" . 2) ("TEXT_NODE" . 3)
+                        ("CDATA_SECTION_NODE" . 4) ("ENTITY_REFERENCE_NODE" . 5)
+                        ("ENTITY_NODE" . 6) ("PROCESSING_INSTRUCTION_NODE" . 7)
+                        ("COMMENT_NODE" . 8) ("DOCUMENT_NODE" . 9) ("DOCUMENT_TYPE_NODE" . 10)
+                        ("DOCUMENT_FRAGMENT_NODE" . 11) ("NOTATION_NODE" . 12)))
+          (js:put node-iface (car pair) (num (cdr pair)) :enumerable nil :writable nil :configurable nil)))
+      (iface "Element" :element) (iface "Document" :document))
     docobj))
 
 (defun make-context (document &key (css "") (width 800))
@@ -106,11 +120,13 @@
     (dolist (script (dom:get-elements-by-tag-name (context-document ctx) "script"))
       (let ((source (script-source script)))
         (when (and source (plusp (length source)))
+          (setf (context-current-script ctx) script)
           (handler-case (js:eval-script realm source)
             (js:shuttle-error (e)
               (format *error-output* "~&weft.script: uncaught ~a~%" e))
             (error (e)
               (format *error-output* "~&weft.script: script error: ~a~%" e)))))))
+  (setf (context-current-script ctx) nil)
   ctx)
 
 ;;; ---------------------------------------------------------------------------

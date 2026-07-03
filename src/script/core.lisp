@@ -25,6 +25,7 @@
   (iframe-docs (make-hash-table :test 'eq)) ; iframe/object dnode -> its content document
   (listeners (make-hash-table :test 'eq))   ; dnode -> list of (type listener capture) entries
   (events (make-hash-table :test 'eq))      ; event wrapper object -> its EVT struct
+  (current-script nil)      ; the <script> node currently executing (for document.write)
   (dirty nil))              ; a DOM mutation happened; styles cache is stale
 
 ;;; ---- small value helpers --------------------------------------------------

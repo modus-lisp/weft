@@ -1,0 +1,58 @@
+js
+self.__BUILD_MANIFEST = {
+  "/[[...slug]]": [
+    "static/chunks/0kn1hv4t27xk8.js"
+  ],
+  "/_error": [
+    "static/chunks/13_o4.sj2g6go.js"
+  ],
+  "/audio/[[...slug]]": [
+    "static/chunks/09r5klk5cgk2f.js"
+  ],
+  "/audio_archive_sitemap.xml": [
+    "static/chunks/0_pu0gj15kne7.js"
+  ],
+  "/audio_archive_sitemap/page/[pageNumber]": [
+    "static/chunks/17dytb8e0xp7-.js"
+  ],
+  "/content_index_sitemap.xml": [
+    "static/chunks/0tr4vzar76w2u.js"
+  ],
+  "/content_index_sitemap/page/[pageNumber]": [
+    "static/chunks/13xox34d-dsdf.js"
+  ],
+  "/index_sitemap.xml": [
+    "static/chunks/0f_3qwkse111y.js"
+  ],
+  "/video_documentaries_sitemap.xml": [
+    "static/chunks/0ij5oaphu~yke.js"
+  ],
+  "__rewrites": {
+    "afterFiles": [],
+    "beforeFiles": [
+      {
+        "source": "/bbcdotcom/web/20260629-131846-8a2eb2c100-web-3.12.0-2//_next/:path+",
+        "destination": "/_next/:path+"
+      },
+      {
+        "source": "/blaize/:path*"
+      },
+      {
+        "source": "/zephr/:path*"
+      }
+    ],
+    "fallback": []
+  },
+  "sortedPages": [
+    "/_app",
+    "/_error",
+    "/audio/[[...slug]]",
+    "/audio_archive_sitemap/page/[pageNumber]",
+    "/audio_archive_sitemap.xml",
+    "/content_index_sitemap/page/[pageNumber]",
+    "/content_index_sitemap.xml",
+    "/index_sitemap.xml",
+    "/video_documentaries_sitemap.xml",
+    "/[[...slug]]"
+  ]
+};self.__BUILD_MANIFEST_CB && self.__BUILD_MANIFEST_CB()

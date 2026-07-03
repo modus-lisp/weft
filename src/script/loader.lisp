@@ -86,6 +86,115 @@
     ((context-loader ctx) (funcall (context-loader ctx) ctx url))
     (t (values nil nil))))
 
+;;; ---- external stylesheets (<link rel=stylesheet> + @import) ---------------
+;;; A page's <link rel=stylesheet href> and any @import inside a fetched sheet
+;;; are pulled through the loader (data: URIs decoded inline), resolved against
+;;; the document / sheet base, and spliced into the DOM as <style> elements so
+;;; the ordinary cascade picks them up at the link's source position.  Only a
+;;; resource the loader reports as :css is applied — a sheet served with the
+;;; wrong MIME (text/html) is ignored, as a standards-mode browser would.  Any
+;;; failure (network, oversized, non-CSS, malformed) degrades to no styling.
+(defparameter *max-stylesheet-bytes* 4000000
+  "Fetched sheets larger than this are ignored rather than risk stalling layout.")
+(defparameter *max-import-depth* 5
+  "How deep an @import chain is followed before giving up.")
+
+(defun resolve-against (base url)
+  "Resolve URL against BASE to an absolute URL (URL unchanged if resolution fails)."
+  (if (and (stringp base) (plusp (length base)) (stringp url) (plusp (length url)))
+      (let ((u (ignore-errors (weft.url:parse url base)))) (if u (weft.url:href u) url))
+      url))
+
+(defun parse-import-prelude (s)
+  "Parse an @import prelude S (the text between `@import` and `;`).  Returns
+   (values url media-text) or (values nil nil) when malformed."
+  (let ((s (string-trim '(#\Space #\Tab #\Newline #\Return) s)))
+    (cond
+      ((zerop (length s)) (values nil nil))
+      ((or (char= (char s 0) #\") (char= (char s 0) #\'))
+       (let ((close (position (char s 0) s :start 1)))
+         (if close (values (subseq s 1 close) (string-trim " " (subseq s (1+ close))))
+             (values nil nil))))
+      ((and (>= (length s) 4) (string-equal (subseq s 0 4) "url("))
+       (let ((close (position #\) s)))
+         (if close (values (string-trim '(#\Space #\Tab #\" #\') (subseq s 4 close))
+                           (string-trim " " (subseq s (1+ close))))
+             (values nil nil))))
+      (t (values nil nil)))))
+
+(defun expand-imports (ctx css base depth)
+  "Replace @import rules in CSS with the imported sheets' text, resolved against
+   BASE and recursively expanded, wrapping a media-qualified import in @media so
+   the media engine evaluates it.  A failed/non-CSS import drops to nothing."
+  (with-output-to-string (out)
+    (let ((i 0) (n (length css)))
+      (loop while (< i n) do
+        (let ((at (search "@import" css :start2 i :test #'char-equal)))
+          (cond
+            ((null at) (write-string css out :start i) (setf i n))
+            (t
+             (write-string css out :start i :end at)
+             (let* ((semi (position #\; css :start at))
+                    (prelude (subseq css (+ at 7) (or semi n))))
+               (multiple-value-bind (url media) (parse-import-prelude prelude)
+                 (when url
+                   (let ((text (fetch-stylesheet ctx (resolve-against base url) (1+ depth))))
+                     (when text
+                       (if (plusp (length (string-trim '(#\Space #\Tab #\Newline) (or media ""))))
+                           (format out "@media ~a {~%~a~%}~%" media text)
+                           (progn (write-string text out) (terpri out)))))))
+               (setf i (if semi (1+ semi) n))))))))))
+
+(defun fetch-stylesheet (ctx abs-url depth)
+  "Load the CSS at ABS-URL through the loader and expand its @imports.  Applies
+   only when the loader reports kind :css and the sheet is within the size cap.
+   Returns the expanded CSS text or NIL.  Never signals."
+  (when (> depth *max-import-depth*) (return-from fetch-stylesheet nil))
+  (handler-case
+      (multiple-value-bind (kind content) (load-resource ctx abs-url)
+        (when (and (eq kind :css) (stringp content)
+                   (<= (length content) *max-stylesheet-bytes*))
+          (expand-imports ctx content abs-url depth)))
+    (error () nil)))
+
+(defun external-stylesheet-link-p (node)
+  "True for a <link rel=stylesheet href> whose href is a non-data URL to fetch."
+  (and (eq (h:dnode-kind node) :element)
+       (string-equal (h:dnode-name node) "link")
+       (let ((rel (cdr (assoc "rel" (h:dnode-attrs node) :test #'string-equal))))
+         (and rel (search "stylesheet" (string-downcase rel))))
+       (let ((href (cdr (assoc "href" (h:dnode-attrs node) :test #'string-equal))))
+         (and href (plusp (length href))
+              (not (and (>= (length href) 5) (string-equal (subseq href 0 5) "data:")))))))
+
+(defun splice-external-link (ctx link)
+  "Fetch LINK's external sheet and, on success, rewrite LINK in place into a
+   <style> element carrying the resolved CSS (wrapped in @media when the link
+   has a `media` attribute).  Node identity and source position are preserved,
+   so the cascade and document.styleSheets see one sheet where the link was."
+  (let* ((href (cdr (assoc "href" (h:dnode-attrs link) :test #'string-equal)))
+         (media (cdr (assoc "media" (h:dnode-attrs link) :test #'string-equal)))
+         (css (fetch-stylesheet ctx (resolve-against (context-base ctx) href) 0)))
+    (when css
+      (let ((text (if (and media (plusp (length (string-trim '(#\Space #\Tab #\Newline) media))))
+                      (format nil "@media ~a {~%~a~%}" media css)
+                      css)))
+        (setf (h:dnode-name link) "style")
+        (setf (fill-pointer (h:dnode-children link)) 0)
+        (h:dom-append link (h:make-text text))))))
+
+(defun inline-external-stylesheets (ctx)
+  "Fetch every <link rel=stylesheet href> (non-data) through the loader and
+   splice the resolved CSS into the DOM.  A no-op without a loader.  Never
+   signals: any failed sheet simply leaves that link unstyled."
+  (when (context-loader ctx)
+    (labels ((walk (node)
+               (when (and (eq (h:dnode-kind node) :element)
+                          (external-stylesheet-link-p node))
+                 (ignore-errors (splice-external-link ctx node)))
+               (loop for c across (copy-seq (h:dnode-children node)) do (walk c))))
+      (walk (context-document ctx)))))
+
 ;;; ---- on* event-handler properties -----------------------------------------
 (defun on-table (ctx node)
   (or (gethash node (context-on-handlers ctx))

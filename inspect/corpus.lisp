@@ -10,12 +10,76 @@
 (push (truename (merge-pathnames "../" (directory-namestring *load-truename*)))
       asdf:*central-registry*)
 (asdf:load-system "weft/script")
+(asdf:load-system "weft/fetch")
 
 (defpackage #:weft.corpus
   (:use #:cl) (:local-nicknames (#:s #:weft.script) (#:r #:weft.render)
-                                (#:h #:weft.html) (#:dom #:weft.dom))
+                                (#:h #:weft.html) (#:dom #:weft.dom)
+                                (#:f #:weft.fetch))
   (:export #:run))
 (in-package #:weft.corpus)
+
+;;; A weft/fetch-backed subresource loader for the corpus.  It resolves external
+;;; stylesheets to their real bytes so a vendored page renders as designed, and
+;;; serves ONLY :css so the run stays a deterministic styling smoke test (no
+;;; external scripts, frames or images run).  Fetched sheets are cached on disk
+;;; (inspect/vectors/pages/corpus/assets/) so repeat runs are offline/repeatable;
+;;; any fetch failure returns (values nil nil) and the page degrades to UA styling.
+(defparameter *assets-dir*
+  (asdf:system-relative-pathname "weft" "inspect/vectors/pages/corpus/assets/"))
+
+(defun cache-path (url)
+  (merge-pathnames (format nil "~(~36r~).cache" (logand (sxhash url) #xffffffffffff)) *assets-dir*))
+
+(defun cache-read (path)
+  "Read a cached (kind . content) pair, or NIL.  First line is the kind keyword."
+  (when (probe-file path)
+    (handler-case
+        (let ((s (with-open-file (in path :external-format :utf-8)
+                   (let ((buf (make-string (file-length in))))
+                     (subseq buf 0 (read-sequence buf in))))))
+          (let ((nl (position #\Newline s)))
+            (when nl (cons (intern (string-upcase (subseq s 0 nl)) :keyword)
+                           (subseq s (1+ nl))))))
+      (error () nil))))
+
+(defun cache-write (path kind content)
+  (ignore-errors
+   (ensure-directories-exist path)
+   (with-open-file (out path :direction :output :if-exists :supersede
+                             :if-does-not-exist :create :external-format :utf-8)
+     (format out "~(~a~)~%" (symbol-name kind))
+     (write-string content out))))
+
+(defun content-kind (headers url)
+  "Classify a fetched resource by Content-Type, falling back to URL extension."
+  (let ((ct (f:get-header headers "content-type")))
+    (cond
+      ((and ct (search "css" ct :test #'char-equal)) :css)
+      ((and ct (or (search "javascript" ct :test #'char-equal)
+                   (search "ecmascript" ct :test #'char-equal))) :js)
+      ((and ct (search "html" ct :test #'char-equal)) :html)
+      ((and ct (or (search "svg" ct :test #'char-equal)
+                   (search "xml" ct :test #'char-equal))) :xml)
+      ((and ct (search "image/" ct :test #'char-equal)) :image)
+      ((search ".css" url :test #'char-equal) :css)
+      (t :text))))
+
+(defun fetch-loader ()
+  "Loader closure (ctx url) -> (values kind content).  Serves only :css."
+  (lambda (ctx url) (declare (ignore ctx))
+    (handler-case
+        (let* ((cpath (cache-path url)) (hit (cache-read cpath)))
+          (if hit
+              (if (eq (car hit) :css) (values :css (cdr hit)) (values nil nil))
+              (multiple-value-bind (text cs resp) (f:fetch-text url)
+                (declare (ignore cs))
+                (if (and text (<= 200 (f:response-status resp) 299))
+                    (let ((k (content-kind (f:response-headers resp) url)))
+                      (cache-write cpath k text)
+                      (if (eq k :css) (values :css text) (values nil nil)))
+                    (values nil nil)))))
+      (error () (values nil nil)))))
 
 ;;; file -> the URL it was fetched from (base for location / URL resolution)
 (defparameter *corpus*
@@ -45,7 +109,8 @@
                            (multiple-value-bind (cv ctx)
                                (s:render-scripted-to-canvas (slurp path) "" 1024
                                                             :min-height 400 :max-height 8000
-                                                            :base (cdr entry))
+                                                            :base (cdr entry)
+                                                            :loader (fetch-loader))
                              (list :ok cv ctx))
                          (error (e) (list :crash e))))
                      (log (get-output-stream-string *error-output*)))

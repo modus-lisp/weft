@@ -115,6 +115,9 @@
     (install-on-handlers ctx ep)
     (install-on-handlers ctx dp)
     (install-table-interfaces ctx ep)
+    ;; Pull external <link rel=stylesheet> sheets into the DOM before scripts
+    ;; run, so the cascade and document.styleSheets reflect the resolved CSS.
+    (inline-external-stylesheets ctx)
     (register-parsed-inline-handlers ctx)
     (install-event-proto ctx evp)
     (install-events ctx np)

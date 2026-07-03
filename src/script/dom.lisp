@@ -422,15 +422,31 @@
     (defgetset ctx ep "disabled" (this) (jbool (dom:has-attribute (n this) "disabled"))
       (v) (progn (if (js:js-truthy v) (set-attr (n this) "disabled" "") (remove-attr (n this) "disabled"))
                  (setf (context-dirty ctx) t)))
+    (defgetset ctx ep "action" (this) (or (get-attr (n this) "action") "")
+      (v) (progn (set-attr (n this) "action" (jstr v)) (setf (context-dirty ctx) t)))
+    (defgetset ctx ep "method" (this) (or (get-attr (n this) "method") "")
+      (v) (progn (set-attr (n this) "method" (jstr v)) (setf (context-dirty ctx) t)))
     ;; HTMLElement.click(): run the control's pre-click activation (toggle a
-    ;; checkbox, select a radio) then dispatch a bubbling, cancelable click.
+    ;; checkbox, select a radio) then dispatch a bubbling, cancelable click; a
+    ;; submit control that isn't cancelled then fires the form's submit event.
     (defmethod* ctx ep "click" 0 (this a)
-      (let* ((node (n this)) (type (and (tag= node "input") (input-type node))))
+      (let* ((node (n this)) (tag (and (eq (h:dnode-kind node) :element) (h:dnode-name node)))
+             (type (and (member tag '("input" "button") :test #'equal) (input-type node))))
         (cond ((equal type "checkbox") (set-checked ctx node (not (checked-p node))))
               ((equal type "radio") (set-checked ctx node t)))
         (let* ((ev (make-event-object ctx "click" nil)) (e (evt-of ctx ev)))
           (setf (evt-bubbles e) t (evt-cancelable e) t)
-          (dispatch-event ctx node ev)))
+          (dispatch-event ctx node ev)
+          ;; default action for a submit button: fire the form's submit event
+          (when (and (or (and (equal tag "input") (member type '("submit" "image") :test #'equal))
+                         (and (equal tag "button") (equal type "submit")))
+                     (not (evt-default-prevented e)))
+            (let ((form (loop for a2 = (h:dnode-parent node) then (h:dnode-parent a2)
+                              while a2 when (tag= a2 "form") return a2)))
+              (when form
+                (let* ((sev (make-event-object ctx "submit" nil)) (se (evt-of ctx sev)))
+                  (setf (evt-bubbles se) t (evt-cancelable se) t)
+                  (dispatch-event ctx form sev)))))))
       js:*undefined*)
     ;; type/value reflections for form controls.
     (defgetset ctx ep "type" (this)

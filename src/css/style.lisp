@@ -372,7 +372,10 @@ Ignores the system-font keywords (caption/icon/...)."
          (let ((v (parse-value "text-decoration" value))) (when (listp v) (setf (cstyle-text-decoration cs) v))))
         ((string= prop "list-style-type")
          (let ((v (parse-value "list-style-type" value))) (when (stringp v) (setf (cstyle-list-style cs) v))))
-        ((string= prop "white-space") (setf (cstyle-white-space cs) (string-downcase (string-trim '(#\Space) value))))
+        ((string= prop "white-space")
+         ;; validate against the keyword grammar so an invalid value (e.g. a
+         ;; later `white-space: x-bogus`) is ignored and the last VALID value wins.
+         (let ((v (parse-value "white-space" value))) (when (stringp v) (setf (cstyle-white-space cs) v))))
         ((string= prop "width") (let ((w (parse-size value fs t))) (when w (setf (cstyle-width cs) w))))
         ((string= prop "height") (let ((h (parse-size value fs t))) (when h (setf (cstyle-height cs) h))))
         ((string= prop "max-width") (if (string-equal (string-trim '(#\Space) value) "none") (setf (cstyle-max-width cs) :none)

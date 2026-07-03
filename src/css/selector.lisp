@@ -81,8 +81,37 @@
   (let ((nm (string-downcase name)))
     (cond
       ((string= nm "root") (and (el-parent n) (eq (weft.html:dnode-kind (el-parent n)) :document)))
-      ((string= nm "empty") (zerop (length (el-children n))))
-      ((string= nm "first-child") (= (el-index n) 1))
+      ;; :empty ignores comments and zero-length text nodes (Selectors).
+      ((string= nm "empty")
+       (every (lambda (c) (case (weft.html:dnode-kind c)
+                            (:comment t)
+                            (:text (zerop (length (or (weft.html:dnode-data c) ""))))
+                            (t nil)))
+              (el-children n)))
+      ;; :first-child requires a parent element (the root, whose parent is the
+      ;; document, does not match).
+      ((string= nm "first-child")
+       (and (el-parent n) (eq (weft.html:dnode-kind (el-parent n)) :element) (= (el-index n) 1)))
+      ;; Form-control UI state.  With no interactivity every eligible control is
+      ;; enabled unless it carries the disabled attribute.
+      ((member nm '("enabled" "disabled") :test #'string=)
+       (and (member (string-downcase (el-name n))
+                    '("input" "button" "select" "textarea" "optgroup" "option" "fieldset")
+                    :test #'string=)
+            (let ((dis (and (el-attr n "disabled") t)))
+              (if (string= nm "disabled") dis (not dis)))))
+      ;; :lang(x) — the nearest ancestor lang attribute is x or an x-* subtag.
+      ((string= nm "lang")
+       (let ((want (string-downcase (or arg ""))))
+         (loop for a = n then (el-parent a) while a
+               for lang = (el-attr a "lang")
+               when lang do
+                 (let ((lang (string-downcase lang)))
+                   (return (or (string= lang want)
+                               (and (> (length lang) (length want))
+                                    (string= lang want :end1 (length want))
+                                    (char= (char lang (length want)) #\-)))))
+               finally (return nil))))
       ((string= nm "last-child") (let ((p (el-parent n))) (or (null p) (eq n (car (last (element-children p)))))))
       ((string= nm "only-child") (let ((p (el-parent n))) (or (null p) (= 1 (length (element-children p))))))
       ((string= nm "first-of-type") (= (el-index-of-type n) 1))

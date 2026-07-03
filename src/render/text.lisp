@@ -87,6 +87,11 @@ share scribe's grid-fit integer advance, so widths stay consistent).")
 (defparameter *hint-max-ppem* 24
   "Only hint at rounded ppem <= this — large text is already crisp geometrically
 and skips the interpreter cost.  Covers body copy and small headings.")
+(defparameter *hint-light* t
+  "Light (Y-only) hinting: grid-fit vertically (crisp baseline/x-height/stem heights)
+but keep the fractional X, so horizontal stem rhythm stays smooth instead of full
+hinting's crisp-but-choppy X grid-fit.  Matches the browser's default Linux rendering
+and halves the per-pair width error vs Chromium.  NIL = full (crispest, choppier).")
 
 ;;; ---- measurement ----------------------------------------------------------
 (defun glyph-advance-px (font gid ppem upem)
@@ -187,9 +192,10 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                    ;; fallback below.)
                    (scribe::*blend-gamma* *blend-gamma*)
                    (scribe::*stem-darkening* *stem-darkening*)
-                   ;; grid-fit small glyphs so stems/baseline are crisp (matches
-                   ;; the integer advance used by MEASURE-TEXT-WIDTH above).
+                   ;; grid-fit small glyphs so stems/baseline are crisp; light (Y-only)
+                   ;; keeps horizontal spacing smooth (see *HINT-LIGHT*).
                    (scribe::*hinting* (and *hint-glyphs* *hint-max-ppem*))
+                   (scribe::*hint-light* *hint-light*)
                    ;; clip bounds (or full canvas)
                    (cx0 (if *clip* (the fixnum (first *clip*)) 0))
                    (cy0 (if *clip* (the fixnum (second *clip*)) 0))

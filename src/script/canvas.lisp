@@ -14,6 +14,14 @@
   (let ((c (css:parse-value "color" (string (jstr s)))))
     (if (and (consp c) (numberp (first c))) (list (first c) (second c) (third c)) '(0 0 0))))
 
+(defun c2d-color-a (s)
+  "Parse a CSS color string S to (values (r g b) alpha); alpha in [0,1]."
+  (let ((c (css:parse-value "color" (string (jstr s)))))
+    (if (and (consp c) (numberp (first c)))
+        (values (list (first c) (second c) (third c))
+                (if (and (fourth c) (numberp (fourth c))) (float (fourth c) 1d0) 1d0))
+        (values '(0 0 0) 1d0))))
+
 (defun c2d-num (args i &optional (default 0d0))
   "The Nth argument as a double float; NaN/non-number -> DEFAULT."
   (let ((v (js:to-number (arg args i))))
@@ -37,6 +45,7 @@ defaulting to 10."
   (let* ((realm (context-realm ctx))
          (op (js:eval-script realm "Object.prototype"))
          (obj (js:make-object :proto op))
+         (grads (make-hash-table :test 'eq))    ; gradient host object -> gesso gradient
          (fill-css "#000000") (stroke-css "#000000") (line-w 1d0) (alpha 1d0) (font-css "10px sans-serif"))
     (flet ((m (name len fn) (js:put obj name (js:native-function realm name fn len)
                                      :enumerable nil :writable t :configurable t))
@@ -47,11 +56,16 @@ defaulting to 10."
                :set (js:native-function realm (concatenate 'string "set " name)
                       (lambda (th a) (declare (ignore th)) (funcall setter (arg a 0)) js:*undefined*) 1)
                :enumerable t :configurable t)))
-      ;; paint state
+      ;; paint state: fillStyle/strokeStyle accept a CSS colour string or a gradient
+      ;; object returned by createLinear/RadialGradient.
       (acc "fillStyle" (lambda () fill-css)
-           (lambda (v) (setf fill-css (jstr v)) (g:set-fill gctx (c2d-color v))))
+           (lambda (v) (let ((gg (and (js:js-object-p v) (gethash v grads))))
+                         (if gg (progn (setf fill-css v) (g:set-fill gctx gg))
+                             (progn (setf fill-css (jstr v)) (g:set-fill gctx (c2d-color v)))))))
       (acc "strokeStyle" (lambda () stroke-css)
-           (lambda (v) (setf stroke-css (jstr v)) (g:set-stroke gctx (c2d-color v))))
+           (lambda (v) (let ((gg (and (js:js-object-p v) (gethash v grads))))
+                         (if gg (progn (setf stroke-css v) (g:set-stroke gctx gg))
+                             (progn (setf stroke-css (jstr v)) (g:set-stroke gctx (c2d-color v)))))))
       (acc "lineWidth" (lambda () (num line-w))
            (lambda (v) (setf line-w (float (js:to-number v) 1d0)) (g:set-line-width gctx line-w)))
       (acc "globalAlpha" (lambda () (num alpha))
@@ -106,6 +120,27 @@ defaulting to 10."
                                  (g:draw-image gctx src (c2d-num a 1) (c2d-num a 2) (c2d-num a 3) (c2d-num a 4))
                                  (g:draw-image gctx src (c2d-num a 1) (c2d-num a 2)))))
                          js:*undefined*))
+      ;; paint sources: createLinear/RadialGradient -> a gradient object with
+      ;; addColorStop, usable as fillStyle/strokeStyle.
+      (flet ((make-grad (gg)
+               (let ((go (js:make-object :proto op)))
+                 (setf (gethash go grads) gg)
+                 (js:put go "addColorStop"
+                         (js:native-function realm "addColorStop"
+                           (lambda (th a) (declare (ignore th))
+                             (multiple-value-bind (rgb sa) (c2d-color-a (arg a 1))
+                               (g:add-color-stop gg (c2d-num a 0) rgb sa))
+                             js:*undefined*)
+                           2)
+                         :enumerable nil)
+                 go)))
+        (m "createLinearGradient" 4
+           (lambda (th a) (declare (ignore th))
+             (make-grad (g:make-linear-gradient (c2d-num a 0) (c2d-num a 1) (c2d-num a 2) (c2d-num a 3)))))
+        (m "createRadialGradient" 6
+           (lambda (th a) (declare (ignore th))
+             (make-grad (g:make-radial-gradient (c2d-num a 0) (c2d-num a 1) (c2d-num a 2)
+                                                (c2d-num a 3) (c2d-num a 4) (c2d-num a 5))))))
       ;; line-dash / cap / join surface (accepted, not yet honored by gesso)
       (m "setLineDash" 1 (lambda (th a) (declare (ignore th a)) js:*undefined*))
       (m "getLineDash" 0 (lambda (th a) (declare (ignore th a)) (js:eval-script realm "[]")))
@@ -120,7 +155,9 @@ Registers the gesso context's scribe buffer so layout composites it at paint."
       (or (gethash node (context-canvas-ctxs ctx))
           (let* ((w (max 1 (canvas-dim node "width" 300)))
                  (h (max 1 (canvas-dim node "height" 150)))
-                 (gctx (g:make-context w h :background '(255 255 255)))
+                 ;; A transparent RGBA buffer: undrawn areas and clearRect show the
+                 ;; page through; semi-transparent fills composite by alpha.
+                 (gctx (g:make-context w h :alpha t))
                  (obj (make-2d-context ctx node gctx)))
             (setf (r:element-canvas node) (g:context-canvas gctx))
             (setf (gethash node (context-canvas-ctxs ctx)) obj)

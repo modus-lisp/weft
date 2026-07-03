@@ -25,6 +25,7 @@
   (iframe-docs (make-hash-table :test 'eq)) ; iframe/object dnode -> its content document
   (listeners (make-hash-table :test 'eq))   ; dnode -> list of (type listener capture) entries
   (events (make-hash-table :test 'eq))      ; event wrapper object -> its EVT struct
+  (traversal (make-hash-table :test 'eq))   ; NodeIterator/TreeWalker wrapper -> its state
   (current-script nil)      ; the <script> node currently executing (for document.write)
   (dirty nil))              ; a DOM mutation happened; styles cache is stale
 
@@ -38,8 +39,12 @@
 (defun truthy (v) (js:js-truthy v))
 (defun nanp (x) (and (floatp x) (/= x x)))
 (defun nullish (x) (or (eq x js:*null*) (eq x js:*undefined*)))
-(defun int-arg (args n) "A CL integer from the Nth arg (NaN -> 0)."
-  (let ((d (js:to-number (arg args n)))) (if (nanp d) 0 (truncate d))))
+(defun js-int (v)
+  "A CL integer from JS value V; NaN/Infinity -> 0 (truncate would signal)."
+  (let ((n (js:to-number v)))
+    (if (and (floatp n) (or (/= n n) (sb-ext:float-infinity-p n))) 0 (truncate n))))
+(defun int-arg (args n) "A CL integer from the Nth arg (NaN/Infinity -> 0)."
+  (js-int (arg args n)))
 
 (defun proto (ctx key) (getf (context-protos ctx) key))
 (defun (setf proto) (v ctx key) (setf (getf (context-protos ctx) key) v))

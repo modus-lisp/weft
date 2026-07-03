@@ -88,7 +88,7 @@
                 ((:module "script" :serial t
                   :components ((:file "packages") (:file "core") (:file "timers")
                                (:file "events") (:file "cssom") (:file "dom")
-                               (:file "bridge")))))))
+                               (:file "traversal") (:file "bridge")))))))
 
 (defsystem "weft/test"
   :depends-on ("weft" "weft/fetch" "weft/render")

@@ -122,35 +122,81 @@
     (nreverse out)))
 
 (defun rg-clone-contents (ctx r)
+  (wrap ctx (%range-cut (rg-sc r) (rg-so r) (rg-ec r) (rg-eo r) nil)))
+
+(defun incl-anc-p (a b) "A is B or an ancestor of B."
+  (loop for n = b then (h:dnode-parent n) while n thereis (eq n a)))
+(defun child-containing (common node)
+  "The child of COMMON that is-or-contains NODE."
+  (loop for n = node then (h:dnode-parent n) when (eq (h:dnode-parent n) common) return n))
+(defun contained-children (common sc so ec eo)
+  (loop for c across (h:dnode-children common)
+        when (and (= (bp-pos c 0 sc so) 1) (= (bp-pos c (node-len c) ec eo) -1))
+          collect c))
+(defun append-frag-children (frag container)
+  (loop for c across (copy-seq (h:dnode-children frag))
+        do (h:dom-remove c) (h:dom-append container c)))
+
+(defun %range-cut (sc so ec eo movep)
+  "The recursive DOM extract/clone algorithm over the boundary points; MOVEP T
+   mutates the source (extract), NIL leaves it (clone). Returns a fragment."
   (let ((frag (h:make-fragment)))
     (cond
-      ((rg-collapsed-p r))
-      ((and (eq (rg-sc r) (rg-ec r)) (char-data-p (rg-sc r)))
-       (h:dom-append frag (h:make-text (subseq (h:dnode-data (rg-sc r)) (rg-so r) (rg-eo r)))))
-      (t (dolist (n (rg-contained-nodes r)) (h:dom-append frag (copy-dnode n t)))))
-    (wrap ctx frag)))
+      ((and (eq sc ec) (= so eo)) frag)                       ; collapsed
+      ((and (eq sc ec) (char-data-p sc))                      ; within one text node
+       (h:dom-append frag (h:make-text (subseq (h:dnode-data sc) so eo)))
+       (when movep (setf (h:dnode-data sc)
+                         (concatenate 'string (subseq (h:dnode-data sc) 0 so) (subseq (h:dnode-data sc) eo))))
+       frag)
+      (t
+       (let* ((common (loop for a = sc then (h:dnode-parent a) when (incl-anc-p a ec) return a))
+              (first-pc (unless (incl-anc-p sc ec) (child-containing common sc)))
+              (last-pc  (unless (incl-anc-p ec sc) (child-containing common ec)))
+              (contained (contained-children common sc so ec eo)))
+         ;; first partially-contained node
+         (cond
+           ((and first-pc (char-data-p first-pc))
+            (h:dom-append frag (h:make-text (subseq (h:dnode-data first-pc) so)))
+            (when movep (setf (h:dnode-data first-pc) (subseq (h:dnode-data first-pc) 0 so))))
+           (first-pc
+            (let ((clone (copy-dnode first-pc nil)))
+              (h:dom-append frag clone)
+              (append-frag-children (%range-cut sc so first-pc (node-len first-pc) movep) clone))))
+         ;; wholly-contained children
+         (dolist (child contained)
+           (if movep (progn (h:dom-remove child) (h:dom-append frag child))
+               (h:dom-append frag (copy-dnode child t))))
+         ;; last partially-contained node
+         (cond
+           ((and last-pc (char-data-p last-pc))
+            (h:dom-append frag (h:make-text (subseq (h:dnode-data last-pc) 0 eo)))
+            (when movep (setf (h:dnode-data last-pc) (subseq (h:dnode-data last-pc) eo))))
+           (last-pc
+            (let ((clone (copy-dnode last-pc nil)))
+              (h:dom-append frag clone)
+              (append-frag-children (%range-cut last-pc 0 ec eo movep) clone))))
+         frag)))))
+
+(defun %new-boundary (sc so ec)
+  "The collapsed boundary a range takes after extract/delete."
+  (if (incl-anc-p sc ec) (values sc so)
+      (let ((ref (loop for r = sc then (h:dnode-parent r)
+                       until (incl-anc-p (h:dnode-parent r) ec) finally (return r))))
+        (values (h:dnode-parent ref) (1+ (node-index ref))))))
 
 (defun rg-extract-contents (ctx r)
-  (let ((frag (h:make-fragment)))
-    (cond
-      ((rg-collapsed-p r))
-      ((and (eq (rg-sc r) (rg-ec r)) (char-data-p (rg-sc r)))
-       (let* ((d (h:dnode-data (rg-sc r)))
-              (piece (subseq d (rg-so r) (rg-eo r))))
-         (setf (h:dnode-data (rg-sc r)) (concatenate 'string (subseq d 0 (rg-so r)) (subseq d (rg-eo r))))
-         (h:dom-append frag (h:make-text piece))))
-      (t (dolist (n (rg-contained-nodes r)) (h:dom-remove n) (h:dom-append frag n))
-         (rg-set-end r (rg-sc r) (rg-so r))))   ; collapse to start
+  (let ((frag (%range-cut (rg-sc r) (rg-so r) (rg-ec r) (rg-eo r) t)))
+    (unless (rg-collapsed-p r)
+      (multiple-value-bind (nc no) (%new-boundary (rg-sc r) (rg-so r) (rg-ec r))
+        (setf (rg-sc r) nc (rg-so r) no (rg-ec r) nc (rg-eo r) no)))
     (setf (context-dirty ctx) t)
     (wrap ctx frag)))
 
 (defun rg-delete-contents (ctx r)
   (unless (rg-collapsed-p r)
-    (if (and (eq (rg-sc r) (rg-ec r)) (char-data-p (rg-sc r)))
-        (let ((d (h:dnode-data (rg-sc r))))
-          (setf (h:dnode-data (rg-sc r)) (concatenate 'string (subseq d 0 (rg-so r)) (subseq d (rg-eo r)))))
-        (progn (dolist (n (rg-contained-nodes r)) (h:dom-remove n))
-               (rg-set-end r (rg-sc r) (rg-so r))))
+    (%range-cut (rg-sc r) (rg-so r) (rg-ec r) (rg-eo r) t)
+    (multiple-value-bind (nc no) (%new-boundary (rg-sc r) (rg-so r) (rg-ec r))
+      (setf (rg-sc r) nc (rg-so r) no (rg-ec r) nc (rg-eo r) no))
     (setf (context-dirty ctx) t)))
 
 (defun split-text (ctx node offset)

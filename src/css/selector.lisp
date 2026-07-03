@@ -106,6 +106,20 @@
                     :test #'string=)
             (let ((dis (and (el-attr n "disabled") t)))
               (if (string= nm "disabled") dis (not dis)))))
+      ;; :checked — a checkbox/radio (or option) whose "checkedness" is set.  A
+      ;; host (weft/script) tracks live state in a reserved `weft-checked`
+      ;; attribute; with no scripting it falls back to the checked/selected
+      ;; content attribute (so static checked controls render checked).
+      ((string= nm "checked")
+       (let ((tag (string-downcase (el-name n))) (wc (el-attr n "weft-checked")))
+         (cond
+           ((string= tag "input")
+            (let ((type (string-downcase (or (el-attr n "type") "text"))))
+              (and (member type '("checkbox" "radio") :test #'string=)
+                   (if wc (string= wc "1") (and (el-attr n "checked") t)))))
+           ((string= tag "option")
+            (if wc (string= wc "1") (and (el-attr n "selected") t)))
+           (t nil))))
       ;; :lang(x) — the nearest ancestor lang attribute is x or an x-* subtag.
       ((string= nm "lang")
        (let ((want (string-downcase (or arg ""))))

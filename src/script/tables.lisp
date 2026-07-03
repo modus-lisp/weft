@@ -6,8 +6,6 @@
 ;;;; tag-guarded accessors/methods on the shared Element prototype.
 (in-package #:weft.script)
 
-(defun tag= (node name) (and (eq (h:dnode-kind node) :element)
-                             (string= (h:dnode-name node) name)))
 (defun first-child-tag (parent name)
   (loop for c across (h:dnode-children parent) when (tag= c name) return c))
 (defun child-trs (parent)

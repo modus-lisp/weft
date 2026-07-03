@@ -5,6 +5,27 @@
 ;;; ---------------------------------------------------------------------------
 ;;; Realm + DOM binding construction
 ;;; ---------------------------------------------------------------------------
+(defun make-location (ctx)
+  "A Location object parsed from the document's base URL."
+  (let* ((realm (context-realm ctx)) (base (context-base ctx))
+         (u (and (plusp (length base)) (ignore-errors (weft.url:parse base))))
+         (loc (js:make-object :proto (js:eval-script realm "Object.prototype"))))
+    (macrolet ((field (k form) `(js:put loc ,k (or (and u ,form) ""))))
+      (field "href" (weft.url:href u))
+      (field "protocol" (weft.url:protocol u))
+      (field "host" (weft.url:host-str u))
+      (field "hostname" (weft.url:hostname u))
+      (field "port" (weft.url:port-str u))
+      (field "pathname" (weft.url:pathname-str u))
+      (field "search" (weft.url:search-str u))
+      (field "hash" (weft.url:hash-str u))
+      (field "origin" (weft.url:origin u)))
+    (dolist (m '("reload" "replace" "assign"))
+      (js:put loc m (js:native-function realm m (lambda (a b) (declare (ignore a b)) js:*undefined*) 0)))
+    (js:put loc "toString"
+            (js:native-function realm "toString" (lambda (this a) (declare (ignore a)) (js:js-get this "href")) 0))
+    loc))
+
 (defun install-globals (ctx)
   (let* ((realm (context-realm ctx))
          (window (proto ctx :window))
@@ -13,10 +34,44 @@
     (js:define-global realm "document" docobj)
     (js:define-global realm "window" window)
     (js:define-global realm "self" window)
-    ;; A trivial navigator so feature-detecting scripts don't throw.
+    ;; navigator — the fields feature-detecting scripts read.
     (let ((nav (js:make-object :proto (js:eval-script realm "Object.prototype"))))
-      (js:put nav "userAgent" "weft")
+      (js:put nav "userAgent" "Mozilla/5.0 (weft)")
+      (js:put nav "appName" "Netscape") (js:put nav "appVersion" "5.0 (weft)")
+      (js:put nav "platform" "Lisp") (js:put nav "vendor" "weft")
+      (js:put nav "language" "en-US") (js:put nav "languages" (js:eval-script realm "['en-US','en']"))
+      (js:put nav "onLine" js:*true*) (js:put nav "cookieEnabled" js:*true*)
+      (js:put nav "doNotTrack" js:*null*)
       (js:define-global realm "navigator" nav))
+    ;; location — parsed from the document base URL.
+    (let ((loc (make-location ctx)))
+      (js:define-global realm "location" loc)
+      (js:put window "location" loc)
+      (js:put docobj "location" loc))
+    ;; history / storage — enough surface that scripts don't throw.
+    (let ((hist (js:make-object :proto (js:eval-script realm "Object.prototype"))))
+      (js:put hist "length" 1.0)
+      (js:put hist "state" js:*null*)
+      (js:put hist "scrollRestoration" "auto")
+      (dolist (m '("pushState" "replaceState" "back" "forward" "go"))
+        (js:put hist m (js:native-function realm m (lambda (this args) (declare (ignore this args)) js:*undefined*) 0)))
+      (js:define-global realm "history" hist))
+    (flet ((storage ()
+             (js:eval-script realm
+               "(function(){var s={},o={getItem:function(k){return k in s?s[k]:null;},setItem:function(k,v){s[k]=String(v);},removeItem:function(k){delete s[k];},clear:function(){s={};},key:function(i){return Object.keys(s)[i]||null;}};Object.defineProperty(o,'length',{get:function(){return Object.keys(s).length;}});return o;})()")))
+      (js:define-global realm "localStorage" (storage))
+      (js:define-global realm "sessionStorage" (storage)))
+    ;; a few window methods real pages call
+    (dolist (m '("scrollTo" "scroll" "scrollBy" "focus" "blur" "print" "close" "open"
+                 "alert" "resizeTo" "moveTo" "requestAnimationFrame" "cancelAnimationFrame"))
+      (js:define-global realm m (js:native-function realm m (lambda (this args) (declare (ignore this args)) js:*undefined*) 0)))
+    (js:define-global realm "matchMedia"
+      (js:native-function realm "matchMedia"
+        (lambda (this args) (declare (ignore this))
+          (let ((o (js:make-object :proto (js:eval-script realm "Object.prototype"))))
+            (js:put o "matches" js:*false*) (js:put o "media" (jstr (arg args 0)))
+            (js:put o "addListener" (js:native-function realm "addListener" (lambda (a b) (declare (ignore a b)) js:*undefined*) 0))
+            o)) 1))
     ;; Interface objects carrying the Node type constants (Node.COMMENT_NODE …),
     ;; with .prototype pointing at the shared prototypes.
     (flet ((iface (name proto-key)
@@ -87,12 +142,27 @@
                (declare (ignore kind))
                (and (stringp content) content))))))
 
+(defparameter +classic-js-types+
+  '("text/javascript" "application/javascript" "text/ecmascript"
+    "application/ecmascript" "application/x-javascript" "application/x-ecmascript"
+    "text/jscript" "text/livescript" "text/javascript1.0" "text/javascript1.1"
+    "text/javascript1.2" "text/javascript1.3" "text/javascript1.4" "text/javascript1.5"))
+
+(defun classic-javascript-p (script)
+  "True if SCRIPT is a classic JavaScript block (executed).  A data block such as
+   application/ld+json or text/template — or a module — is not run."
+  (let ((type (dom:get-attribute script "type")))
+    (or (null type) (zerop (length (string-trim '(#\Space #\Tab #\Newline #\Return) type)))
+        (member (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) type))
+                +classic-js-types+ :test #'string=))))
+
 (defun run-inline-scripts (ctx)
-  "Execute every runnable <script> in document order against CTX's realm. A
-   script error is reported but does not abort (browser behavior)."
+  "Execute every classic-JavaScript <script> in document order against CTX's
+   realm.  A script error is reported but does not abort (browser behavior);
+   non-JS <script> blocks (JSON-LD, templates, modules) are skipped."
   (let ((realm (context-realm ctx)))
     (dolist (script (dom:get-elements-by-tag-name (context-document ctx) "script"))
-      (let ((source (script-source ctx script)))
+      (let ((source (and (classic-javascript-p script) (script-source ctx script))))
         (when (and source (plusp (length source)))
           (setf (context-current-script ctx) script)
           (handler-case (js:eval-script realm source)
@@ -106,18 +176,22 @@
 ;;; ---------------------------------------------------------------------------
 ;;; Scripted render
 ;;; ---------------------------------------------------------------------------
-(defun render-scripted-to-canvas (html css width &rest keys)
+(defun render-scripted-to-canvas (html css width &rest keys &key base loader &allow-other-keys)
   "Like weft.render:render-to-canvas, but run inline <script> against the parsed
    DOM (then drain timers + microtasks) before layout. Returns (values canvas
-   context). A page with no <script> renders byte-identically to render-to-canvas."
-  (let (ctx)
+   context). BASE/LOADER configure the subresource pipeline; the remaining keys
+   pass through to render-to-canvas.  A scriptless page renders byte-identically."
+  (let (ctx
+        (render-keys (loop for (k v) on keys by #'cddr
+                           unless (member k '(:base :loader)) collect k and collect v)))
     (values
      (apply #'r:render-to-canvas html css width
             :before-layout (lambda (doc)
-                             (setf ctx (make-context doc :css (or css "") :width width))
+                             (setf ctx (make-context doc :css (or css "") :width width
+                                                     :base (or base "") :loader loader))
                              (run-inline-scripts ctx)
                              (run-event-loop ctx :max-tasks 10000))
-            keys)
+            render-keys)
      ctx)))
 
 (defun render-scripted-to-png (html css width path &rest keys)

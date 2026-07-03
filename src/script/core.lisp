@@ -34,6 +34,7 @@
   (write-buffers (make-hash-table :test 'eq)) ; document node -> pending document.write buffer (open())
   (base "")                 ; base URL/directory for resolving subresource references
   (loader nil)              ; (ctx url) -> (values kind content); NIL disables file/network loads
+  (cookie "")               ; document.cookie backing store
   (current-script nil)      ; the <script> node currently executing (for document.write)
   (dirty nil))              ; a DOM mutation happened; styles cache is stale
 

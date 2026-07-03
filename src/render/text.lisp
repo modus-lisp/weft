@@ -123,13 +123,15 @@ never depends on the font succeeding."
   "Where the bitmap DRAW-TEXT path centers its fixed *FONT-H* slot in a line box."
   (+ line-top (max 0 (floor (- line-h *font-h*) 2))))
 
-(defparameter *blend-gamma* 1.5d0
+(defparameter *blend-gamma* 0.95d0
   "Gamma space scribe composites glyphs in (bound to scribe's *BLEND-GAMMA*).
 Linear-light AA (scribe's image default, ~2.2) renders dark-on-light text
-washed-out; naive sRGB blending (1.0) is too heavy; browsers sit between.  1.5 is
-calibrated against a real-page render so text reads at Chromium's weight — a touch
-heavier than a pure total-ink match, to make up for the browser's stem hinting
-(solid-black pixels) that weft's geometric raster can't reproduce.")
+washed-out; a lower gamma is heavier.  Calibrated to Chromium's text weight by a
+total-ink match on an Arial/Liberation sample (both resolve to Liberation Sans, so
+only the AA/weight differs): 0.95 lands within ~2% of Chromium's ink.  This is much
+heavier than the old 1.5 — that value had to compensate for the stem hinting weft
+*couldn't* do; now that hinting grid-fits stems solid like the browser (see
+*HINT-GLYPHS*), the honest match is ~0.95.")
 (defparameter *stem-darkening* 1.0d0
   "Extra coverage-exponent darkening on top of *BLEND-GAMMA* (1.0 = none).  The
 gamma carries the weight match; kept as a separate knob.")

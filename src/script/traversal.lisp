@@ -68,6 +68,34 @@
         (setf (ni-ref state) node (ni-before state) before)
         (return-from ni-traverse (wrap ctx node))))))
 
+(defun following-after-subtree (node root)
+  "The next node in tree order after NODE's whole subtree, within ROOT (or NIL)."
+  (loop for n = node then (h:dnode-parent n)
+        while (and n (not (eq n root)))
+        do (let ((s (n-next-sib n))) (when s (return s)))
+        finally (return nil)))
+
+(defun ni-set-prev (st node)
+  "Set the iterator reference after NODE is removed: its previous sibling's last
+   inclusive descendant, or its parent."
+  (let ((prev (n-prev-sib node)))
+    (setf (ni-ref st) (if prev (loop for n = prev then (n-last n) while (n-last n) finally (return n))
+                          (h:dnode-parent node)))))
+
+(defun ni-pre-remove (ctx node)
+  "The NodeIterator pre-removing steps (run while NODE is still attached)."
+  (maphash
+   (lambda (obj st) (declare (ignore obj))
+     (when (and (ni-p st)
+                (loop for n = (ni-ref st) then (h:dnode-parent n) while n thereis (eq n node))
+                (not (eq node (ni-root st))))
+       (if (ni-before st)
+           (let ((next (following-after-subtree node (ni-root st))))
+             (if next (setf (ni-ref st) next)
+                 (progn (setf (ni-before st) nil) (ni-set-prev st node))))
+           (ni-set-prev st node))))
+   (context-traversal ctx)))
+
 (defun install-nodeiterator-proto (ctx nip)
   (macrolet ((st (this) `(or (gethash ,this (context-traversal ctx))
                              (js:js-throw (js:make-native-error "TypeError" "not a NodeIterator")))))

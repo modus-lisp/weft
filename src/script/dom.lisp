@@ -268,6 +268,7 @@
         (unless (eq (h:dnode-parent child) parent)
           (throw-dom ctx "NotFoundError" 8 "node is not a child"))
         (adjust-ranges-for-removal ctx child)
+        (ni-pre-remove ctx child)
         (h:dom-remove child) (setf (context-dirty ctx) t) (arg a 0)))
     (defmethod* ctx np "replaceChild" 2 (this a)
       (let ((parent (n this)) (new (require-node ctx (arg a 0)))

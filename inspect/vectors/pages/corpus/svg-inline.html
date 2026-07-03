@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Inline SVG</title>
+<style>
+  body { font: 16px sans-serif; margin: 24px; color: #202020; }
+  h1 { font-size: 22px; }
+  figure { margin: 16px 0; }
+  figcaption { color: #606060; font-size: 13px; }
+</style>
+</head>
+<body>
+  <h1>Inline SVG shapes</h1>
+  <p>An SVG drawn directly in the HTML flow, rendered through stencil and gesso.</p>
+  <figure>
+    <svg width="260" height="160" viewBox="0 0 260 160">
+      <rect x="10" y="10" width="120" height="70" fill="#3060d0"/>
+      <circle cx="70" cy="45" r="28" fill="#e0403080"/>
+      <ellipse cx="190" cy="45" rx="50" ry="30" fill="none" stroke="#208040" stroke-width="4"/>
+      <polyline points="150,90 180,120 210,90 240,120" fill="none" stroke="#a02080" stroke-width="3"/>
+      <path d="M10 150 L60 100 L110 150 Z" fill="#f0a000"/>
+      <text x="14" y="30" font-size="16" fill="#ffffff">SVG</text>
+    </svg>
+    <figcaption>rect, circle, ellipse, polyline, path and text</figcaption>
+  </figure>
+  <p>Text after the figure continues the normal block flow.</p>
+</body>
+</html>

@@ -89,7 +89,9 @@
     ("python.html"    . "https://docs.python.org/3/")
     ("hn.html"        . "https://news.ycombinator.com/")
     ("wikipedia.html" . "https://en.wikipedia.org/wiki/HTML")
-    ("bbc.html"       . "https://www.bbc.com/news")))
+    ("bbc.html"       . "https://www.bbc.com/news")
+    ("svg-inline.html"  . "http://weft.local/svg-inline.html")
+    ("canvas-draw.html" . "http://weft.local/canvas-draw.html")))
 
 (defun slurp (p) (with-open-file (in p :external-format :latin-1)
                    (let ((str (make-string (file-length in)))) (subseq str 0 (read-sequence str in)))))

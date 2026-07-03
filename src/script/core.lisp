@@ -23,6 +23,7 @@
   (timer-seq 0)             ; monotonic timer id source
   (now 0)                   ; virtual clock (ms) for the timer queue
   (iframe-docs (make-hash-table :test 'eq)) ; iframe/object dnode -> its content document
+  (canvas-ctxs (make-hash-table :test 'eq)) ; <canvas> dnode -> its CanvasRenderingContext2D host object
   (listeners (make-hash-table :test 'eq))   ; dnode -> list of (type listener capture) entries
   (events (make-hash-table :test 'eq))      ; event wrapper object -> its EVT struct
   (traversal (make-hash-table :test 'eq))   ; NodeIterator/TreeWalker wrapper -> its state
@@ -65,7 +66,8 @@
 
 (defun proto-key-for (node)
   (case (h:dnode-kind node)
-    (:element :element) (:document :document) (:text :text)
+    (:element (if (eq (h:dnode-namespace node) :svg) :svg-element :element))
+    (:document :document) (:text :text)
     (:comment :comment) (:fragment :fragment) (:doctype :doctype) (t :node)))
 
 (defun wrap (ctx node)

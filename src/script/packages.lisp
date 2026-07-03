@@ -7,7 +7,7 @@
 (defpackage #:weft.script
   (:use #:cl)
   (:local-nicknames (#:h #:weft.html) (#:dom #:weft.dom) (#:css #:weft.css)
-                    (#:r #:weft.render) (#:js #:shuttle))
+                    (#:r #:weft.render) (#:js #:shuttle) (#:g #:gesso))
   (:export #:make-context #:context-realm #:context-document #:context-dirty
            #:element-object #:wrap #:run-inline-scripts #:run-event-loop
            #:render-scripted-to-canvas #:render-scripted-to-png))

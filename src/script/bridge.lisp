@@ -103,12 +103,14 @@
          (cp (js:make-object :proto np))     ; CharacterData (Text/Comment)
          (evp (js:make-object :proto op))    ; Event.prototype
          (dtp (js:make-object :proto np))    ; DocumentType.prototype
+         (svgep (js:make-object :proto ep))  ; SVGElement.prototype (inherits Element)
          (window (js:eval-script realm "globalThis")))
     (setf (context-protos ctx)
           (list :node np :element ep :document dp :text cp :comment cp
-                :fragment np :event evp :doctype dtp :window window))
+                :fragment np :event evp :doctype dtp :svg-element svgep :window window))
     (install-node-proto ctx np)
     (install-element-proto ctx ep)
+    (install-svg-element-proto ctx svgep)
     (install-document-proto ctx dp)
     (install-doctype-proto ctx dtp)
     (install-chardata-proto ctx cp)

@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Canvas drawing</title>
+<style>
+  body { font: 16px sans-serif; margin: 24px; color: #202020; }
+  h1 { font-size: 22px; }
+  canvas { border: 1px solid #c0c0c0; }
+</style>
+</head>
+<body>
+  <h1>Canvas 2D</h1>
+  <p>A canvas drawn by page script through the CanvasRenderingContext2D bridge.</p>
+  <canvas id="scene" width="300" height="160"></canvas>
+  <p>Text after the canvas continues the normal block flow.</p>
+  <script>
+    var cv = document.getElementById('scene');
+    var ctx = cv.getContext('2d');
+    ctx.fillStyle = '#eef2ff';
+    ctx.fillRect(0, 0, 300, 160);
+    ctx.fillStyle = '#d02030';
+    ctx.fillRect(16, 16, 90, 56);
+    ctx.strokeStyle = '#1050c0';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(140, 20);
+    ctx.lineTo(270, 20);
+    ctx.lineTo(205, 96);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.fillStyle = '#20a040';
+    ctx.beginPath();
+    ctx.arc(64, 118, 30, 0, 6.2832, false);
+    ctx.fill();
+    ctx.fillStyle = '#101010';
+    ctx.font = '22px sans-serif';
+    ctx.fillText('Canvas', 150, 130);
+  </script>
+</body>
+</html>

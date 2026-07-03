@@ -7,7 +7,7 @@
 ;;;; the cascade.
 (in-package #:weft.css)
 
-(declaim (special *viewport-w*))   ; defined in style.lisp; used for @media evaluation
+(declaim (special *viewport-w* *viewport-h*))   ; defined in style.lisp; used for @media evaluation
 
 (defstruct css-rule selector decls)        ; selector: string; decls: list of (prop value . important)
 (defstruct css-decl prop value important)
@@ -99,10 +99,12 @@ and the selector parser sees it as a literal (type) identifier."
       (ignore-errors (let ((*read-default-float-format* 'double-float))
                        (let ((v (read-from-string (subseq s 0 end)))) (and (numberp v) v)))))))
 
-(defun %media-feature-match (feat vw dpr)
+(defun %media-feature-match (feat vw vh dpr)
   "Evaluate a single media feature FEAT (interior of parens, e.g.
-\"min-width: 690px\") against viewport width VW and device-pixel-ratio DPR.
-Unknown features do not match (conservative)."
+\"min-width: 690px\") against viewport width VW, height VH and device-pixel-ratio
+DPR.  Returns T/NIL.  A colour display is assumed: 8 bits per colour component,
+0 monochrome bits.  A malformed feature (no value where one is required) returns
+NIL — the caller treats that as a non-matching query."
   (let* ((colon (position #\: feat))
          (name (string-trim " " (string-downcase (if colon (subseq feat 0 colon) feat))))
          (vraw (and colon (string-trim " " (subseq feat (1+ colon)))))
@@ -111,10 +113,17 @@ Unknown features do not match (conservative)."
     (when (and (plusp (length name)) (char= (char name 0) #\-))
       (let ((p (position #\- name :start 1))) (when p (setf name (subseq name (1+ p))))))
     (cond
+      ;; boolean-context colour/monochrome features (no value): any colour
+      ;; display matches `color` and does not match `monochrome`.
+      ((and (null val) (string= name "color")) t)
+      ((and (null val) (string= name "monochrome")) nil)
       ((null val) nil)
       ((string= name "min-width")  (>= vw val))
       ((string= name "max-width")  (<= vw val))
       ((string= name "width")      (= vw val))
+      ((string= name "min-height") (>= vh val))
+      ((string= name "max-height") (<= vh val))
+      ((string= name "height")     (= vh val))
       ((string= name "min-device-width") (>= vw val))
       ((string= name "max-device-width") (<= vw val))
       ((string= name "min-device-pixel-ratio") (>= dpr val))
@@ -122,6 +131,12 @@ Unknown features do not match (conservative)."
       ((string= name "device-pixel-ratio") (= dpr val))
       ((string= name "min-resolution") (>= (* dpr 96) val))
       ((string= name "max-resolution") (<= (* dpr 96) val))
+      ((string= name "min-color") (>= 8 val))
+      ((string= name "max-color") (<= 8 val))
+      ((string= name "color") (= 8 val))
+      ((string= name "min-monochrome") (>= 0 val))
+      ((string= name "max-monochrome") (<= 0 val))
+      ((string= name "monochrome") (= 0 val))
       (t nil))))
 
 (defun %media-split (s ch)
@@ -132,45 +147,65 @@ Unknown features do not match (conservative)."
     (push (subseq s start) parts)
     (nreverse parts)))
 
-(defun %media-query-match (q vw dpr)
-  "Evaluate one comma-separated media query Q (e.g. \"only screen and
-(min-width: 690px) and (max-width: 809px)\") against VW/DPR."
-  (let* ((q (string-trim " " (string-downcase q)))
-         (negate nil))
-    ;; leading 'not' / 'only' keyword
-    (cond ((and (>= (length q) 4) (string= (subseq q 0 4) "not ")) (setf negate t q (string-trim " " (subseq q 4))))
-          ((and (>= (length q) 5) (string= (subseq q 0 5) "only ")) (setf q (string-trim " " (subseq q 5)))))
-    ;; media type: the token before the first '(' (or the whole string)
-    (let* ((lp (position #\( q))
-           (head (string-trim " " (subseq q 0 (or lp (length q)))))
-           ;; strip a trailing 'and' from the head
-           (mtype (let ((parts (remove "" (%media-split head #\Space) :test #'string=)))
-                    (or (first parts) "all")))
-           (type-ok (member mtype '("all" "screen" "") :test #'string=))
-           (result t))
-      (unless type-ok (setf result nil))
-      ;; evaluate each (feature) group, ANDed
-      (when result
-        (let ((i (or lp (length q))))
-          (loop while (< i (length q)) do
-            (let ((open (position #\( q :start i)))
-              (unless open (return))
-              (let ((close (position #\) q :start open)))
-                (unless close (setf result nil) (return))
-                (unless (%media-feature-match (subseq q (1+ open) close) vw dpr)
-                  (setf result nil) (return))
-                (setf i (1+ close)))))))
-      (if negate (not result) result))))
+(defun %media-tokens (q)
+  "Tokenize a media query on whitespace, keeping a (…) group as a single token."
+  (let ((toks '()) (i 0) (n (length q)))
+    (loop while (< i n) do
+      (loop while (and (< i n) (member (char q i) '(#\Space #\Tab #\Newline))) do (incf i))
+      (when (>= i n) (return))
+      (if (char= (char q i) #\()
+          (let ((close (position #\) q :start i)))
+            (push (subseq q i (if close (1+ close) n)) toks)
+            (setf i (if close (1+ close) n)))
+          (let ((start i))
+            (loop while (and (< i n) (not (member (char q i) '(#\Space #\Tab #\Newline #\()))) do (incf i))
+            (push (subseq q start i) toks))))
+    (nreverse toks)))
+
+(defun %paren-group-p (tok) (and (plusp (length tok)) (char= (char tok 0) #\()))
+(defun %paren-interior (tok) (string-trim " " (subseq tok 1 (or (position #\) tok) (length tok)))))
+
+(defun %media-query-match (q vw vh dpr)
+  "Evaluate one media query Q (a single comma-separated component) against the
+viewport. Grammar: [not|only]? (media-type | (feature)) (and (feature))* .  A
+malformed query (a bare token where a feature group is required) evaluates to
+`not all` — i.e. it does not match."
+  (let ((toks (%media-tokens (string-trim " " (string-downcase q)))) (negate nil))
+    (when (null toks) (return-from %media-query-match t))     ; empty => all
+    (when (member (first toks) '("not" "only") :test #'string=)
+      (when (string= (first toks) "not") (setf negate t))
+      (pop toks))
+    (let ((result t) (first (first toks)))
+      (cond
+        ((null first))                                        ; bare not/only => all
+        ((%paren-group-p first)                               ; implicit `all and (feature)`
+         (pop toks)
+         (unless (%media-feature-match (%paren-interior first) vw vh dpr) (setf result nil)))
+        (t                                                    ; a media type
+         (pop toks)
+         (unless (member first '("all" "screen" "print" "speech" "handheld" "tv"
+                                 "projection" "") :test #'string=)
+           (setf result nil))))
+      ;; the tail must be a sequence of `and (feature)` pairs
+      (loop while (and (not (eq result :bad)) toks) do
+        (let ((connector (pop toks)) (grp (pop toks)))
+          (cond ((not (string= connector "and")) (setf result :bad))
+                ((or (null grp) (not (%paren-group-p grp))) (setf result :bad))
+                ((not (%media-feature-match (%paren-interior grp) vw vh dpr)) (setf result nil)))))
+      (cond ((eq result :bad) nil)                            ; malformed => not all
+            (negate (not result))
+            (t result)))))
 
 (defun media-matches-p (prelude)
   "True when the @media PRELUDE (comma-separated media query list) applies at the
-current viewport width (*viewport-w*, defaulting to 800) and device-pixel-ratio 1.
-An empty prelude matches (a bare @media)."
+current viewport (*viewport-w*/*viewport-h*) and device-pixel-ratio 1.  An empty
+prelude matches (a bare @media)."
   (let ((vw (float (or *viewport-w* 800)))
+        (vh (float (or *viewport-h* 600)))
         (dpr 1.0)
         (text (string-trim '(#\Space #\Tab #\Newline) prelude)))
     (or (zerop (length text))
-        (some (lambda (q) (%media-query-match q vw dpr)) (%media-split text #\,)))))
+        (some (lambda (q) (%media-query-match q vw vh dpr)) (%media-split text #\,)))))
 
 (defun parse-stylesheet (css)
   "Parse a CSS string into a list of CSS-RULEs."

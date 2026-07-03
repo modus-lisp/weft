@@ -56,6 +56,7 @@
     (install-events ctx np)
     (install-cssom ctx)
     (install-traversal ctx)
+    (install-range ctx)
     (install-timers ctx)
     (install-globals ctx)
     ctx))

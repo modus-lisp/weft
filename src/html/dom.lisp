@@ -62,6 +62,8 @@ If REF is NIL, append.  Used for foster parenting."
 (defun make-text (data) (%dnode :kind :text :data data))
 (defun make-comment (data) (%dnode :kind :comment :data data))
 (defun make-fragment () (%dnode :kind :fragment))
+(defun make-doctype (name &optional public system)
+  (%dnode :kind :doctype :name name :public public :system system))
 
 ;;; ---- html5lib tree serialization --------------------------------------
 ;;; Lines: "| " + 2*depth spaces + content; attributes sorted, one per line at

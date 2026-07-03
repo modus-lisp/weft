@@ -532,11 +532,17 @@
         (setf (proto ctx :implementation) impl)
         (defmethod* ctx impl "hasFeature" 2 (this a) js:*true*)
         (defmethod* ctx impl "createDocument" 3 (this a)
-          (let ((d (h:make-document)) (qn (arg a 1)))
+          (let ((d (h:make-document)) (qn (arg a 1)) (dt (arg a 2)))
+            (unless (nullish dt)
+              (let ((dtn (node-of ctx dt)))
+                (when dtn (h:dom-append d dtn)
+                      (setf (gethash dtn (context-owner-docs ctx)) d))))  ; adopt the doctype
             (unless (nullish qn)
               (unless (valid-qname-p (jstr qn))
                 (throw-dom ctx "InvalidCharacterError" 5 "invalid qualified name"))
-              (h:dom-append d (h:make-element (jstr qn))))
+              (let ((el (h:make-element (jstr qn))))
+                (h:dom-append d el)
+                (setf (gethash el (context-owner-docs ctx)) d)))
             (wrap ctx d)))
         (defmethod* ctx impl "createHTMLDocument" 1 (this a)
           (let* ((d (h:make-document)) (html (h:make-element "html"))
@@ -553,7 +559,7 @@
               (throw-dom ctx "InvalidCharacterError" 5 "invalid doctype name"))
             (unless (valid-qname-p qname)
               (throw-dom ctx "NamespaceError" 14 "malformed qualified name"))
-            (wrap ctx (h:make-element qname))))   ; a stand-in DocumentType node
+            (wrap ctx (h:make-doctype qname (jstr (arg a 1)) (jstr (arg a 2))))))
         impl)))
 
 (defun dom-write (ctx str)

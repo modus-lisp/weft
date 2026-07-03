@@ -48,14 +48,20 @@
         (setf (context-timers ctx)
               (remove-if #'timer-cancelled (context-timers ctx)))
         (handler-case
-            (js:invoke (context-realm ctx) (timer-callback tm) js:*undefined*
-                       (timer-args tm))
+            (let ((cb (timer-callback tm)))
+              (if (functionp cb)                    ; a host task (e.g. a load event)
+                  (funcall cb)
+                  (js:invoke (context-realm ctx) cb js:*undefined* (timer-args tm))))
           (js:shuttle-error (e)
             (format *error-output* "~&weft.script: uncaught in timer: ~a~%" e))
           (error (e)
             (format *error-output* "~&weft.script: timer error: ~a~%" e)))
         (js:drain-microtasks)))
     n))
+
+(defun schedule-task (ctx thunk &optional (delay 0))
+  "Queue a host-side CL THUNK as a macrotask (used for load/error events)."
+  (schedule-timer ctx thunk delay nil))
 
 (defun install-timers (ctx)
   (let* ((realm (context-realm ctx))

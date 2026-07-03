@@ -27,10 +27,21 @@
   (handler-case (js:to-string (js:eval-script realm src))
     (error (e) (format nil "<err ~a>" e))))
 
+(defun local-loader (base-dir)
+  "A subresource loader that reads files relative to BASE-DIR (the vendored Acid3
+   directory). Missing files return NIL so the frame still gets an empty document."
+  (lambda (ctx url) (declare (ignore ctx))
+    (let* ((clean (subseq url 0 (or (position #\? url) (position #\# url) (length url))))
+           (path (ignore-errors (merge-pathnames clean base-dir))))
+      (if (and path (ignore-errors (probe-file path)))
+          (values :html (slurp path))
+          (values nil nil)))))
+
 (defun run (&key verbose)
   (let* ((html (slurp (page-path)))
+         (base (directory-namestring (page-path)))
          (doc (h:parse-html html))
-         (ctx (s:make-context doc))
+         (ctx (s:make-context doc :base base :loader (local-loader base)))
          (realm (s:context-realm ctx)))
     ;; run all inline + data: URL <script> (defines tests[], update, startTime, …)
     (s:run-inline-scripts ctx)

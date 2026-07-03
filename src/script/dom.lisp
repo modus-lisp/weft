@@ -32,6 +32,11 @@
 (defun char-data-p (node)
   (member (h:dnode-kind node) '(:text :comment)))
 
+(defun tag= (node name) (and (eq (h:dnode-kind node) :element)
+                             (string= (h:dnode-name node) name)))
+
+(defun internal-attr-p (name) (string-equal name "weft-checked"))
+
 ;;; ---- DOMException ---------------------------------------------------------
 (defparameter +dom-codes+
   '(("INDEX_SIZE_ERR" . 1) ("DOMSTRING_SIZE_ERR" . 2) ("HIERARCHY_REQUEST_ERR" . 3)
@@ -129,6 +134,25 @@
 (defun remove-attr (node name)
   (setf (h:dnode-attrs node)
         (remove (attr-name name) (h:dnode-attrs node) :key #'car :test #'string=)))
+
+;;; ---- checkbox/radio checkedness -------------------------------------------
+;;; Live checkedness is tracked in a reserved `weft-checked` attribute (so the
+;;; CSS engine's :checked sees it) and hidden from the public attribute API.
+(defun input-type (node) (string-downcase (or (get-attr node "type") "text")))
+(defun checked-p (node)
+  (let ((wc (get-attr node "weft-checked")))
+    (if wc (string= wc "1") (dom:has-attribute node "checked"))))
+(defun tree-root (node) (loop for a = node then (h:dnode-parent a)
+                              when (null (h:dnode-parent a)) return a))
+(defun set-checked (ctx node checked)
+  (set-attr node "weft-checked" (if checked "1" "0"))
+  (when (and checked (string= (input-type node) "radio"))
+    (let ((name (dom:get-attribute node "name")))
+      (dolist (other (dom:get-elements-by-tag-name (tree-root node) "input"))
+        (when (and (not (eq other node)) (string= (input-type other) "radio")
+                   (equal (dom:get-attribute other "name") name))
+          (set-attr other "weft-checked" "0")))))
+  (setf (context-dirty ctx) t))
 
 ;;; ---- live collections -----------------------------------------------------
 (defun index-string-p (k)
@@ -364,15 +388,21 @@
     (defget ctx ep "contentWindow" (this) (proto ctx :window))
 
     (defmethod* ctx ep "getAttribute" 1 (this a)
-      (opt (get-attr (n this) (jstr (arg a 0)))))
+      (let ((name (jstr (arg a 0))))
+        (if (internal-attr-p name) js:*null* (opt (get-attr (n this) name)))))
     (defmethod* ctx ep "setAttribute" 2 (this a)
-      (set-attr (n this) (jstr (arg a 0)) (arg a 1))
-      (setf (context-dirty ctx) t) js:*undefined*)
+      (let ((name (jstr (arg a 0))))
+        (unless (internal-attr-p name)
+          (set-attr (n this) name (arg a 1)) (setf (context-dirty ctx) t)))
+      js:*undefined*)
     (defmethod* ctx ep "removeAttribute" 1 (this a)
-      (remove-attr (n this) (jstr (arg a 0)))
-      (setf (context-dirty ctx) t) js:*undefined*)
+      (let ((name (jstr (arg a 0))))
+        (unless (internal-attr-p name)
+          (remove-attr (n this) name) (setf (context-dirty ctx) t)))
+      js:*undefined*)
     (defmethod* ctx ep "hasAttribute" 1 (this a)
-      (jbool (dom:has-attribute (n this) (attr-name (arg a 0)))))
+      (let ((name (attr-name (arg a 0))))
+        (jbool (and (not (internal-attr-p name)) (dom:has-attribute (n this) name)))))
     (defmethod* ctx ep "hasAttributes" 0 (this a)
       (jbool (and (h:dnode-attrs (n this)) t)))
     (defmethod* ctx ep "getElementsByTagName" 1 (this a)
@@ -386,11 +416,21 @@
     (defmethod* ctx ep "matches" 1 (this a)
       (jbool (ignore-errors (css:selector-matches-p
                              (first (css:parse-selector-list (jstr (arg a 0)))) (n this)))))
-    ;; HTMLElement.click(): dispatch a synthetic bubbling, cancelable click event.
+    ;; checkbox/radio checkedness + disabled, as live properties.
+    (defgetset ctx ep "checked" (this) (jbool (checked-p (n this)))
+      (v) (set-checked ctx (n this) (js:js-truthy v)))
+    (defgetset ctx ep "disabled" (this) (jbool (dom:has-attribute (n this) "disabled"))
+      (v) (progn (if (js:js-truthy v) (set-attr (n this) "disabled" "") (remove-attr (n this) "disabled"))
+                 (setf (context-dirty ctx) t)))
+    ;; HTMLElement.click(): run the control's pre-click activation (toggle a
+    ;; checkbox, select a radio) then dispatch a bubbling, cancelable click.
     (defmethod* ctx ep "click" 0 (this a)
-      (let* ((ev (make-event-object ctx "click" nil)) (e (evt-of ctx ev)))
-        (setf (evt-bubbles e) t (evt-cancelable e) t)
-        (dispatch-event ctx (n this) ev))
+      (let* ((node (n this)) (type (and (tag= node "input") (input-type node))))
+        (cond ((equal type "checkbox") (set-checked ctx node (not (checked-p node))))
+              ((equal type "radio") (set-checked ctx node t)))
+        (let* ((ev (make-event-object ctx "click" nil)) (e (evt-of ctx ev)))
+          (setf (evt-bubbles e) t (evt-cancelable e) t)
+          (dispatch-event ctx node ev)))
       js:*undefined*)
     ;; type/value reflections for form controls.
     (defgetset ctx ep "type" (this)

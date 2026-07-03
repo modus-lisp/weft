@@ -57,19 +57,24 @@ positioned element; the top-level binding (layout-tree) is the initial CB.")
 
 ;;; ---- inline content: styled word runs -> line boxes --------------------
 (defun collect-words (node styles default-style content-w)
-  "Walk inline content of NODE; return a list of inline tokens (PAYLOAD META . SPACE):
+  "Walk inline content of NODE; return inline tokens (PAYLOAD META SPACE GAP):
 PAYLOAD is a word string with META its style, or :ATOMIC with META an lbox
 (inline-block / replaced).  SPACE is T when collapsible whitespace preceded the token
-in the source, so the line layout adds an inter-word space only where the source
-actually had one — adjacent runs across an element boundary (e.g. \"(\", <a>x</a>,
-\")\") get no spurious space.  Use TOK-META / TOK-SPACE to read the trailing slots."
-  (let ((words '()) (pend nil))                    ; PEND: whitespace seen since last token
-    (labels ((atom! (lb) (when lb (push (list* :atomic lb pend) words) (setf pend nil)))
+in the source (so the line layout adds an inter-word space only where the source had
+one — adjacent runs across an element boundary like \"(\", <a>x</a>, \")\" get no
+spurious space).  GAP is extra leading px from inline horizontal margins on the
+enclosing element(s) (e.g. HN's .hnname margin-right).  Use TOK-META/TOK-SPACE/TOK-GAP."
+  (let ((words '()) (pend nil) (pend-px 0))        ; whitespace + inline-margin px before next token
+    (labels ((emit1 (payload meta)
+               (push (list payload meta pend pend-px) words) (setf pend nil pend-px 0))
+             (atom! (lb) (when lb (emit1 :atomic lb)))
+             (iedge (cs side)                        ; inline horizontal margin px on :left / :right
+               (let ((v (if (eq side :left) (css:cstyle-margin-left cs) (css:cstyle-margin-right cs))))
+                 (if (numberp v) (max 0 v) 0)))
              (emit-text (s style)
                (let ((b (make-string-output-stream)) (any nil))
-                 (flet ((flush () (when any
-                                    (push (list* (get-output-stream-string b) style pend) words)
-                                    (setf any nil b (make-string-output-stream) pend nil))))
+                 (flet ((flush () (when any (emit1 (get-output-stream-string b) style)
+                                    (setf any nil b (make-string-output-stream)))))
                    (loop for c across s do
                      (if (member c '(#\Space #\Tab #\Newline #\Return))
                          (progn (flush) (setf pend t))
@@ -123,15 +128,20 @@ actually had one — adjacent runs across an element boundary (e.g. \"(\", <a>x<
                                                :w (+ ml (lbox-w lb) mr)
                                                :h (+ mt (lbox-h lb) mb)
                                                :kind :block :children (list lb)))))))
-                      (t (loop for c across (h:dnode-children n) do (rec c cs)))))))))
+                      (t                             ; generic inline: honor horizontal margins
+                       (incf pend-px (iedge cs :left))
+                       (loop for c across (h:dnode-children n) do (rec c cs))
+                       (incf pend-px (iedge cs :right)))))))))
       (rec node (or (st styles node) default-style)))
     (nreverse words)))
 
-;;; Inline-token accessors: (PAYLOAD META . SPACE) — PAYLOAD is (CAR tok) (a word
-;;; string or :ATOMIC), META its style or lbox, SPACE whether whitespace preceded it.
-(declaim (inline tok-meta tok-space))
+;;; Inline-token accessors: (PAYLOAD META SPACE GAP) — PAYLOAD is (CAR tok) (a word
+;;; string or :ATOMIC), META its style or lbox, SPACE whether whitespace preceded it,
+;;; GAP extra leading px from the enclosing element's inline horizontal margins.
+(declaim (inline tok-meta tok-space tok-gap))
 (defun tok-meta (tok) (cadr tok))
-(defun tok-space (tok) (cddr tok))
+(defun tok-space (tok) (caddr tok))
+(defun tok-gap (tok) (cadddr tok))
 
 (defun img-attr-num (node name)
   (let ((v (cdr (assoc name (h:dnode-attrs node) :test #'string-equal))))
@@ -309,14 +319,15 @@ text-align.  Returns (values line-boxes total-height)."
         (let* ((avail (- rx lx)) (cur '()) (cx lx) (line-h lh))
           (loop while (< i n) do
             (let* ((wd (aref ws i)) (atomic (eq (car wd) :atomic))
-                   ;; an inter-word space is added only when this token had whitespace
-                   ;; before it AND it isn't the first item on the line
+                   ;; leading gap = inter-word space (only where the source had
+                   ;; whitespace and not line-start) + inline horizontal margins
                    (spb (and cur (tok-space wd)))
-                   (sw (if spb (space-w (if atomic base-cs (tok-meta wd))) 0))
+                   (sw (+ (if spb (space-w (if atomic base-cs (tok-meta wd))) 0)
+                          (tok-gap wd)))
                    (ww (if atomic (lbox-w (tok-meta wd)) (word-w (car wd) (tok-meta wd))))
                    (need (+ sw ww)))
               (when (and cur (not nowrap) (> (+ (- cx lx) need) avail)) (return))
-              (when (and spb (> (- cx lx) 0)) (incf cx sw))
+              (when (and (> sw 0) (> (- cx lx) 0)) (incf cx sw))
               (if atomic
                   (let ((lb (tok-meta wd)))
                     (shift-box lb (round (- cx (lbox-x lb))) 0)
@@ -728,8 +739,8 @@ Returns (values lbox advance-height)."
   (let* ((base (st styles node)) (words (collect-words node styles base 600)) (w 0))
     (dolist (wd words)
       (if (eq (car wd) :atomic)
-          (incf w (+ (lbox-w (tok-meta wd)) (if (tok-space wd) (space-w base) 0)))
-          (incf w (+ (word-w (car wd) (tok-meta wd)) (if (tok-space wd) (space-w (tok-meta wd)) 0)))))
+          (incf w (+ (lbox-w (tok-meta wd)) (tok-gap wd) (if (tok-space wd) (space-w base) 0)))
+          (incf w (+ (word-w (car wd) (tok-meta wd)) (tok-gap wd) (if (tok-space wd) (space-w (tok-meta wd)) 0)))))
     (min w 600)))
 
 (defun item-base (item styles content-w)
@@ -1074,6 +1085,7 @@ on a single (unwrapped) line."
   (let ((words (collect-words node styles cs content-w)) (w 0))
     (dolist (wd words)
       (incf w (+ (if (eq (car wd) :atomic) (lbox-w (tok-meta wd)) (word-w (car wd) (tok-meta wd)))
+                 (tok-gap wd)
                  (if (tok-space wd) (space-w (if (eq (car wd) :atomic) cs (tok-meta wd))) 0))))
     w))
 

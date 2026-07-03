@@ -92,13 +92,12 @@ and skips the interpreter cost.  Covers body copy and small headings.")
 (defun glyph-advance-px (font gid ppem upem)
   "Advance in px for GID at PPEM — the SAME value the painter advances the pen
 by, so measured widths match painted widths to the pixel.  .notdef (gid 0)
-advances half an em, matching the painter's tofu-suppression.  When hinting is on
-for this ppem, uses scribe's grid-fit (integer) advance so measure = paint."
+advances half an em, matching the painter's tofu-suppression.  Uses the geometric
+(fractional) advance whether or not the glyph is hinted: hinting grid-fits the
+outline but keeps sub-pixel horizontal positioning, so spacing stays smooth."
   (if (zerop gid)
       (* 0.5d0 ppem)
-      (or (and *hint-glyphs* (<= (round ppem) *hint-max-ppem*)
-               (scribe::hinted-advance font gid (round ppem)))
-          (* (scribe::glyph-advance font gid) (/ ppem upem)))))
+      (* (scribe::glyph-advance font gid) (/ ppem upem))))
 
 (defun measure-text-width (text size &optional face)
   "Sum of per-glyph advances for TEXT at px SIZE in FACE — the width scribe will

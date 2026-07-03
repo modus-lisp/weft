@@ -31,6 +31,7 @@
       ((string= dashed "clear") (s css:cstyle-clear))
       ((string= dashed "overflow") (s css:cstyle-overflow))
       ((string= dashed "text-align") (s css:cstyle-text-align))
+      ((string= dashed "cursor") (s css:cstyle-cursor))
       ((string= dashed "box-sizing") (s css:cstyle-box-sizing))
       ((string= dashed "font-style") (s css:cstyle-font-style))
       ((string= dashed "z-index") (let ((z (s css:cstyle-z-index)))

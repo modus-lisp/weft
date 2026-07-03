@@ -32,10 +32,11 @@
   (bg-position nil)   ; ((xval xunit) (yval yunit)) or NIL = 0,0
   (bg-attachment "scroll") ; scroll | fixed (fixed images are not painted; see paint)
   (min-height 0.0) (max-height :none)
+  (cursor "auto")     ; CSS cursor keyword (inherited)
   (content nil))      ; generated-content string for ::before/::after (NIL = no box)
 
 (defparameter *inherited* '(:color :font-size :font-weight :line-height :text-align :white-space
-                            :font-family :font-style))
+                            :font-family :font-style :cursor))
 
 ;;; ---- UA defaults --------------------------------------------------------
 (defparameter *block-tags*
@@ -56,7 +57,8 @@
             (cstyle-font-family cs) (cstyle-font-family parent-cs)
             (cstyle-font-style cs) (cstyle-font-style parent-cs)
             (cstyle-text-align cs) (cstyle-text-align parent-cs)
-            (cstyle-white-space cs) (cstyle-white-space parent-cs)))
+            (cstyle-white-space cs) (cstyle-white-space parent-cs)
+            (cstyle-cursor cs) (cstyle-cursor parent-cs)))
     (cond ((member tag *none-tags* :test #'string=) (setf (cstyle-display cs) "none"))
           ((string= tag "li") (setf (cstyle-display cs) "list-item"))
           ((string= tag "table") (setf (cstyle-display cs) "table"))
@@ -376,6 +378,8 @@ Ignores the system-font keywords (caption/icon/...)."
          ;; validate against the keyword grammar so an invalid value (e.g. a
          ;; later `white-space: x-bogus`) is ignored and the last VALID value wins.
          (let ((v (parse-value "white-space" value))) (when (stringp v) (setf (cstyle-white-space cs) v))))
+        ((string= prop "cursor")
+         (let ((v (parse-value "cursor" value))) (when (stringp v) (setf (cstyle-cursor cs) v))))
         ((string= prop "width") (let ((w (parse-size value fs t))) (when w (setf (cstyle-width cs) w))))
         ((string= prop "height") (let ((h (parse-size value fs t))) (when h (setf (cstyle-height cs) h))))
         ((string= prop "max-width") (if (string-equal (string-trim '(#\Space) value) "none") (setf (cstyle-max-width cs) :none)

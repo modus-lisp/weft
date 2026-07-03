@@ -29,6 +29,7 @@
   (ranges (make-hash-table :test 'eq))      ; Range wrapper -> its RG struct
   (ns-info (make-hash-table :test 'eq))     ; element dnode -> (:ns uri :prefix p :local l) for createElementNS
   (owner-docs (make-hash-table :test 'eq))  ; created node -> its owner document (even while detached)
+  (input-values (make-hash-table :test 'eq)) ; <input> node -> its independent value property
   (current-script nil)      ; the <script> node currently executing (for document.write)
   (dirty nil))              ; a DOM mutation happened; styles cache is stale
 

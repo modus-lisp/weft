@@ -307,7 +307,38 @@
         (make-collection ctx (lambda () (dom:get-elements-by-class-name node cls)))))
     (defmethod* ctx ep "matches" 1 (this a)
       (jbool (ignore-errors (css:selector-matches-p
-                             (first (css:parse-selector-list (jstr (arg a 0)))) (n this)))))))
+                             (first (css:parse-selector-list (jstr (arg a 0)))) (n this)))))
+    ;; HTMLElement.click(): dispatch a synthetic bubbling, cancelable click event.
+    (defmethod* ctx ep "click" 0 (this a)
+      (let* ((ev (make-event-object ctx "click" nil)) (e (evt-of ctx ev)))
+        (setf (evt-bubbles e) t (evt-cancelable e) t)
+        (dispatch-event ctx (n this) ev))
+      js:*undefined*)
+    ;; type/value reflections for form controls.
+    (defgetset ctx ep "type" (this)
+      (let* ((node (n this)) (tag (h:dnode-name node)) (raw (get-attr node "type")))
+        (cond ((string= tag "button")
+               (let ((v (and raw (string-downcase raw))))
+                 (if (member v '("submit" "reset" "button" "menu") :test #'equal) v "submit")))
+              ((string= tag "input")
+               (let ((v (and raw (string-downcase raw))))
+                 (if (member v '("text" "password" "checkbox" "radio" "submit" "reset"
+                                 "button" "hidden" "image" "file" "color" "date" "email"
+                                 "number" "range" "search" "tel" "time" "url" "month"
+                                 "week" "datetime-local") :test #'equal)
+                     v "text")))
+              (t (or raw ""))))
+      (v) (progn (set-attr (n this) "type" (jstr v)) (setf (context-dirty ctx) t)))
+    (defgetset ctx ep "value" (this)
+      (let ((node (n this)))
+        (if (string= (h:dnode-name node) "input")
+            (multiple-value-bind (v present) (gethash node (context-input-values ctx))
+              (if present v (or (get-attr node "value") "")))
+            (or (get-attr node "value") "")))
+      (v) (let ((node (n this)))
+            (if (string= (h:dnode-name node) "input")
+                (setf (gethash node (context-input-values ctx)) (jstr v))
+                (progn (set-attr node "value" (jstr v)) (setf (context-dirty ctx) t)))))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; CharacterData (Text, Comment)  (<- Node.prototype)
@@ -358,8 +389,22 @@
       (let* ((nsv (arg a 0)) (ns (if (nullish nsv) nil (jstr nsv))) (name (jstr (arg a 1)))
              (colon (position #\: name)))
         (unless (and (plusp (length name))
-                     (name-start-char-p (char name (if colon (1+ colon) 0))))
+                     (name-start-char-p (char name (if colon (1+ colon) 0)))
+                     (every (lambda (c) (and (>= (char-code c) #x21)
+                                             (not (member c '(#\< #\> #\& #\" #\' #\/ #\=)))))
+                            name))
           (throw-dom ctx "InvalidCharacterError" 5 "invalid element name"))
+        ;; DOM "validate and extract" namespace rules.
+        (let ((prefix (and colon (subseq name 0 colon))))
+          (when (or (and colon (or (zerop colon) (= colon (1- (length name)))
+                                   (position #\: name :start (1+ colon))))
+                    (and prefix (null ns))
+                    (and (equal prefix "xml") (not (equal ns "http://www.w3.org/XML/1998/namespace")))
+                    (and (or (equal name "xmlns") (equal prefix "xmlns"))
+                         (not (equal ns "http://www.w3.org/2000/xmlns/")))
+                    (and (equal ns "http://www.w3.org/2000/xmlns/")
+                         (not (or (equal name "xmlns") (equal prefix "xmlns")))))
+            (throw-dom ctx "NamespaceError" 14 "malformed or invalid qualified name")))
         ;; A namespaced element keeps the given case (XML is case-sensitive); only
         ;; the HTML parser lowercases.  Record ns/prefix/localName for reflection.
         (let ((el (h:make-element name nil

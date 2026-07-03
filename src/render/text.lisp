@@ -78,14 +78,27 @@ style (or one with no font-family) resolves the generic sans-serif face."
 ;;; The generic default face (sans-serif) — used when no face/style is supplied.
 (defun default-face () (resolve-face nil 400 :normal))
 
+;;; ---- hinting --------------------------------------------------------------
+(defparameter *hint-glyphs* t
+  "Grid-fit glyphs via scribe's TrueType bytecode hinting before rasterizing, so
+small body text (stems, baseline, x-height) lands on pixel boundaries instead of
+smearing across fractional rows.  Applies to both painting and measurement (they
+share scribe's grid-fit integer advance, so widths stay consistent).")
+(defparameter *hint-max-ppem* 24
+  "Only hint at rounded ppem <= this — large text is already crisp geometrically
+and skips the interpreter cost.  Covers body copy and small headings.")
+
 ;;; ---- measurement ----------------------------------------------------------
 (defun glyph-advance-px (font gid ppem upem)
   "Advance in px for GID at PPEM — the SAME value the painter advances the pen
 by, so measured widths match painted widths to the pixel.  .notdef (gid 0)
-advances half an em, matching the painter's tofu-suppression."
+advances half an em, matching the painter's tofu-suppression.  When hinting is on
+for this ppem, uses scribe's grid-fit (integer) advance so measure = paint."
   (if (zerop gid)
       (* 0.5d0 ppem)
-      (* (scribe::glyph-advance font gid) (/ ppem upem))))
+      (or (and *hint-glyphs* (<= (round ppem) *hint-max-ppem*)
+               (scribe::hinted-advance font gid (round ppem)))
+          (* (scribe::glyph-advance font gid) (/ ppem upem)))))
 
 (defun measure-text-width (text size &optional face)
   "Sum of per-glyph advances for TEXT at px SIZE in FACE — the width scribe will
@@ -155,6 +168,9 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                    ;; fallback below.)
                    (scribe::*blend-gamma* *blend-gamma*)
                    (scribe::*stem-darkening* *stem-darkening*)
+                   ;; grid-fit small glyphs so stems/baseline are crisp (matches
+                   ;; the integer advance used by MEASURE-TEXT-WIDTH above).
+                   (scribe::*hinting* (and *hint-glyphs* *hint-max-ppem*))
                    ;; clip bounds (or full canvas)
                    (cx0 (if *clip* (the fixnum (first *clip*)) 0))
                    (cy0 (if *clip* (the fixnum (second *clip*)) 0))

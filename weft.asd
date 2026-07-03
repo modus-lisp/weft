@@ -79,6 +79,15 @@
                   :components ((:file "packages") (:file "font") (:file "font-bold")
                                (:file "canvas") (:file "image") (:file "text") (:file "layout")))))))
 
+;; The scripting seam: binds shuttle (a pure-CL JavaScript engine) to the weft
+;; DOM so inline <script> can read and mutate the live tree, with the change
+;; reflected on relayout.  Kept separate so the core + render stay JS-free.
+(defsystem "weft/script"
+  :depends-on ("weft/render" "shuttle")
+  :components ((:module "src" :components
+                ((:module "script" :serial t
+                  :components ((:file "packages") (:file "bridge")))))))
+
 (defsystem "weft/test"
   :depends-on ("weft" "weft/fetch" "weft/render")
   :components ((:module "inspect" :components ((:file "offline-test") (:file "encoding-test")

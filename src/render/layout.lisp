@@ -1530,7 +1530,7 @@ wins cascade ties, as a browser would)."
       (loop for c across (h:dnode-children doc) do (rec c)))))
 
 (defun render-to-canvas (html css width &key (min-height 200) (max-height 20000)
-                                              (viewport-height 600) scroll-to)
+                                              (viewport-height 600) scroll-to before-layout)
   "Parse HTML, gather CSS, cascade, lay out at WIDTH px, paint.  Returns the
 CANVAS.
 
@@ -1545,11 +1545,17 @@ Two height models:
   (let* ((css::*viewport-w* (float width))                 ; vw / vmin / vmax basis
          (css::*viewport-h* (float (or viewport-height 600))) ; vh basis
          (doc (h:parse-html html))
+         ;; Optional pre-layout hook: a consumer (weft/script) runs inline
+         ;; <script> against the freshly parsed DOM here, so the cascade and
+         ;; layout below see the script-mutated tree.  Nil => byte-identical
+         ;; to the scriptless render path.
+         (pre-hook (when before-layout (funcall before-layout doc)))
          (sheet (css:parse-stylesheet (concatenate 'string (or css "") (string #\Newline)
                                                    (collect-stylesheets doc))))
          (styles (css:compute-styles doc sheet))
          (viewport-p (and viewport-height (root-clips-p doc styles)))
          (vph (and viewport-p (round viewport-height))))
+    (declare (ignore pre-hook))
     (multiple-value-bind (root adv) (layout-tree doc styles width vph
                                                  (and viewport-p scroll-to))
       (declare (ignore adv))

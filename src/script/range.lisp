@@ -89,19 +89,20 @@
     (nreverse out)))
 
 (defun rg-string (r)
+  ;; Only Text nodes contribute (Comments/PIs do not).
   (let ((sc (rg-sc r)) (ec (rg-ec r)))
     (cond
-      ((and (eq sc ec) (char-data-p sc))
+      ((and (eq sc ec) (eq (h:dnode-kind sc) :text))
        (subseq (or (h:dnode-data sc) "") (rg-so r) (rg-eo r)))
       (t
        (with-output-to-string (s)
-         (when (char-data-p sc) (write-string (subseq (h:dnode-data sc) (rg-so r)) s))
+         (when (eq (h:dnode-kind sc) :text) (write-string (subseq (h:dnode-data sc) (rg-so r)) s))
          (dolist (tn (all-text-nodes (common-ancestor r)))
            (when (and (not (eq tn sc)) (not (eq tn ec))
                       (= (bp-pos tn 0 (rg-sc r) (rg-so r)) 1)
                       (= (bp-pos tn (node-len tn) (rg-ec r) (rg-eo r)) -1))
              (write-string (h:dnode-data tn) s)))
-         (when (char-data-p ec) (write-string (subseq (h:dnode-data ec) 0 (rg-eo r)) s)))))))
+         (when (eq (h:dnode-kind ec) :text) (write-string (subseq (h:dnode-data ec) 0 (rg-eo r)) s)))))))
 
 ;;; ---- contained-node collection (for clone/extract/delete) -----------------
 (defun rg-contained-nodes (r)
@@ -305,17 +306,46 @@
     (defmethod* ctx rp "extractContents" 0 (this a) (rg-extract-contents ctx (r this)))
     (defmethod* ctx rp "deleteContents" 0 (this a) (rg-delete-contents ctx (r this)) js:*undefined*)
     (defmethod* ctx rp "insertNode" 1 (this a)
-      (let* ((rr (r this)) (node (require-node ctx (arg a 0)))
-             (c (rg-sc rr)) (o (rg-so rr))
-             (parent (if (char-data-p c) (h:dnode-parent c) c))
-             (ref (if (char-data-p c)
-                      (split-text ctx c o)          ; ref = the second half
-                      (let ((ch (h:dnode-children c))) (when (< o (length ch)) (aref ch o))))))
-        (when (eq node ref) (setf ref (n-next-sib node)))
-        (dom-detach node)
-        (if ref (h:dom-insert-before parent node ref) (h:dom-append parent node))
-        (setf (context-dirty ctx) t)
-        js:*undefined*))))
+      (%range-insert ctx (r this) (require-node ctx (arg a 0)))
+      js:*undefined*)
+    (defmethod* ctx rp "surroundContents" 1 (this a)
+      (let* ((rr (r this)) (np (require-node ctx (arg a 0))))
+        ;; a partially-contained non-Text node (e.g. a Comment) is illegal
+        (when (some (lambda (n) (not (eq (h:dnode-kind n) :text))) (partially-contained-nodes rr))
+          (throw-dom ctx "InvalidStateError" 11 "range partially selects a non-Text node"))
+        (let ((frag (%range-cut (rg-sc rr) (rg-so rr) (rg-ec rr) (rg-eo rr) t)))
+          (loop for c across (copy-seq (h:dnode-children np)) do (h:dom-remove c))
+          (%range-insert ctx rr np)                 ; may raise HierarchyRequestError
+          (append-frag-children frag np)
+          (setf (rg-sc rr) (h:dnode-parent np) (rg-so rr) (node-index np)
+                (rg-ec rr) (h:dnode-parent np) (rg-eo rr) (1+ (node-index np)))))
+      js:*undefined*)))
+
+(defun partially-contained-nodes (rr)
+  "Nodes that are an inclusive ancestor of exactly one of the range's boundary
+   containers (they hold one boundary point but not both)."
+  (let ((sc (rg-sc rr)) (ec (rg-ec rr)) (out '()))
+    (loop for n = sc then (h:dnode-parent n) while n
+          when (not (incl-anc-p n ec)) do (pushnew n out))
+    (loop for n = ec then (h:dnode-parent n) while n
+          when (not (incl-anc-p n sc)) do (pushnew n out))
+    out))
+
+(defun %range-insert (ctx rr node)
+  "Insert NODE at the range's start (splitting a Text start container), enforcing
+   the document single-element-child constraint."
+  (let* ((c (rg-sc rr)) (o (rg-so rr))
+         (parent (if (char-data-p c) (h:dnode-parent c) c))
+         (ref (if (char-data-p c) (split-text ctx c o)
+                  (let ((ch (h:dnode-children c))) (when (< o (length ch)) (aref ch o))))))
+    (when (eq node ref) (setf ref (n-next-sib node)))
+    (when (and (eq (h:dnode-kind parent) :document) (eq (h:dnode-kind node) :element)
+               (loop for ch across (h:dnode-children parent)
+                     thereis (and (eq (h:dnode-kind ch) :element) (not (eq ch node)))))
+      (throw-dom ctx "HierarchyRequestError" 3 "document can have only one element child"))
+    (dom-detach node)
+    (if ref (h:dom-insert-before parent node ref) (h:dom-append parent node))
+    (setf (context-dirty ctx) t)))
 
 (defun install-range (ctx)
   (let* ((realm (context-realm ctx))

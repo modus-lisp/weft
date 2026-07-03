@@ -43,7 +43,7 @@
 (defun run-filter (ctx filter what node)
   "Return 1 (accept), 2 (reject) or 3 (skip) for NODE."
   (if (zerop (logand what (node-show-bit node))) 3
-      (if (nullish filter) 1
+      (if (or (null filter) (nullish filter)) 1
           (let ((r (cond ((js:js-callable-p filter)
                           (js:js-call filter js:*undefined* (list (wrap ctx node))))
                          ((js:js-object-p filter)

@@ -57,16 +57,24 @@ positioned element; the top-level binding (layout-tree) is the initial CB.")
 
 ;;; ---- inline content: styled word runs -> line boxes --------------------
 (defun collect-words (node styles default-style content-w)
-  "Walk inline content of NODE; return a list of inline tokens: (word . style)
-text runs and (:atomic . lbox) for inline-block / replaced boxes."
-  (let ((words '()))
-    (labels ((emit-text (s style)
+  "Walk inline content of NODE; return a list of inline tokens (PAYLOAD META . SPACE):
+PAYLOAD is a word string with META its style, or :ATOMIC with META an lbox
+(inline-block / replaced).  SPACE is T when collapsible whitespace preceded the token
+in the source, so the line layout adds an inter-word space only where the source
+actually had one — adjacent runs across an element boundary (e.g. \"(\", <a>x</a>,
+\")\") get no spurious space.  Use TOK-META / TOK-SPACE to read the trailing slots."
+  (let ((words '()) (pend nil))                    ; PEND: whitespace seen since last token
+    (labels ((atom! (lb) (when lb (push (list* :atomic lb pend) words) (setf pend nil)))
+             (emit-text (s style)
                (let ((b (make-string-output-stream)) (any nil))
-                 (loop for c across s do
-                   (if (member c '(#\Space #\Tab #\Newline #\Return))
-                       (when any (push (cons (get-output-stream-string b) style) words) (setf any nil b (make-string-output-stream)))
-                       (progn (write-char c b) (setf any t))))
-                 (when any (push (cons (get-output-stream-string b) style) words))))
+                 (flet ((flush () (when any
+                                    (push (list* (get-output-stream-string b) style pend) words)
+                                    (setf any nil b (make-string-output-stream) pend nil))))
+                   (loop for c across s do
+                     (if (member c '(#\Space #\Tab #\Newline #\Return))
+                         (progn (flush) (setf pend t))
+                         (progn (write-char c b) (setf any t))))
+                   (flush))))
              (rec (n owner)
                (case (h:dnode-kind n)
                  (:text (emit-text (h:dnode-data n) owner))
@@ -80,17 +88,17 @@ text runs and (:atomic . lbox) for inline-block / replaced boxes."
                       ;; <img> is UA display:inline-block and must not fall into generic
                       ;; block layout, which collapses it to a ~0-height content box.
                       ((string= (h:dnode-name n) "img")
-                       (let ((lb (img-box n cs))) (when lb (push (cons :atomic lb) words))))
+                       (let ((lb (img-box n cs))) (atom! lb)))
                       ;; <object data="data:...image..."> that decodes renders as a
                       ;; replaced image (with its own background, e.g. Acid2's eye
                       ;; tile); otherwise it falls back to its child content.
                       ((and (string= (h:dnode-name n) "object") (object-data-image n))
                        (let ((lb (object-box n cs (object-data-image n))))
-                         (when lb (push (cons :atomic lb) words))))
+                         (atom! lb)))
                       ((and cs (member (cdisplay cs) '("inline-block" "flex" "table") :test #'string=))
                        (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
                          (declare (ignore adv))
-                         (when lb (push (cons :atomic lb) words))))
+                         (atom! lb)))
                       ;; A block-level element with an explicit px width AND height
                       ;; that appears in inline flow (e.g. HN's <div class=votearrow>
                       ;; 10x10 inside an inline <a>) is not part of the surrounding
@@ -111,15 +119,19 @@ text runs and (:atomic . lbox) for inline-block / replaced boxes."
                              ;; LAYOUT-NODE already positioned LB's border-box at
                              ;; (ml,mt); wrap it in a marginless atomic box sized to
                              ;; the full margin box so the line height counts margins.
-                             (push (cons :atomic
-                                         (make-lbox :x 0 :y 0
-                                                    :w (+ ml (lbox-w lb) mr)
-                                                    :h (+ mt (lbox-h lb) mb)
-                                                    :kind :block :children (list lb)))
-                                   words)))))
+                             (atom! (make-lbox :x 0 :y 0
+                                               :w (+ ml (lbox-w lb) mr)
+                                               :h (+ mt (lbox-h lb) mb)
+                                               :kind :block :children (list lb)))))))
                       (t (loop for c across (h:dnode-children n) do (rec c cs)))))))))
       (rec node (or (st styles node) default-style)))
     (nreverse words)))
+
+;;; Inline-token accessors: (PAYLOAD META . SPACE) — PAYLOAD is (CAR tok) (a word
+;;; string or :ATOMIC), META its style or lbox, SPACE whether whitespace preceded it.
+(declaim (inline tok-meta tok-space))
+(defun tok-meta (tok) (cadr tok))
+(defun tok-space (tok) (cddr tok))
 
 (defun img-attr-num (node name)
   (let ((v (cdr (assoc name (h:dnode-attrs node) :test #'string-equal))))
@@ -297,22 +309,25 @@ text-align.  Returns (values line-boxes total-height)."
         (let* ((avail (- rx lx)) (cur '()) (cx lx) (line-h lh))
           (loop while (< i n) do
             (let* ((wd (aref ws i)) (atomic (eq (car wd) :atomic))
-                   (sw (space-w (if atomic base-cs (cdr wd))))
-                   (ww (if atomic (lbox-w (cdr wd)) (word-w (car wd) (cdr wd))))
-                   (need (if cur (+ sw ww) ww)))
+                   ;; an inter-word space is added only when this token had whitespace
+                   ;; before it AND it isn't the first item on the line
+                   (spb (and cur (tok-space wd)))
+                   (sw (if spb (space-w (if atomic base-cs (tok-meta wd))) 0))
+                   (ww (if atomic (lbox-w (tok-meta wd)) (word-w (car wd) (tok-meta wd))))
+                   (need (+ sw ww)))
               (when (and cur (not nowrap) (> (+ (- cx lx) need) avail)) (return))
-              (when (> (- cx lx) 0) (incf cx sw))
+              (when (and spb (> (- cx lx) 0)) (incf cx sw))
               (if atomic
-                  (let ((lb (cdr wd)))
+                  (let ((lb (tok-meta wd)))
                     (shift-box lb (round (- cx (lbox-x lb))) 0)
                     (setf line-h (max line-h (lbox-h lb))) (push lb cur))
-                  (push (make-frag :x cx :w ww :text (car wd) :style (cdr wd)) cur))
+                  (push (make-frag :x cx :w ww :text (car wd) :style (tok-meta wd)) cur))
               (incf cx ww) (incf i)))
           (when (null cur)                       ; one item too wide for the band: force it
             (let* ((wd (aref ws i)))
-              (if (eq (car wd) :atomic) (let ((lb (cdr wd))) (shift-box lb (round (- lx (lbox-x lb))) 0)
+              (if (eq (car wd) :atomic) (let ((lb (tok-meta wd))) (shift-box lb (round (- lx (lbox-x lb))) 0)
                                           (setf line-h (max line-h (lbox-h lb))) (push lb cur))
-                  (push (make-frag :x lx :w (word-w (car wd) (cdr wd)) :text (car wd) :style (cdr wd)) cur))
+                  (push (make-frag :x lx :w (word-w (car wd) (tok-meta wd)) :text (car wd) :style (tok-meta wd)) cur))
               (incf i)))
           (let* ((items (nreverse cur))
                  (lastx (let ((it (car (last items)))) (if (frag-p it) (+ (frag-x it) (frag-w it)) (+ (lbox-x it) (lbox-w it)))))
@@ -713,8 +728,8 @@ Returns (values lbox advance-height)."
   (let* ((base (st styles node)) (words (collect-words node styles base 600)) (w 0))
     (dolist (wd words)
       (if (eq (car wd) :atomic)
-          (incf w (+ (lbox-w (cdr wd)) (space-w base)))
-          (incf w (+ (word-w (car wd) (cdr wd)) (space-w (cdr wd))))))
+          (incf w (+ (lbox-w (tok-meta wd)) (if (tok-space wd) (space-w base) 0)))
+          (incf w (+ (word-w (car wd) (tok-meta wd)) (if (tok-space wd) (space-w (tok-meta wd)) 0)))))
     (min w 600)))
 
 (defun item-base (item styles content-w)
@@ -863,7 +878,7 @@ line must tuck against the cell bottom by."
 token (word or atomic box)."
   (let ((words (collect-words node styles cs content-w)) (w 0))
     (dolist (wd words)
-      (setf w (max w (if (eq (car wd) :atomic) (lbox-w (cdr wd)) (word-w (car wd) (cdr wd))))))
+      (setf w (max w (if (eq (car wd) :atomic) (lbox-w (tok-meta wd)) (word-w (car wd) (tok-meta wd))))))
     w))
 
 (defun min-content-width (node styles content-w &optional (depth 0))
@@ -1058,8 +1073,8 @@ specified width), rows stacked, cells stretched to row height.  Returns
 on a single (unwrapped) line."
   (let ((words (collect-words node styles cs content-w)) (w 0))
     (dolist (wd words)
-      (incf w (+ (if (eq (car wd) :atomic) (lbox-w (cdr wd)) (word-w (car wd) (cdr wd)))
-                 (space-w (if (eq (car wd) :atomic) cs (cdr wd))))))
+      (incf w (+ (if (eq (car wd) :atomic) (lbox-w (tok-meta wd)) (word-w (car wd) (tok-meta wd)))
+                 (if (tok-space wd) (space-w (if (eq (car wd) :atomic) cs (tok-meta wd))) 0))))
     w))
 
 (defun pref-content-width (node styles content-w &optional (depth 0))

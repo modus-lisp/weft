@@ -134,15 +134,21 @@
 (defun index-string-p (k)
   (and (stringp k) (plusp (length k)) (every #'digit-char-p k)))
 
-(defun make-collection (ctx list-fn)
+(defun make-collection (ctx list-fn &optional name-fn)
   "A live NodeList/HTMLCollection: length + integer indexing + item(), reading
-   LIST-FN (-> a fresh CL list of weft nodes) on every access."
+   LIST-FN (-> a fresh CL list of weft nodes) on every access. If NAME-FN is
+   given, an unknown string key is looked up by name (namedItem semantics)."
   (let* ((realm (context-realm ctx))
          (item (js:native-function realm "item"
                  (lambda (this a) (declare (ignore this))
                    (let ((i (int-arg a 0)) (l (funcall list-fn)))
                      (if (< -1 i (length l)) (wrap ctx (nth i l)) js:*null*)))
-                 1)))
+                 1))
+         (named (js:native-function realm "namedItem"
+                  (lambda (this a) (declare (ignore this))
+                    (let ((node (and name-fn (funcall name-fn (jstr (arg a 0))))))
+                      (if node (wrap ctx node) js:*null*)))
+                  1)))
     (js:make-host-object realm
       :get (lambda (o key rcv) (declare (ignore rcv))
              (let ((key (js:to-property-key key)))   ; obj[0] arrives as a number
@@ -153,7 +159,22 @@
                   (let ((i (parse-integer key)) (l (funcall list-fn)))
                     (if (< i (length l)) (wrap ctx (nth i l)) js:*undefined*)))
                  ((and (stringp key) (string= key "item")) item)
+                 ((and (stringp key) (string= key "namedItem")) named)
+                 ((and name-fn (stringp key) (funcall name-fn key))
+                  (wrap ctx (funcall name-fn key)))
                  (t (js:js-get (js:js-object-proto o) key o))))))))
+
+(defparameter +form-control-tags+
+  '("input" "button" "select" "textarea" "fieldset" "object" "output"))
+
+(defun form-controls (form)
+  (remove-if-not (lambda (n) (member (h:dnode-name n) +form-control-tags+ :test #'string=))
+                 (dom:get-elements-by-tag-name form "*")))
+
+(defun named-control (form name)
+  (find-if (lambda (n) (or (equal (dom:get-attribute n "name") name)
+                           (equal (dom:get-attribute n "id") name)))
+           (form-controls form)))
 
 (defun children-list (node)
   (coerce (h:dnode-children node) 'list))
@@ -268,6 +289,8 @@
       (v) (progn (set-attr (n this) "class" v) (setf (context-dirty ctx) t)))
     ;; Reflected IDL attributes whose property name differs from the content
     ;; attribute (DOM2 HTML): htmlFor<->for, httpEquiv<->http-equiv.
+    (defgetset ctx ep "name" (this) (or (get-attr (n this) "name") "")
+      (v) (progn (set-attr (n this) "name" (jstr v)) (setf (context-dirty ctx) t)))
     (defgetset ctx ep "htmlFor" (this) (or (get-attr (n this) "for") "")
       (v) (progn (set-attr (n this) "for" (jstr v)) (setf (context-dirty ctx) t)))
     (defgetset ctx ep "httpEquiv" (this) (or (get-attr (n this) "http-equiv") "")
@@ -280,6 +303,17 @@
     (defget ctx ep "previousElementSibling" (this) (wrap ctx (dom:previous-element-sibling (n this))))
     (defget ctx ep "childElementCount" (this) (num (dom:child-element-count (n this))))
     (defget ctx ep "style" (this) (element-style-object ctx (n this)))
+    ;; HTMLFormElement.elements / .length (live, with named access).
+    (defget ctx ep "elements" (this)
+      (let ((node (n this)))
+        (if (string= (h:dnode-name node) "form")
+            (make-collection ctx (lambda () (form-controls node))
+                             (lambda (name) (named-control node name)))
+            js:*undefined*)))
+    (defget ctx ep "length" (this)
+      (let ((node (n this)))
+        (if (string= (h:dnode-name node) "form")
+            (num (length (form-controls node))) js:*undefined*)))
     ;; iframe/object contentDocument: hand back a fresh, empty document the test
     ;; can build into (Acid3's getTestDocument path).
     (defget ctx ep "contentDocument" (this) (content-document ctx (n this)))

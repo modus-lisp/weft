@@ -90,7 +90,7 @@
                   :components ((:file "packages") (:file "core") (:file "timers")
                                (:file "events") (:file "cssom") (:file "dom")
                                (:file "canvas") (:file "svg")
-                               (:file "traversal") (:file "range") (:file "loader")
+                               (:file "traversal") (:file "range") (:file "xml") (:file "loader")
                                (:file "tables") (:file "bridge")))))))
 
 (defsystem "weft/test"

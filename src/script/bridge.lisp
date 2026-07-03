@@ -55,6 +55,7 @@
     (install-event-proto ctx evp)
     (install-events ctx np)
     (install-cssom ctx)
+    (install-traversal ctx)
     (install-timers ctx)
     (install-globals ctx)
     ctx))

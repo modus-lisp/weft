@@ -291,6 +291,12 @@
     ;; attribute (DOM2 HTML): htmlFor<->for, httpEquiv<->http-equiv.
     (defgetset ctx ep "name" (this) (or (get-attr (n this) "name") "")
       (v) (progn (set-attr (n this) "name" (jstr v)) (setf (context-dirty ctx) t)))
+    (defgetset ctx ep "title" (this) (or (get-attr (n this) "title") "")
+      (v) (progn (set-attr (n this) "title" (jstr v)) (setf (context-dirty ctx) t)))
+    (defgetset ctx ep "dir" (this) (or (get-attr (n this) "dir") "")
+      (v) (progn (set-attr (n this) "dir" (jstr v)) (setf (context-dirty ctx) t)))
+    (defgetset ctx ep "lang" (this) (or (get-attr (n this) "lang") "")
+      (v) (progn (set-attr (n this) "lang" (jstr v)) (setf (context-dirty ctx) t)))
     (defgetset ctx ep "htmlFor" (this) (or (get-attr (n this) "for") "")
       (v) (progn (set-attr (n this) "for" (jstr v)) (setf (context-dirty ctx) t)))
     (defgetset ctx ep "httpEquiv" (this) (or (get-attr (n this) "http-equiv") "")

@@ -39,9 +39,11 @@
 
 (defun run (&key verbose)
   (let* ((html (slurp (page-path)))
-         (base (directory-namestring (page-path)))
+         (dir (directory-namestring (page-path)))
          (doc (h:parse-html html))
-         (ctx (s:make-context doc :base base :loader (local-loader base)))
+         ;; The page's own URL is the base for resolving relative references;
+         ;; the loader maps those references back onto the vendored files.
+         (ctx (s:make-context doc :base "http://acid3.acidtests.org/" :loader (local-loader dir)))
          (realm (s:context-realm ctx)))
     ;; run all inline + data: URL <script> (defines tests[], update, startTime, …)
     (s:run-inline-scripts ctx)

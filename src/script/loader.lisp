@@ -67,6 +67,14 @@
                             (percent-decode data))))
           (values (kind-from-mime (if (plusp (length mime)) mime nil)) content)))))
 
+(defun resolve-url (ctx url)
+  "Resolve URL against the context's base to an absolute URL (unchanged if there
+   is no base or resolution fails)."
+  (let ((base (context-base ctx)))
+    (if (and (plusp (length base)) (stringp url) (plusp (length url)))
+        (let ((u (ignore-errors (weft.url:parse url base)))) (if u (weft.url:href u) url))
+        url)))
+
 (defun load-resource (ctx url)
   "Resolve URL and load it. Returns (values kind content) — kind is
    :html/:xml/:css/:js/:image/:text, content a string; (values nil nil) if the

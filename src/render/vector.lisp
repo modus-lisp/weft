@@ -72,6 +72,11 @@ page underneath."
       (%blit-scribe cv sc x y))))
 
 (defun paint-canvas-box (cv x y node)
-  "Composite a <canvas> element's scribe buffer onto the page at (X,Y)."
+  "Composite a <canvas> element's scribe buffer onto the page at (X,Y).  An RGBA
+buffer composites by alpha (so transparent/cleared areas show the page through); an
+opaque buffer is copied."
   (let ((sc (element-canvas node)))
-    (when sc (%blit-scribe cv sc x y))))
+    (when sc
+      (if (sc:canvas-alpha sc)
+          (blit-img cv (rgba-canvas->img sc) x y)
+          (%blit-scribe cv sc x y)))))

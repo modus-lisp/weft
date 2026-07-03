@@ -55,6 +55,23 @@ ctx.fillStyle = '#101010'; ctx.font = '18px sans-serif'; ctx.fillText('Canvas',1
 </script>
 <p>after</p></body></html>")
 
+(defparameter *depth-svg-uri*
+  "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='80'%20height='80'%3E%3Ccircle%20cx='40'%20cy='40'%20r='36'%20fill='%23e03030'/%3E%3Crect%20x='20'%20y='20'%20width='40'%20height='40'%20fill='%233060d0'/%3E%3C/svg%3E")
+
+(defparameter *depth-html*
+  (format nil "<!doctype html><html><body style='background:#f0e000'>
+<img src=\"~a\" width='80' height='80'>
+<canvas id='c' width='260' height='120'></canvas>
+<script>
+var ctx=document.getElementById('c').getContext('2d');
+var g=ctx.createLinearGradient(0,0,260,0);
+g.addColorStop(0,'#ff0000'); g.addColorStop(0.5,'#00ff00'); g.addColorStop(1,'#0000ff');
+ctx.fillStyle=g; ctx.fillRect(0,0,260,60);
+ctx.fillStyle='rgba(200,0,0,0.5)'; ctx.fillRect(150,70,90,40);
+ctx.clearRect(170,80,30,20);
+</script>
+</body></html>" *depth-svg-uri*))
+
 (defun run ()
   ;; Inline SVG (no script needed): stencil + gesso onto the page.
   (let ((cv (r:render-to-canvas *svg-html* "" 400)))
@@ -72,6 +89,18 @@ ctx.fillStyle = '#101010'; ctx.font = '18px sans-serif'; ctx.fillText('Canvas',1
     (ok "canvas: red circle present" (> (count-color cv #xe0 #x30 #x30) 800))
     (ok "canvas: green tri present"  (> (count-color cv #x20 #xa0 #x40) 800))
     (format t "~&wrote ~a~%" (out "canvas-draw.png")))
+  ;; Graphics depth: <img src=svg> transparency, canvas gradients + alpha, all on a
+  ;; yellow page so transparency is observable (the page shows through).
+  (multiple-value-bind (cv ctx) (s:render-scripted-to-canvas *depth-html* "" 360)
+    (declare (ignore ctx))
+    (r:write-png cv (out "graphics-depth.png"))
+    (ok "img-svg red circle present"     (> (count-color cv #xe0 #x30 #x30) 600))
+    ;; the canvas linear gradient runs through a pure green midpoint no solid fill made
+    (ok "canvas gradient green midpoint" (> (count-color cv #x10 #xf0 #x10 40) 300))
+    ;; the yellow page shows through the SVG's transparent corners AND the canvas's
+    ;; transparent/cleared regions — a large yellow area survives over both boxes
+    (ok "page yellow shows through transparency" (> (count-color cv #xf0 #xe0 #x00 30) 40000))
+    (format t "~&wrote ~a~%" (out "graphics-depth.png")))
   (format t "~&svg/canvas render check: ~a passed, ~a failed~%" *pass* *fail*)
   (values (zerop *fail*) *fail*))
 

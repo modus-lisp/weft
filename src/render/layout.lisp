@@ -176,8 +176,11 @@ alt-text placeholder."
          ;; declared box and shows nothing.  Drop the UA chrome (gray fill + 1px
          ;; border) so the box is exactly WxH and paints no visible gray box; a
          ;; spacer stays invisible and the logo footprint is just its own border.
-         ;; The gray/bordered placeholder is kept only for images that carry alt.
-         (style (if (and (not decoded) (not has-alt))
+         ;; The gray/bordered placeholder is kept only for a BROKEN image that
+         ;; carries alt text; a decoded image replaces the placeholder outright, so
+         ;; strip the UA chrome for it too — otherwise the gray fill shows through a
+         ;; transparent image (e.g. an SVG's corners) instead of the page behind.
+         (style (if (or decoded (not has-alt))
                     (let ((c (css::copy-cstyle cs)))
                       ;; Drop the UA gray placeholder FILL so the box shows nothing
                       ;; visible, but keep the declared footprint: strip the border

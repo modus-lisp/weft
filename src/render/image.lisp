@@ -160,15 +160,55 @@ background-filled canvas size so layout at least gets dimensions)."
       (when (and (plusp w) (plusp h))
         (make-img :w w :h h :rgba (make-array (* w h 4) :element-type '(unsigned-byte 8) :initial-element 0))))))
 
+;;; ---- SVG (rendered through stencil to a straight-alpha bitmap) ----------
+(defun rgba-canvas->img (cv)
+  "Convert a premultiplied RGBA scribe canvas to a straight-alpha weft IMG."
+  (let* ((w (sc:canvas-width cv)) (h (sc:canvas-height cv))
+         (px (sc:canvas-pixels cv)) (ap (sc:canvas-alpha cv))
+         (rgba (make-array (* w h 4) :element-type '(unsigned-byte 8))))
+    (dotimes (j (* w h))
+      (let ((a (aref ap j)) (i3 (* 3 j)) (i4 (* 4 j)))
+        (if (zerop a)
+            (setf (aref rgba i4) 0 (aref rgba (+ i4 1)) 0 (aref rgba (+ i4 2)) 0 (aref rgba (+ i4 3)) 0)
+            (setf (aref rgba i4)       (min 255 (floor (* (aref px i3) 255) a))
+                  (aref rgba (+ i4 1)) (min 255 (floor (* (aref px (+ i3 1)) 255) a))
+                  (aref rgba (+ i4 2)) (min 255 (floor (* (aref px (+ i3 2)) 255) a))
+                  (aref rgba (+ i4 3)) a))))
+    (make-img :w w :h h :rgba rgba)))
+
+(defun svg-data-uri-source (uri)
+  "The SVG source string carried by a data:image/svg+xml URI, or NIL."
+  (let ((comma (position #\, uri)))
+    (when comma
+      (let* ((meta (subseq uri 5 comma)) (payload (subseq uri (1+ comma)))
+             (b64 (search ";base64" meta :test #'char-equal)))
+        (if b64
+            (map 'string #'code-char (base64-decode payload))
+            (percent-decode payload))))))
+
+(defun decode-svg-image (uri)
+  "Render a data:image/svg+xml URI through stencil to a straight-alpha IMG at the
+   SVG's intrinsic size, or NIL."
+  (let ((src (svg-data-uri-source uri)))
+    (when (and src (plusp (length src)))
+      (let ((root (ignore-errors (st:parse-svg src))))
+        (when root
+          (multiple-value-bind (iw ih) (st:svg-intrinsic-size root)
+            (let* ((w (max 1 (round iw))) (h (max 1 (round ih)))
+                   (cv (sc:make-rgba-canvas w h)))
+              (ignore-errors (st:render-svg-to-canvas root :width w :height h :canvas cv))
+              (rgba-canvas->img cv))))))))
+
 ;;; ---- entry -------------------------------------------------------------
 (defun decode-image (uri)
-  "Decode a data: URI (PNG or GIF) to an IMG, or NIL."
+  "Decode a data: URI (PNG, GIF or SVG) to an IMG, or NIL."
   (multiple-value-bind (mime bytes) (parse-data-uri uri)
-    (when bytes
-      (cond ((search "png" (or mime "") :test #'char-equal) (png-decode bytes))
-            ((search "gif" (or mime "") :test #'char-equal) (gif-decode bytes))
-            ((and (>= (length bytes) 2) (= (aref bytes 0) 137)) (png-decode bytes))
-            (t nil)))))
+    (cond ((and mime (search "svg" mime :test #'char-equal)) (decode-svg-image uri))
+          ((null bytes) nil)
+          ((search "png" (or mime "") :test #'char-equal) (png-decode bytes))
+          ((search "gif" (or mime "") :test #'char-equal) (gif-decode bytes))
+          ((and (>= (length bytes) 2) (= (aref bytes 0) 137)) (png-decode bytes))
+          (t nil))))
 
 (defun blit-img (cv img x y &optional dw dh)
   "Paint IMG onto CV at (X,Y), straight-alpha over existing pixels, optionally

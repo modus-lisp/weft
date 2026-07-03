@@ -33,25 +33,32 @@
       (iface "Element" :element) (iface "Document" :document))
     docobj))
 
-(defun make-context (document &key (css "") (width 800))
+(defun make-context (document &key (css "") (width 800) (base "") loader)
   "Create a fresh scripting context for a parsed weft DOCUMENT: a realm with the
-   full DOM/CSSOM/Events surface installed and document/window globals bound."
+   full DOM/CSSOM/Events surface installed and document/window globals bound.
+   BASE + LOADER supply the subresource pipeline (LOADER is (ctx url) -> (values
+   kind content); data: URLs are handled without it)."
   (let* ((realm (js:make-realm))
-         (ctx (%make-context :realm realm :document document :css css :width width))
+         (ctx (%make-context :realm realm :document document :css css :width width
+                             :base base :loader loader))
          (op (js:eval-script realm "Object.prototype"))
          (np (js:make-object :proto op))     ; Node.prototype
          (ep (js:make-object :proto np))     ; Element.prototype
          (dp (js:make-object :proto np))     ; Document.prototype
          (cp (js:make-object :proto np))     ; CharacterData (Text/Comment)
          (evp (js:make-object :proto op))    ; Event.prototype
+         (dtp (js:make-object :proto np))    ; DocumentType.prototype
          (window (js:eval-script realm "globalThis")))
     (setf (context-protos ctx)
           (list :node np :element ep :document dp :text cp :comment cp
-                :fragment np :event evp :window window))
+                :fragment np :event evp :doctype dtp :window window))
     (install-node-proto ctx np)
     (install-element-proto ctx ep)
     (install-document-proto ctx dp)
+    (install-doctype-proto ctx dtp)
     (install-chardata-proto ctx cp)
+    (install-on-handlers ctx ep)
+    (install-on-handlers ctx dp)
     (install-event-proto ctx evp)
     (install-events ctx np)
     (install-cssom ctx)
@@ -65,62 +72,25 @@
 (defun element-object (ctx node) (wrap ctx node))
 
 ;;; ---------------------------------------------------------------------------
-;;; data: URL script decoding (Acid3 loads several script bodies this way)
-;;; ---------------------------------------------------------------------------
-(defun percent-decode (s)
-  "Percent-decode S to a CL string (bytes interpreted as Latin-1/ASCII)."
-  (with-output-to-string (o)
-    (let ((i 0) (n (length s)))
-      (loop while (< i n)
-            do (let ((c (char s i)))
-                 (cond ((and (char= c #\%) (< (+ i 2) n)
-                             (digit-char-p (char s (+ i 1)) 16)
-                             (digit-char-p (char s (+ i 2)) 16))
-                        (write-char (code-char (parse-integer s :start (1+ i) :end (+ i 3) :radix 16)) o)
-                        (incf i 3))
-                       (t (write-char c o) (incf i))))))))
-
-(defparameter +b64+ "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/")
-(defun base64-decode (s)
-  "Decode base64 S (ignoring any non-alphabet chars, e.g. whitespace) to a string."
-  (let ((bits 0) (nbits 0) (out (make-string-output-stream)))
-    (loop for c across s
-          for v = (position c +b64+)
-          when v
-            do (setf bits (logior (ash bits 6) v)) (incf nbits 6)
-               (when (>= nbits 8)
-                 (decf nbits 8)
-                 (write-char (code-char (logand (ash bits (- nbits)) #xFF)) out)))
-    (get-output-stream-string out)))
-
-(defun data-url-script (src)
-  "The JavaScript source carried by a data: URL SRC (text or ;base64), or NIL."
-  (let ((body (subseq src 5)))                     ; drop "data:"
-    (let ((comma (position #\, body)))
-      (when comma
-        (let ((meta (subseq body 0 comma)) (data (subseq body (1+ comma))))
-          (if (search ";base64" meta)
-              (base64-decode (percent-decode data))
-              (percent-decode data)))))))
-
-;;; ---------------------------------------------------------------------------
 ;;; Running <script>
 ;;; ---------------------------------------------------------------------------
-(defun script-source (script)
-  "The JavaScript source of a <script> element: its inline text, or a decoded
-   data: URL src. Returns NIL for an (unsupported) external network src."
+(defun script-source (ctx script)
+  "The JavaScript source of a <script> element: its inline text, a decoded
+   data: URL src, or a src fetched through the context loader (or NIL)."
   (let ((src (dom:get-attribute script "src")))
     (cond ((null src) (dom:text-content script))
           ((and (>= (length src) 5) (string-equal (subseq src 0 5) "data:"))
            (data-url-script src))
-          (t nil))))
+          (t (multiple-value-bind (kind content) (load-resource ctx src)
+               (declare (ignore kind))
+               (and (stringp content) content))))))
 
 (defun run-inline-scripts (ctx)
   "Execute every runnable <script> in document order against CTX's realm. A
    script error is reported but does not abort (browser behavior)."
   (let ((realm (context-realm ctx)))
     (dolist (script (dom:get-elements-by-tag-name (context-document ctx) "script"))
-      (let ((source (script-source script)))
+      (let ((source (script-source ctx script)))
         (when (and source (plusp (length source)))
           (setf (context-current-script ctx) script)
           (handler-case (js:eval-script realm source)

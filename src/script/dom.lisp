@@ -189,6 +189,7 @@
   (macrolet ((n (this) `(require-node ctx ,this)))
     (defget ctx np "nodeType" (this) (node-type-of (n this)))
     (defget ctx np "nodeName" (this) (node-name-of (n this) ctx))
+    (defget ctx np "localName" (this) js:*null*)   ; Element overrides; null elsewhere
     (defget ctx np "parentNode" (this) (wrap ctx (h:dnode-parent (n this))))
     (defget ctx np "parentElement" (this)
       (let ((p (h:dnode-parent (n this))))
@@ -309,6 +310,18 @@
     (defget ctx ep "previousElementSibling" (this) (wrap ctx (dom:previous-element-sibling (n this))))
     (defget ctx ep "childElementCount" (this) (num (dom:child-element-count (n this))))
     (defget ctx ep "style" (this) (element-style-object ctx (n this)))
+    ;; src/data reflect their attribute and, for a browsing context (iframe/
+    ;; object/frame), start loading the referenced document.
+    (defgetset ctx ep "src" (this) (or (get-attr (n this) "src") "")
+      (v) (let ((node (n this)))
+            (set-attr node "src" (jstr v)) (setf (context-dirty ctx) t)
+            (when (member (h:dnode-name node) '("iframe" "frame") :test #'string=)
+              (load-frame ctx node (jstr v)))))
+    (defgetset ctx ep "data" (this) (or (get-attr (n this) "data") "")
+      (v) (let ((node (n this)))
+            (set-attr node "data" (jstr v)) (setf (context-dirty ctx) t)
+            (when (string= (h:dnode-name node) "object")
+              (load-frame ctx node (jstr v)))))
     ;; HTMLFormElement.elements / .length (live, with named access).
     (defget ctx ep "elements" (this)
       (let ((node (n this)))
@@ -504,13 +517,34 @@
     (defmethod* ctx dp "createDocumentFragment" 0 (this a) (new-node ctx this (h:make-fragment)))
     (defmethod* ctx dp "createEvent" 1 (this a) (make-event-object ctx "" nil))
     (defmethod* ctx dp "write" 1 (this a)
-      (dom-write ctx (apply #'concatenate 'string (mapcar #'jstr a))) js:*undefined*)
-    (defmethod* ctx dp "writeln" 1 (this a)
-      (dom-write ctx (concatenate 'string (apply #'concatenate 'string (mapcar #'jstr a)) (string #\Newline)))
+      (document-write* ctx (n this) (apply #'concatenate 'string (mapcar #'jstr a)))
       js:*undefined*)
-    (defmethod* ctx dp "open" 0 (this a) (js:js-get (proto ctx :window) "document"))
-    (defmethod* ctx dp "close" 0 (this a) js:*undefined*)
+    (defmethod* ctx dp "writeln" 1 (this a)
+      (document-write* ctx (n this)
+                       (concatenate 'string (apply #'concatenate 'string (mapcar #'jstr a)) (string #\Newline)))
+      js:*undefined*)
+    (defmethod* ctx dp "open" 0 (this a)
+      (let ((doc (n this)))
+        (loop for c across (h:dnode-children doc) do (setf (h:dnode-parent c) nil))
+        (setf (fill-pointer (h:dnode-children doc)) 0)
+        (setf (gethash doc (context-write-buffers ctx)) "" (context-dirty ctx) t))
+      (wrap ctx (n this)))
+    (defmethod* ctx dp "close" 0 (this a)
+      (let ((doc (n this)))
+        (multiple-value-bind (buf active) (gethash doc (context-write-buffers ctx))
+          (when active
+            (document-replace ctx doc buf)
+            (remhash doc (context-write-buffers ctx)))))
+      js:*undefined*)
     (defget ctx dp "implementation" (this) (dom-implementation ctx))))
+
+(defun document-write* (ctx doc source)
+  "document.write: buffer into an open() document, else splice at the running
+   <script> (the classic in-parse write)."
+  (multiple-value-bind (buf active) (gethash doc (context-write-buffers ctx))
+    (if active
+        (setf (gethash doc (context-write-buffers ctx)) (concatenate 'string buf source))
+        (dom-write ctx source))))
 
 (defun valid-qname-p (qname)
   "A qualified name: an optional single prefix and a local part, each a valid
@@ -579,6 +613,13 @@
         (let ((b (find-tag (context-document ctx) "body")))
           (when b (dolist (nd nodes) (h:dom-remove nd) (h:dom-append b nd)))))
     (setf (context-dirty ctx) t)))
+
+(defun install-doctype-proto (ctx dtp)
+  (macrolet ((n (this) `(require-node ctx ,this)))
+    (defget ctx dtp "name" (this) (or (h:dnode-name (n this)) ""))
+    (defget ctx dtp "publicId" (this) (or (h:dnode-public (n this)) ""))
+    (defget ctx dtp "systemId" (this) (or (h:dnode-system (n this)) ""))
+    (defget ctx dtp "internalSubset" (this) js:*null*)))
 
 (defun find-tag (root tag)
   (first (dom:get-elements-by-tag-name root tag)))

@@ -27,6 +27,7 @@
            #:parse-html #:serialize-tree #:make-document
            #:dnode #:dnode-kind #:dnode-name #:dnode-attrs #:dnode-data
            #:dnode-children #:dnode-parent #:dnode-namespace
+           #:dnode-public #:dnode-system
            ;; node constructors + mutation kernel (the DOM-scripting seam)
            #:make-element #:make-text #:make-comment #:make-fragment #:make-doctype
            #:dom-append #:dom-insert-before #:dom-remove

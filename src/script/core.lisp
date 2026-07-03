@@ -30,6 +30,10 @@
   (ns-info (make-hash-table :test 'eq))     ; element dnode -> (:ns uri :prefix p :local l) for createElementNS
   (owner-docs (make-hash-table :test 'eq))  ; created node -> its owner document (even while detached)
   (input-values (make-hash-table :test 'eq)) ; <input> node -> its independent value property
+  (on-handlers (make-hash-table :test 'eq))  ; node -> (equal hash "type" -> handler fn)
+  (write-buffers (make-hash-table :test 'eq)) ; document node -> pending document.write buffer (open())
+  (base "")                 ; base URL/directory for resolving subresource references
+  (loader nil)              ; (ctx url) -> (values kind content); NIL disables file/network loads
   (current-script nil)      ; the <script> node currently executing (for document.write)
   (dirty nil))              ; a DOM mutation happened; styles cache is stale
 
@@ -61,7 +65,7 @@
 (defun proto-key-for (node)
   (case (h:dnode-kind node)
     (:element :element) (:document :document) (:text :text)
-    (:comment :comment) (:fragment :fragment) (t :node)))
+    (:comment :comment) (:fragment :fragment) (:doctype :doctype) (t :node)))
 
 (defun wrap (ctx node)
   "The JS wrapper for weft NODE, memoized (DOM object identity). NIL -> JS null."

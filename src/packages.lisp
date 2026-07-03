@@ -26,7 +26,11 @@
            ;; DOM + tree construction
            #:parse-html #:serialize-tree #:make-document
            #:dnode #:dnode-kind #:dnode-name #:dnode-attrs #:dnode-data
-           #:dnode-children #:dnode-parent #:dnode-namespace))
+           #:dnode-children #:dnode-parent #:dnode-namespace
+           ;; node constructors + mutation kernel (the DOM-scripting seam)
+           #:make-element #:make-text #:make-comment
+           #:dom-append #:dom-insert-before #:dom-remove
+           #:dom-last-child #:dom-prev-sibling))
 
 (defpackage #:weft.dom
   (:use #:cl)

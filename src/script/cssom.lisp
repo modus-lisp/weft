@@ -174,6 +174,78 @@
                     (store alist))))
                js:*true*)))))
 
+;;; ---- CSSOM: document.styleSheets / CSSStyleSheet / CSSRuleList ------------
+(defun stylesheet-owner-p (el)
+  (or (string= (h:dnode-name el) "style")
+      (and (string= (h:dnode-name el) "link")
+           (let ((rel (dom:get-attribute el "rel"))) (and rel (search "stylesheet" (string-downcase rel)))))))
+
+(defun style-elements (doc)
+  (remove-if-not #'stylesheet-owner-p (dom:get-elements-by-tag-name doc "*")))
+
+(defun computed-px (ctx node prop)
+  "The integer pixel value of computed PROP on NODE (0 if auto/none/absent)."
+  (let* ((doc (owner-document node)) (cs (and doc (gethash node (document-styles ctx doc)))))
+    (if cs (let* ((v (computed-prop cs prop))
+                  (end (position-if-not (lambda (c) (or (digit-char-p c) (char= c #\.))) v)))
+             (or (ignore-errors (round (read-from-string (subseq v 0 (or end (length v)))))) 0))
+        0)))
+
+(defun sheet-rule-count (owner)
+  (length (css:parse-stylesheet (dom:text-content owner))))
+
+(defun make-rule-list (ctx owner)
+  "A live CSSRuleList over OWNER (<style>)'s current rules."
+  (let ((realm (context-realm ctx)))
+    (js:make-host-object realm
+      :get (lambda (o key rcv) (declare (ignore rcv))
+             (let ((key (js:to-property-key key)))
+               (cond ((and (stringp key) (string= key "length")) (num (sheet-rule-count owner)))
+                     ((index-string-p key)
+                      (let* ((rules (css:parse-stylesheet (dom:text-content owner)))
+                             (i (parse-integer key)))
+                        (if (< i (length rules)) (make-css-rule ctx (nth i rules)) js:*undefined*)))
+                     (t (js:js-get (js:js-object-proto o) key o))))))))
+
+(defun make-css-rule (ctx rule)
+  (let ((o (js:make-host-object (context-realm ctx))))
+    (js:put o "type" 1.0)
+    (js:put o "selectorText" (or (css:css-rule-selector rule) ""))
+    (js:put o "cssText"
+            (format nil "~a { ~{~a: ~a;~^ ~} }" (or (css:css-rule-selector rule) "")
+                    (loop for d in (css:css-rule-decls rule)
+                          collect (css:css-decl-prop d) collect (css:css-decl-value d))))
+    o))
+
+(defun make-stylesheet-object (ctx owner)
+  (let* ((realm (context-realm ctx)) (sheet (js:make-host-object realm)))
+    (js:put sheet "ownerNode" (wrap ctx owner))
+    (js:put sheet "href" (let ((h (dom:get-attribute owner "href")))
+                           (if (and h (string= (h:dnode-name owner) "link")) h js:*null*)))
+    (js:put sheet "type" "text/css")
+    (js:put sheet "title" js:*null*)
+    (js:put sheet "cssRules" (make-rule-list ctx owner))
+    (js:put sheet "rules" (make-rule-list ctx owner))
+    (defmethod* ctx sheet "insertRule" 2 (this a)
+      ;; append the rule to the owner's text (last => wins for equal specificity);
+      ;; the harness inserts at the end.
+      (h:dom-append owner (h:make-text (jstr (arg a 0))))
+      (setf (context-dirty ctx) t)
+      (num (int-arg a 1)))
+    (defmethod* ctx sheet "deleteRule" 1 (this a) js:*undefined*)
+    sheet))
+
+(defun make-stylesheet-list (ctx doc)
+  (let ((realm (context-realm ctx)))
+    (js:make-host-object realm
+      :get (lambda (o key rcv) (declare (ignore rcv))
+             (let ((key (js:to-property-key key)) (sheets (style-elements doc)))
+               (cond ((and (stringp key) (string= key "length")) (num (length sheets)))
+                     ((index-string-p key)
+                      (let ((i (parse-integer key)))
+                        (if (< i (length sheets)) (make-stylesheet-object ctx (nth i sheets)) js:*undefined*)))
+                     (t (js:js-get (js:js-object-proto o) key o))))))))
+
 (defun install-cssom (ctx)
   (let* ((realm (context-realm ctx))
          (gcs (js:native-function realm "getComputedStyle"

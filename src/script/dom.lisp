@@ -367,6 +367,18 @@
       (let ((node (n this)))
         (if (string= (h:dnode-name node) "form")
             (num (length (form-controls node))) js:*undefined*)))
+    ;; img/iframe/object/canvas/embed height/width: the rendered (computed) box,
+    ;; settable via the content attribute.
+    (defgetset ctx ep "height" (this)
+      (let ((node (n this)))
+        (if (member (h:dnode-name node) '("img" "iframe" "object" "canvas" "embed" "video") :test #'string=)
+            (num (computed-px ctx node "height")) js:*undefined*))
+      (v) (progn (set-attr (n this) "height" (jstr v)) (setf (context-dirty ctx) t)))
+    (defgetset ctx ep "width" (this)
+      (let ((node (n this)))
+        (if (member (h:dnode-name node) '("img" "iframe" "object" "canvas" "embed" "video") :test #'string=)
+            (num (computed-px ctx node "width")) js:*undefined*))
+      (v) (progn (set-attr (n this) "width" (jstr v)) (setf (context-dirty ctx) t)))
     ;; HTMLSelectElement.options / .add() / .selectedIndex.
     (defget ctx ep "options" (this)
       (let ((node (n this)))
@@ -533,6 +545,7 @@
                                (remove-if-not (lambda (e) (dom:has-attribute e "name"))
                                               (dom:get-elements-by-tag-name node "a"))))))
     (defget ctx dp "defaultView" (this) (proto ctx :window))
+    (defget ctx dp "styleSheets" (this) (make-stylesheet-list ctx (n this)))
     (defgetset ctx dp "title" (this)
       (let ((tn (find-tag (n this) "title"))) (if tn (dom:text-content tn) ""))
       (v) (let* ((doc (n this)) (tn (find-tag doc "title")))

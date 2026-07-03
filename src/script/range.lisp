@@ -177,6 +177,27 @@
              (context-ranges ctx))
     new))
 
+(defun inclusive-descendant-p (c anc)
+  (loop for n = c then (h:dnode-parent n) while n thereis (eq n anc)))
+
+(defun adjust-ranges-for-removal (ctx node)
+  "Live-range fixup for removing NODE (call while NODE is still attached): a
+   boundary inside NODE moves to (oldParent, oldIndex); a boundary in the parent
+   past NODE's index shifts left one."
+  (let ((parent (h:dnode-parent node)))
+    (when parent
+      (let ((index (node-index node)))
+        (maphash
+         (lambda (obj rr) (declare (ignore obj))
+           (flet ((fix (getc setc geto seto)
+                    (let ((c (funcall getc rr)) (o (funcall geto rr)))
+                      (cond ((inclusive-descendant-p c node)
+                             (funcall setc parent) (funcall seto index))
+                            ((and (eq c parent) (> o index)) (funcall seto (1- o)))))))
+             (fix #'rg-sc (lambda (v) (setf (rg-sc rr) v)) #'rg-so (lambda (v) (setf (rg-so rr) v)))
+             (fix #'rg-ec (lambda (v) (setf (rg-ec rr) v)) #'rg-eo (lambda (v) (setf (rg-eo rr) v)))))
+         (context-ranges ctx))))))
+
 ;;; ---- installation ---------------------------------------------------------
 (defun install-range-proto (ctx rp)
   (macrolet ((r (this) `(rg-of ctx ,this)))

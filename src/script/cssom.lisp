@@ -32,6 +32,7 @@
       ((string= dashed "overflow") (s css:cstyle-overflow))
       ((string= dashed "text-align") (s css:cstyle-text-align))
       ((string= dashed "cursor") (s css:cstyle-cursor))
+      ((string= dashed "text-transform") (s css:cstyle-text-transform))
       ((string= dashed "box-sizing") (s css:cstyle-box-sizing))
       ((string= dashed "font-style") (s css:cstyle-font-style))
       ((string= dashed "z-index") (let ((z (s css:cstyle-z-index)))
@@ -66,6 +67,27 @@
         (t (camel->dash key))))
 
 ;;; ---- getComputedStyle -----------------------------------------------------
+(defun %inline-length-px (style prop)
+  "The pixel value of PROP in inline STYLE (e.g. width: 100px -> 100.0), or NIL."
+  (let ((cell (assoc prop (parse-inline-style style) :test #'string=)))
+    (when cell
+      (let* ((v (cdr cell))
+             (end (position-if-not (lambda (c) (or (digit-char-p c) (member c '(#\. #\-)))) v)))
+        (ignore-errors (float (read-from-string (subseq v 0 (or end (length v))))))))))
+
+(defun frame-viewport (ctx doc)
+  "The (width height) media viewport of a subframe DOC, from its owning iframe/
+   object element's inline size; 0x0 when unknown."
+  (let ((el (block found
+              (maphash (lambda (k v) (when (eq v doc) (return-from found k)))
+                       (context-iframe-docs ctx))
+              nil)))
+    (if el
+        (let ((style (or (get-attr el "style") "")))
+          (values (or (%inline-length-px style "width") 0.0)
+                  (or (%inline-length-px style "height") 0.0)))
+        (values 0.0 0.0))))
+
 (defun document-styles (ctx doc)
   "The computed-style hash for document DOC (cached; recomputed after a
    DOM/attr mutation marks the context dirty)."
@@ -73,12 +95,19 @@
     (clrhash (context-styles ctx))
     (setf (context-dirty ctx) nil))
   (or (gethash doc (context-styles ctx))
-      (let ((sheet (css:parse-stylesheet
-                    (concatenate 'string
-                                 (if (eq doc (context-document ctx)) (or (context-css ctx) "") "")
-                                 (string #\Newline)
-                                 (weft.render::collect-stylesheets doc)))))
-        (setf (gethash doc (context-styles ctx)) (css:compute-styles doc sheet)))))
+      ;; @media evaluates against the document's viewport: the layout width for
+      ;; the top document, and a subframe document's owning iframe/object box.
+      ;; The prelude is evaluated while the sheet is parsed, so bind the viewport
+      ;; around parsing too.
+      (multiple-value-bind (fw fh) (frame-viewport ctx doc)
+       (let ((css::*viewport-w* (if (eq doc (context-document ctx)) (float (context-width ctx)) fw))
+             (css::*viewport-h* (if (eq doc (context-document ctx)) 600.0 fh)))
+        (let ((sheet (css:parse-stylesheet
+                      (concatenate 'string
+                                   (if (eq doc (context-document ctx)) (or (context-css ctx) "") "")
+                                   (string #\Newline)
+                                   (weft.render::collect-stylesheets doc)))))
+          (setf (gethash doc (context-styles ctx)) (css:compute-styles doc sheet)))))))
 
 (defun owner-document (node)
   (loop for p = node then (h:dnode-parent p)

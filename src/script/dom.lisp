@@ -12,16 +12,19 @@
          (:element 1) (:text 3) (:comment 8) (:document 9)
          (:doctype 10) (:fragment 11) (t 1))))
 
-(defun element-tag-name (node)
-  "tagName/nodeName for an element: uppercased for HTML, case-preserved otherwise
-   (XML namespaces are case-sensitive)."
-  (if (eq (h:dnode-namespace node) :html)
-      (string-upcase (h:dnode-name node))
-      (h:dnode-name node)))
+(defvar *html-ns* "http://www.w3.org/1999/xhtml")
 
-(defun node-name-of (node)
+(defun element-tag-name (node &optional ctx)
+  "tagName/nodeName for an element: uppercased for an HTML-namespace element,
+   case-preserved otherwise (XML namespaces are case-sensitive)."
+  (let ((info (and ctx (gethash node (context-ns-info ctx)))))
+    (cond (info (getf info :qname))
+          ((eq (h:dnode-namespace node) :html) (string-upcase (h:dnode-name node)))
+          (t (h:dnode-name node)))))
+
+(defun node-name-of (node &optional ctx)
   (case (h:dnode-kind node)
-    (:element (element-tag-name node))
+    (:element (element-tag-name node ctx))
     (:text "#text") (:comment "#comment") (:document "#document")
     (:fragment "#document-fragment")
     (:doctype (or (h:dnode-name node) "")) (t "")))
@@ -82,6 +85,12 @@
           (h:dom-append node (h:make-text text))))))
 
 (defun dom-detach (node) (when (h:dnode-parent node) (h:dom-remove node)))
+
+(defun new-node (ctx doc-obj node)
+  "Wrap a freshly created NODE, recording its owner document (the document whose
+   factory made it) so ownerDocument is correct even while the node is detached."
+  (setf (gethash node (context-owner-docs ctx)) (require-node ctx doc-obj))
+  (wrap ctx node))
 
 (defun insert-into (parent node ref)
   "Insert NODE (or, if NODE is a fragment, each of its children) into PARENT
@@ -158,15 +167,18 @@
 (defun install-node-proto (ctx np)
   (macrolet ((n (this) `(require-node ctx ,this)))
     (defget ctx np "nodeType" (this) (node-type-of (n this)))
-    (defget ctx np "nodeName" (this) (node-name-of (n this)))
+    (defget ctx np "nodeName" (this) (node-name-of (n this) ctx))
     (defget ctx np "parentNode" (this) (wrap ctx (h:dnode-parent (n this))))
     (defget ctx np "parentElement" (this)
       (let ((p (h:dnode-parent (n this))))
         (wrap ctx (and p (eq (h:dnode-kind p) :element) p))))
     (defget ctx np "ownerDocument" (this)
-      (loop for p = (h:dnode-parent (n this)) then (h:dnode-parent p)
-            while p when (eq (h:dnode-kind p) :document) return (wrap ctx p)
-            finally (return js:*null*)))
+      (let ((node (n this)))
+        (cond ((eq (h:dnode-kind node) :document) js:*null*)
+              ((gethash node (context-owner-docs ctx)) (wrap ctx (gethash node (context-owner-docs ctx))))
+              (t (loop for p = (h:dnode-parent node) then (h:dnode-parent p)
+                       while p when (eq (h:dnode-kind p) :document) return (wrap ctx p)
+                       finally (return js:*null*))))))
     (defget ctx np "firstChild" (this)
       (let ((ch (h:dnode-children (n this))))
         (if (plusp (length ch)) (wrap ctx (aref ch 0)) js:*null*)))
@@ -238,8 +250,18 @@
 ;;; ---------------------------------------------------------------------------
 (defun install-element-proto (ctx ep)
   (macrolet ((n (this) `(require-node ctx ,this)))
-    (defget ctx ep "tagName" (this) (element-tag-name (n this)))
-    (defget ctx ep "localName" (this) (h:dnode-name (n this)))
+    (defget ctx ep "tagName" (this) (element-tag-name (n this) ctx))
+    (defget ctx ep "localName" (this)
+      (let ((info (gethash (n this) (context-ns-info ctx))))
+        (if info (getf info :local) (h:dnode-name (n this)))))
+    (defget ctx ep "prefix" (this)
+      (let ((info (gethash (n this) (context-ns-info ctx))))
+        (if (and info (getf info :prefix)) (getf info :prefix) js:*null*)))
+    (defget ctx ep "namespaceURI" (this)
+      (let ((info (gethash (n this) (context-ns-info ctx))))
+        (cond (info (or (getf info :ns) js:*null*))
+              ((eq (h:dnode-namespace (n this)) :html) *html-ns*)
+              (t js:*null*))))
     (defgetset ctx ep "id" (this) (or (get-attr (n this) "id") "")
       (v) (progn (set-attr (n this) "id" v) (setf (context-dirty ctx) t)))
     (defgetset ctx ep "className" (this) (or (get-attr (n this) "class") "")
@@ -325,19 +347,26 @@
       (let ((name (jstr (arg a 0))))
         (unless (valid-name-p name)
           (throw-dom ctx "InvalidCharacterError" 5 "invalid element name"))
-        (wrap ctx (h:make-element (string-downcase name)))))
+        (new-node ctx this (h:make-element (string-downcase name)))))
     (defmethod* ctx dp "createElementNS" 2 (this a)
-      (let ((ns (jstr (arg a 0))) (name (jstr (arg a 1))))
-        (unless (valid-name-p name)
+      (let* ((nsv (arg a 0)) (ns (if (nullish nsv) nil (jstr nsv))) (name (jstr (arg a 1)))
+             (colon (position #\: name)))
+        (unless (and (plusp (length name))
+                     (name-start-char-p (char name (if colon (1+ colon) 0))))
           (throw-dom ctx "InvalidCharacterError" 5 "invalid element name"))
-        ;; A namespaced element keeps the given case (XML is case-sensitive);
-        ;; only the HTML parser lowercases.
-        (wrap ctx (h:make-element name nil
-                                  (cond ((search "svg" ns) :svg)
-                                        ((search "MathML" ns) :math) (t :html))))))
-    (defmethod* ctx dp "createTextNode" 1 (this a) (wrap ctx (h:make-text (jstr (arg a 0)))))
-    (defmethod* ctx dp "createComment" 1 (this a) (wrap ctx (h:make-comment (jstr (arg a 0)))))
-    (defmethod* ctx dp "createDocumentFragment" 0 (this a) (wrap ctx (h:make-fragment)))
+        ;; A namespaced element keeps the given case (XML is case-sensitive); only
+        ;; the HTML parser lowercases.  Record ns/prefix/localName for reflection.
+        (let ((el (h:make-element name nil
+                                  (cond ((and ns (search "svg" ns)) :svg)
+                                        ((and ns (search "MathML" ns)) :math) (t :html)))))
+          (setf (gethash el (context-ns-info ctx))
+                (list :ns ns :qname name
+                      :prefix (and colon (subseq name 0 colon))
+                      :local (if colon (subseq name (1+ colon)) name)))
+          (new-node ctx this el))))
+    (defmethod* ctx dp "createTextNode" 1 (this a) (new-node ctx this (h:make-text (jstr (arg a 0))))) 
+    (defmethod* ctx dp "createComment" 1 (this a) (new-node ctx this (h:make-comment (jstr (arg a 0))))) 
+    (defmethod* ctx dp "createDocumentFragment" 0 (this a) (new-node ctx this (h:make-fragment)))
     (defmethod* ctx dp "createEvent" 1 (this a) (make-event-object ctx "" nil))
     (defmethod* ctx dp "write" 1 (this a)
       (dom-write ctx (apply #'concatenate 'string (mapcar #'jstr a))) js:*undefined*)
@@ -345,7 +374,52 @@
       (dom-write ctx (concatenate 'string (apply #'concatenate 'string (mapcar #'jstr a)) (string #\Newline)))
       js:*undefined*)
     (defmethod* ctx dp "open" 0 (this a) (js:js-get (proto ctx :window) "document"))
-    (defmethod* ctx dp "close" 0 (this a) js:*undefined*)))
+    (defmethod* ctx dp "close" 0 (this a) js:*undefined*)
+    (defget ctx dp "implementation" (this) (dom-implementation ctx))))
+
+(defun valid-qname-p (qname)
+  "A qualified name: an optional single prefix and a local part, each a valid
+   Name, with the colon neither leading nor trailing."
+  (let ((colon (position #\: qname)))
+    (and (plusp (length qname))
+         (or (null (position #\: qname :start (1+ (or colon -1))))  ; at most one colon
+             (null colon))
+         (if colon
+             (and (plusp colon) (< (1+ colon) (length qname))
+                  (name-start-char-p (char qname 0))
+                  (name-start-char-p (char qname (1+ colon))))
+             (name-start-char-p (char qname 0))))))
+
+(defun dom-implementation (ctx)
+  "The shared DOMImplementation object for this context."
+  (or (proto ctx :implementation)
+      (let ((impl (js:make-object :proto (js:eval-script (context-realm ctx) "Object.prototype"))))
+        (setf (proto ctx :implementation) impl)
+        (defmethod* ctx impl "hasFeature" 2 (this a) js:*true*)
+        (defmethod* ctx impl "createDocument" 3 (this a)
+          (let ((d (h:make-document)) (qn (arg a 1)))
+            (unless (nullish qn)
+              (unless (valid-qname-p (jstr qn))
+                (throw-dom ctx "InvalidCharacterError" 5 "invalid qualified name"))
+              (h:dom-append d (h:make-element (jstr qn))))
+            (wrap ctx d)))
+        (defmethod* ctx impl "createHTMLDocument" 1 (this a)
+          (let* ((d (h:make-document)) (html (h:make-element "html"))
+                 (head (h:make-element "head")) (title (h:make-element "title"))
+                 (body (h:make-element "body")))
+            (h:dom-append d html) (h:dom-append html head)
+            (h:dom-append head title) (h:dom-append html body)
+            (unless (js:js-undefined-p (arg a 0))
+              (h:dom-append title (h:make-text (jstr (arg a 0)))))
+            (wrap ctx d)))
+        (defmethod* ctx impl "createDocumentType" 3 (this a)
+          (let ((qname (jstr (arg a 0))))
+            (unless (every (lambda (c) (>= (char-code c) #x21)) qname)
+              (throw-dom ctx "InvalidCharacterError" 5 "invalid doctype name"))
+            (unless (valid-qname-p qname)
+              (throw-dom ctx "NamespaceError" 14 "malformed qualified name"))
+            (wrap ctx (h:make-element qname))))   ; a stand-in DocumentType node
+        impl)))
 
 (defun dom-write (ctx str)
   "document.write: parse STR as an HTML fragment and splice its body-level nodes

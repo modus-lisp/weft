@@ -26,6 +26,8 @@
   (listeners (make-hash-table :test 'eq))   ; dnode -> list of (type listener capture) entries
   (events (make-hash-table :test 'eq))      ; event wrapper object -> its EVT struct
   (traversal (make-hash-table :test 'eq))   ; NodeIterator/TreeWalker wrapper -> its state
+  (ns-info (make-hash-table :test 'eq))     ; element dnode -> (:ns uri :prefix p :local l) for createElementNS
+  (owner-docs (make-hash-table :test 'eq))  ; created node -> its owner document (even while detached)
   (current-script nil)      ; the <script> node currently executing (for document.write)
   (dirty nil))              ; a DOM mutation happened; styles cache is stale
 

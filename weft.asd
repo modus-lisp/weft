@@ -89,7 +89,7 @@
                   :components ((:file "packages") (:file "core") (:file "timers")
                                (:file "events") (:file "cssom") (:file "dom")
                                (:file "traversal") (:file "range") (:file "loader")
-                               (:file "bridge")))))))
+                               (:file "tables") (:file "bridge")))))))
 
 (defsystem "weft/test"
   :depends-on ("weft" "weft/fetch" "weft/render")

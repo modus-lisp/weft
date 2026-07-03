@@ -266,6 +266,12 @@
       (v) (progn (set-attr (n this) "id" v) (setf (context-dirty ctx) t)))
     (defgetset ctx ep "className" (this) (or (get-attr (n this) "class") "")
       (v) (progn (set-attr (n this) "class" v) (setf (context-dirty ctx) t)))
+    ;; Reflected IDL attributes whose property name differs from the content
+    ;; attribute (DOM2 HTML): htmlFor<->for, httpEquiv<->http-equiv.
+    (defgetset ctx ep "htmlFor" (this) (or (get-attr (n this) "for") "")
+      (v) (progn (set-attr (n this) "for" (jstr v)) (setf (context-dirty ctx) t)))
+    (defgetset ctx ep "httpEquiv" (this) (or (get-attr (n this) "http-equiv") "")
+      (v) (progn (set-attr (n this) "http-equiv" (jstr v)) (setf (context-dirty ctx) t)))
     (defget ctx ep "children" (this)
       (let ((node (n this))) (make-collection ctx (lambda () (element-children-list node)))))
     (defget ctx ep "firstElementChild" (this) (wrap ctx (dom:first-element-child (n this))))

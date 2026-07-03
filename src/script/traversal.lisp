@@ -53,20 +53,35 @@
 
 ;;; ---- NodeIterator ---------------------------------------------------------
 (defun ni-traverse (ctx state next-p)
-  (let ((node (ni-ref state)) (before (ni-before state)))
-    (loop
-      (if next-p
-          (if (not before)
-              (let ((f (following node (ni-root state))))
-                (if f (setf node f) (return-from ni-traverse js:*null*)))
-              (setf before nil))
-          (if before
-              (let ((p (preceding node (ni-root state))))
-                (if p (setf node p) (return-from ni-traverse js:*null*)))
-              (setf before t)))
-      (when (= (run-filter ctx (ni-filter state) (ni-what state) node) 1)
+  "WHATWG NodeIterator traverse.  Steps a local (node, before) cursor, but PUBLISHES
+each candidate to the iterator's reference/pointer before running its filter, so a
+NodeFilter that removes a node runs the pre-removing steps against the live cursor
+and their adjustment is picked up on the next step.  A filter that throws leaves the
+iterator's state unchanged (the exception propagates); the reference/pointer commit
+only when a candidate is accepted."
+  (let ((saved-ref (ni-ref state)) (saved-before (ni-before state))
+        (node (ni-ref state)) (before (ni-before state)))
+    (flet ((bail ()                                    ; ran off the subtree: restore, return null
+             (setf (ni-ref state) saved-ref (ni-before state) saved-before)
+             (return-from ni-traverse js:*null*)))
+      (loop
+        (if next-p
+            (if (not before)
+                (let ((f (following node (ni-root state)))) (if f (setf node f) (bail)))
+                (setf before nil))
+            (if before
+                (let ((p (preceding node (ni-root state)))) (if p (setf node p) (bail)))
+                (setf before t)))
+        ;; publish the live cursor so the pre-removing steps see this candidate
         (setf (ni-ref state) node (ni-before state) before)
-        (return-from ni-traverse (wrap ctx node))))))
+        (let ((done nil) (r nil))
+          (unwind-protect
+               (progn (setf r (run-filter ctx (ni-filter state) (ni-what state) node)) (setf done t))
+            (unless done                               ; filter threw: leave state as it began
+              (setf (ni-ref state) saved-ref (ni-before state) saved-before)))
+          (when (= r 1) (return-from ni-traverse (wrap ctx node)))
+          ;; rejected/skipped: resync the cursor to any pre-removing adjustment
+          (setf node (ni-ref state) before (ni-before state)))))))
 
 (defun following-after-subtree (node root)
   "The next node in tree order after NODE's whole subtree, within ROOT (or NIL)."

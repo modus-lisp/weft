@@ -281,12 +281,19 @@
 (defun load-frame (ctx element url)
   "Load URL into ELEMENT's (iframe/object) content document and queue its load
    event. A missing/opaque resource still yields an empty document and a load
-   event (as a browser navigates a frame to an error page). Never signals — a
-   load failure must not take the page's script down."
+   event (as a browser navigates a frame to an error page). An XHTML resource is
+   parsed as XML: a well-formed one runs its http://www.w3.org/1999/xhtml scripts
+   against the parent realm; a malformed one runs none.  Never signals — a load
+   failure must not take the page's script down."
   (let ((content (handler-case (nth-value 1 (load-resource ctx url)) (error () nil))))
     (setf (gethash element (context-iframe-docs ctx))
-          (if content (parse-into-document content)
-              (let ((d (h:make-document))) (h:dom-append d (h:make-element "html")) d)))
+          (cond
+            ((and content (xhtml-content-p content))
+             (multiple-value-bind (doc ok nsmap) (xml-parse-document content)
+               (when ok (run-xhtml-frame-scripts ctx doc nsmap))
+               doc))
+            (content (parse-into-document content))
+            (t (let ((d (h:make-document))) (h:dom-append d (h:make-element "html")) d))))
     (fire-event-later ctx element "load")))
 
 ;;; ---- document.open / write / close (full document replacement) ------------

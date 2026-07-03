@@ -34,6 +34,11 @@
     (js:define-global realm "document" docobj)
     (js:define-global realm "window" window)
     (js:define-global realm "self" window)
+    ;; Single browsing context: parent/top/frames resolve to this window, so a
+    ;; frame document's script (run in this realm) reaches the parent globals.
+    (js:define-global realm "parent" window)
+    (js:define-global realm "top" window)
+    (js:define-global realm "frames" window)
     ;; navigator — the fields feature-detecting scripts read.
     (let ((nav (js:make-object :proto (js:eval-script realm "Object.prototype"))))
       (js:put nav "userAgent" "Mozilla/5.0 (weft)")

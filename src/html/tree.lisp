@@ -461,7 +461,15 @@ Limited-quirks counts as NON-quirks here — only full quirks suppresses e.g.
              ((member name *block-closes-p* :test #'equal)
               (when (in-scope "p" *button-scope*) (close-p))
               (insert-element name (tok-attrs tk)))
-             (t (reconstruct-afe) (insert-element name (tok-attrs tk)))))
+             (t (reconstruct-afe)
+                ;; Foreign content (inside <svg>/<math>): a self-closing start tag
+                ;; (e.g. <rect .../>) is inserted and immediately closed, per the
+                ;; XML content model.  Gated on an svg/math ancestor so ordinary
+                ;; HTML (<div/> etc.) is unaffected — the slash is ignored there.
+                (let ((foreign (some (lambda (el) (member (dnode-name el) '("svg" "math") :test #'equal))
+                                     open)))
+                  (insert-element name (tok-attrs tk))
+                  (when (and foreign (tok-self-closing tk)) (pop open))))))
          (body-end (name)
            (cond
              ((equal name "body") (switch :after-body))

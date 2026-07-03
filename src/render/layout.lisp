@@ -8,7 +8,7 @@
 ;;;; canvas and saved as PNG.
 (in-package #:weft.render)
 
-(defstruct lbox x y w h style node kind children marker img)   ; kind :block | :line; img = decoded IMG
+(defstruct lbox x y w h style node kind children marker img vpaint)   ; kind :block | :line; img = decoded IMG; vpaint = (cv x y w h) replaced-content painter
 (defstruct frag x w text style)                            ; a positioned styled text run on a line
 
 (defvar *floats* nil "Page-scoped float list: each (side left right top bottom).")
@@ -100,6 +100,13 @@ enclosing element(s) (e.g. HN's .hnname margin-right).  Use TOK-META/TOK-SPACE/T
                       ((and (string= (h:dnode-name n) "object") (object-data-image n))
                        (let ((lb (object-box n cs (object-data-image n))))
                          (atom! lb)))
+                      ;; <svg> / <canvas>: replaced vector content, sized to its
+                      ;; intrinsic box (viewBox/width/height for SVG; width/height
+                      ;; attrs for canvas) and composited during paint.
+                      ((string= (h:dnode-name n) "svg")
+                       (atom! (svg-box n cs)))
+                      ((string= (h:dnode-name n) "canvas")
+                       (atom! (canvas-box n cs)))
                       ((and cs (member (cdisplay cs) '("inline-block" "flex" "table") :test #'string=))
                        (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
                          (declare (ignore adv))
@@ -238,6 +245,32 @@ and borders paint behind/around the image."
                :style cs :kind :block
                :children (list (make-lbox :x (+ bl pl) :y (+ bt pt) :w iw :h ih
                                           :style inner :kind :block :img decoded)))))
+
+(defun svg-box (node cs)
+  "An atomic replaced box for an inline <svg>: intrinsic size from a CSS px width/
+height, else the SVG's own width/height attrs or viewBox extent (via stencil).
+The subtree is rendered through stencil+gesso during paint."
+  (let ((root (dnode->svg-node node)))
+    (multiple-value-bind (iw ih) (st:svg-intrinsic-size root)
+      (let* ((cw (let ((s (css::resolve-size (css:cstyle-width cs) 300))) (and (numberp s) s)))
+             (chh (let ((s (css::resolve-size (css:cstyle-height cs) 150))) (and (numberp s) s)))
+             (w (max 1 (round (or cw iw)))) (h (max 1 (round (or chh ih)))))
+        (make-lbox :x 0 :y 0 :w w :h h :style cs :node node :kind :block
+                   :vpaint (lambda (cv x y bw bh) (declare (ignore bw bh))
+                             (paint-svg-box cv x y w h root)))))))
+
+(defun canvas-box (node cs)
+  "An atomic replaced box for <canvas>: sized to its width/height attrs (default
+300x150).  Its gesso-backed buffer, drawn by page script, is blitted during paint."
+  (let* ((w (max 1 (or (img-attr-num node "width")
+                       (let ((s (css::resolve-size (css:cstyle-width cs) 300))) (and (numberp s) (round s)))
+                       300)))
+         (h (max 1 (or (img-attr-num node "height")
+                       (let ((s (css::resolve-size (css:cstyle-height cs) 150))) (and (numberp s) (round s)))
+                       150))))
+    (make-lbox :x 0 :y 0 :w w :h h :style cs :node node :kind :block
+               :vpaint (lambda (cv x y bw bh) (declare (ignore bw bh))
+                         (paint-canvas-box cv x y node)))))
 
 (defun make-pseudo-node (content)
   "A synthetic inline element carrying generated CONTENT as its only text child,
@@ -1447,6 +1480,11 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
          (when (lbox-img lb)
            (blit-img cv (lbox-img lb) (round (lbox-x lb)) (round (lbox-y lb))
                      (round (lbox-w lb)) (round (lbox-h lb))))
+         ;; Replaced vector content (inline <svg>, <canvas>): composite over the
+         ;; box's background, under its borders.
+         (when (lbox-vpaint lb)
+           (funcall (lbox-vpaint lb) cv (round (lbox-x lb)) (round (lbox-y lb))
+                    (round (lbox-w lb)) (round (lbox-h lb))))
          (paint-borders cv lb cs)
          (when (and (lbox-marker lb) (plusp (length (marker-glyph (lbox-marker lb)))))
            ;; the list marker (•, disc/circle/square) is painted via scribe so the
@@ -1544,6 +1582,9 @@ Two height models:
     viewport coordinates."
   (let* ((css::*viewport-w* (float width))                 ; vw / vmin / vmax basis
          (css::*viewport-h* (float (or viewport-height 600))) ; vh basis
+         ;; Fresh per render: <canvas> buffers registered by the scripting seam
+         ;; during BEFORE-LAYOUT are read back at paint; never leak across pages.
+         (*element-canvas* (make-hash-table :test 'eq))
          (doc (h:parse-html html))
          ;; Optional pre-layout hook: a consumer (weft/script) runs inline
          ;; <script> against the freshly parsed DOM here, so the cascade and

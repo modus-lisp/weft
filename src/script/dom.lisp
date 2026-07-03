@@ -408,6 +408,19 @@
     ;; can build into (Acid3's getTestDocument path).
     (defget ctx ep "contentDocument" (this) (content-document ctx (n this)))
     (defget ctx ep "contentWindow" (this) (proto ctx :window))
+    ;; GetSVGDocument: an <iframe>/<object> referencing an SVG document exposes it
+    ;; via getSVGDocument() (== contentDocument).  Clears Acid3 74.
+    (defmethod* ctx ep "getSVGDocument" 0 (this a)
+      (let ((node (n this)))
+        (if (member (h:dnode-name node) '("iframe" "object" "embed" "frame") :test #'string=)
+            (content-document ctx node)
+            js:*undefined*)))
+    ;; <canvas>.getContext('2d') -> a CanvasRenderingContext2D over gesso.
+    (defmethod* ctx ep "getContext" 1 (this a)
+      (let ((node (n this)))
+        (if (string= (h:dnode-name node) "canvas")
+            (canvas-rendering-context ctx node (arg a 0))
+            js:*null*)))
 
     (defmethod* ctx ep "getAttribute" 1 (this a)
       (let ((name (jstr (arg a 0))))

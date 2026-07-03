@@ -59,6 +59,7 @@
     (install-chardata-proto ctx cp)
     (install-on-handlers ctx ep)
     (install-on-handlers ctx dp)
+    (install-table-interfaces ctx ep)
     (install-event-proto ctx evp)
     (install-events ctx np)
     (install-cssom ctx)

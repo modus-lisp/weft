@@ -153,6 +153,30 @@
                (rg-set-end r (rg-sc r) (rg-so r))))
     (setf (context-dirty ctx) t)))
 
+(defun split-text (ctx node offset)
+  "Split Text NODE at OFFSET: NODE keeps [0,offset), a new Text node takes the
+   rest and is inserted right after it. Live ranges are adjusted. Returns the new
+   node (the second half)."
+  (let* ((d (or (h:dnode-data node) "")) (new (h:make-text (subseq d offset)))
+         (parent (h:dnode-parent node)) (idx (and parent (node-index node))))
+    (setf (h:dnode-data node) (subseq d 0 offset))
+    (when parent
+      (let ((ref (n-next-sib node)))
+        (if ref (h:dom-insert-before parent new ref) (h:dom-append parent new))))
+    ;; adjust every range boundary that falls in NODE past OFFSET, or in PARENT
+    ;; after NODE's index (a child was inserted).
+    (maphash (lambda (obj rr) (declare (ignore obj))
+               (flet ((fix-c (getc setc geto seto)
+                        (let ((c (funcall getc rr)) (o (funcall geto rr)))
+                          (cond ((and (eq c node) (> o offset))
+                                 (funcall setc new) (funcall seto (- o offset)))
+                                ((and parent (eq c parent) (> o idx))
+                                 (funcall seto (1+ o)))))))
+                 (fix-c #'rg-sc (lambda (v) (setf (rg-sc rr) v)) #'rg-so (lambda (v) (setf (rg-so rr) v)))
+                 (fix-c #'rg-ec (lambda (v) (setf (rg-ec rr) v)) #'rg-eo (lambda (v) (setf (rg-eo rr) v)))))
+             (context-ranges ctx))
+    new))
+
 ;;; ---- installation ---------------------------------------------------------
 (defun install-range-proto (ctx rp)
   (macrolet ((r (this) `(rg-of ctx ,this)))
@@ -214,17 +238,15 @@
     (defmethod* ctx rp "extractContents" 0 (this a) (rg-extract-contents ctx (r this)))
     (defmethod* ctx rp "deleteContents" 0 (this a) (rg-delete-contents ctx (r this)) js:*undefined*)
     (defmethod* ctx rp "insertNode" 1 (this a)
-      (let* ((rr (r this)) (node (require-node ctx (arg a 0))) (c (rg-sc rr)) (o (rg-so rr)))
-        (if (char-data-p c)
-            (let* ((d (h:dnode-data c)) (parent (h:dnode-parent c))
-                   (after (h:make-text (subseq d o))))
-              (setf (h:dnode-data c) (subseq d 0 o))
-              (when parent
-                (let ((ref (n-next-sib c)))
-                  (if ref (h:dom-insert-before parent after ref) (h:dom-append parent after))
-                  (if (n-next-sib c) (h:dom-insert-before parent node (n-next-sib c)) (h:dom-append parent node)))))
-            (let ((ref (let ((ch (h:dnode-children c))) (when (< o (length ch)) (aref ch o)))))
-              (insert-into c node ref)))
+      (let* ((rr (r this)) (node (require-node ctx (arg a 0)))
+             (c (rg-sc rr)) (o (rg-so rr))
+             (parent (if (char-data-p c) (h:dnode-parent c) c))
+             (ref (if (char-data-p c)
+                      (split-text ctx c o)          ; ref = the second half
+                      (let ((ch (h:dnode-children c))) (when (< o (length ch)) (aref ch o))))))
+        (when (eq node ref) (setf ref (n-next-sib node)))
+        (dom-detach node)
+        (if ref (h:dom-insert-before parent node ref) (h:dom-append parent node))
         (setf (context-dirty ctx) t)
         js:*undefined*))))
 

@@ -12,15 +12,62 @@
          (:element 1) (:text 3) (:comment 8) (:document 9)
          (:doctype 10) (:fragment 11) (t 1))))
 
+(defun element-tag-name (node)
+  "tagName/nodeName for an element: uppercased for HTML, case-preserved otherwise
+   (XML namespaces are case-sensitive)."
+  (if (eq (h:dnode-namespace node) :html)
+      (string-upcase (h:dnode-name node))
+      (h:dnode-name node)))
+
 (defun node-name-of (node)
   (case (h:dnode-kind node)
-    (:element (string-upcase (h:dnode-name node)))
+    (:element (element-tag-name node))
     (:text "#text") (:comment "#comment") (:document "#document")
     (:fragment "#document-fragment")
     (:doctype (or (h:dnode-name node) "")) (t "")))
 
 (defun char-data-p (node)
   (member (h:dnode-kind node) '(:text :comment)))
+
+;;; ---- DOMException ---------------------------------------------------------
+(defparameter +dom-codes+
+  '(("INDEX_SIZE_ERR" . 1) ("DOMSTRING_SIZE_ERR" . 2) ("HIERARCHY_REQUEST_ERR" . 3)
+    ("WRONG_DOCUMENT_ERR" . 4) ("INVALID_CHARACTER_ERR" . 5) ("NO_DATA_ALLOWED_ERR" . 6)
+    ("NO_MODIFICATION_ALLOWED_ERR" . 7) ("NOT_FOUND_ERR" . 8) ("NOT_SUPPORTED_ERR" . 9)
+    ("INUSE_ATTRIBUTE_ERR" . 10) ("INVALID_STATE_ERR" . 11) ("SYNTAX_ERR" . 12)
+    ("INVALID_MODIFICATION_ERR" . 13) ("NAMESPACE_ERR" . 14) ("INVALID_ACCESS_ERR" . 15)
+    ("VALIDATION_ERR" . 16) ("TYPE_MISMATCH_ERR" . 17) ("SECURITY_ERR" . 18)
+    ("NETWORK_ERR" . 19) ("ABORT_ERR" . 20) ("URL_MISMATCH_ERR" . 21)
+    ("QUOTA_EXCEEDED_ERR" . 22) ("TIMEOUT_ERR" . 23) ("INVALID_NODE_TYPE_ERR" . 24)
+    ("DATA_CLONE_ERR" . 25)))
+
+(defun make-dom-exception (ctx name code message)
+  (let ((o (js:make-object :proto (js:eval-script (context-realm ctx) "Error.prototype"))))
+    (js:put o "name" name :enumerable nil)
+    (js:put o "message" message :enumerable nil)
+    (js:put o "code" (num code) :enumerable nil)
+    (dolist (p +dom-codes+) (js:put o (car p) (num (cdr p)) :enumerable nil :writable nil))
+    o))
+
+(defun throw-dom (ctx name code message)
+  (js:js-throw (make-dom-exception ctx name code message)))
+
+(defun ancestor-or-self-p (a node)
+  "T if A is NODE or an ancestor of NODE."
+  (loop for p = node then (h:dnode-parent p) while p thereis (eq p a)))
+
+(defun name-start-char-p (c)
+  (or (alpha-char-p c) (member c '(#\_ #\:))))
+(defun valid-name-p (name)
+  "A conservative XML Name check: non-empty, a letter/_/: start, and no control
+   char, space or markup delimiter (rejects null bytes and digit-led names, per
+   Acid3 tests 20/22/23)."
+  (and (plusp (length name))
+       (name-start-char-p (char name 0))
+       (every (lambda (c) (let ((cc (char-code c)))
+                            (and (>= cc #x21)
+                                 (not (member c '(#\< #\> #\& #\" #\' #\/ #\= #\Space))))))
+              name)))
 
 ;;; ---- structural mutation (weft side) --------------------------------------
 (defun set-text-content (node text)
@@ -89,14 +136,15 @@
                  1)))
     (js:make-host-object realm
       :get (lambda (o key rcv) (declare (ignore rcv))
-             (cond
-               ((and (stringp key) (string= key "length"))
-                (num (length (funcall list-fn))))
-               ((index-string-p key)
-                (let ((i (parse-integer key)) (l (funcall list-fn)))
-                  (if (< i (length l)) (wrap ctx (nth i l)) js:*undefined*)))
-               ((and (stringp key) (string= key "item")) item)
-               (t (js:js-get (js:js-object-proto o) key o)))))))
+             (let ((key (js:to-property-key key)))   ; obj[0] arrives as a number
+               (cond
+                 ((and (stringp key) (string= key "length"))
+                  (num (length (funcall list-fn))))
+                 ((index-string-p key)
+                  (let ((i (parse-integer key)) (l (funcall list-fn)))
+                    (if (< i (length l)) (wrap ctx (nth i l)) js:*undefined*)))
+                 ((and (stringp key) (string= key "item")) item)
+                 (t (js:js-get (js:js-object-proto o) key o))))))))
 
 (defun children-list (node)
   (coerce (h:dnode-children node) 'list))
@@ -145,22 +193,30 @@
       (jbool (plusp (length (h:dnode-children (n this))))))
     (defmethod* ctx np "appendChild" 1 (this a)
       (let ((parent (n this)) (child (require-node ctx (arg a 0))))
+        (when (ancestor-or-self-p child parent)
+          (throw-dom ctx "HierarchyRequestError" 3 "would create a cycle"))
         (insert-into parent child nil) (setf (context-dirty ctx) t) (arg a 0)))
     (defmethod* ctx np "insertBefore" 2 (this a)
       (let* ((parent (n this)) (new (require-node ctx (arg a 0)))
              (ref-obj (arg a 1))
              (ref (and (not (nullish ref-obj)) (require-node ctx ref-obj))))
+        (when (ancestor-or-self-p new parent)
+          (throw-dom ctx "HierarchyRequestError" 3 "would create a cycle"))
+        (when (and ref (not (eq (h:dnode-parent ref) parent)))
+          (throw-dom ctx "NotFoundError" 8 "reference node is not a child"))
         (insert-into parent new ref) (setf (context-dirty ctx) t) (arg a 0)))
     (defmethod* ctx np "removeChild" 1 (this a)
       (let ((parent (n this)) (child (require-node ctx (arg a 0))))
         (unless (eq (h:dnode-parent child) parent)
-          (js:js-throw (js:make-native-error "Error" "NotFoundError: removeChild")))
+          (throw-dom ctx "NotFoundError" 8 "node is not a child"))
         (h:dom-remove child) (setf (context-dirty ctx) t) (arg a 0)))
     (defmethod* ctx np "replaceChild" 2 (this a)
       (let ((parent (n this)) (new (require-node ctx (arg a 0)))
             (old (require-node ctx (arg a 1))))
         (unless (eq (h:dnode-parent old) parent)
-          (js:js-throw (js:make-native-error "Error" "NotFoundError: replaceChild")))
+          (throw-dom ctx "NotFoundError" 8 "node is not a child"))
+        (when (ancestor-or-self-p new parent)
+          (throw-dom ctx "HierarchyRequestError" 3 "would create a cycle"))
         (insert-into parent new old) (h:dom-remove old)
         (setf (context-dirty ctx) t) (arg a 1)))
     (defmethod* ctx np "cloneNode" 1 (this a)
@@ -182,7 +238,7 @@
 ;;; ---------------------------------------------------------------------------
 (defun install-element-proto (ctx ep)
   (macrolet ((n (this) `(require-node ctx ,this)))
-    (defget ctx ep "tagName" (this) (string-upcase (h:dnode-name (n this))))
+    (defget ctx ep "tagName" (this) (element-tag-name (n this)))
     (defget ctx ep "localName" (this) (h:dnode-name (n this)))
     (defgetset ctx ep "id" (this) (or (get-attr (n this) "id") "")
       (v) (progn (set-attr (n this) "id" v) (setf (context-dirty ctx) t)))
@@ -266,16 +322,48 @@
       (let ((node (n this)) (cls (jstr (arg a 0))))
         (make-collection ctx (lambda () (dom:get-elements-by-class-name node cls)))))
     (defmethod* ctx dp "createElement" 1 (this a)
-      (wrap ctx (h:make-element (string-downcase (jstr (arg a 0))))))
+      (let ((name (jstr (arg a 0))))
+        (unless (valid-name-p name)
+          (throw-dom ctx "InvalidCharacterError" 5 "invalid element name"))
+        (wrap ctx (h:make-element (string-downcase name)))))
     (defmethod* ctx dp "createElementNS" 2 (this a)
       (let ((ns (jstr (arg a 0))) (name (jstr (arg a 1))))
-        (wrap ctx (h:make-element (string-downcase name) nil
+        (unless (valid-name-p name)
+          (throw-dom ctx "InvalidCharacterError" 5 "invalid element name"))
+        ;; A namespaced element keeps the given case (XML is case-sensitive);
+        ;; only the HTML parser lowercases.
+        (wrap ctx (h:make-element name nil
                                   (cond ((search "svg" ns) :svg)
                                         ((search "MathML" ns) :math) (t :html))))))
     (defmethod* ctx dp "createTextNode" 1 (this a) (wrap ctx (h:make-text (jstr (arg a 0)))))
     (defmethod* ctx dp "createComment" 1 (this a) (wrap ctx (h:make-comment (jstr (arg a 0)))))
     (defmethod* ctx dp "createDocumentFragment" 0 (this a) (wrap ctx (h:make-fragment)))
-    (defmethod* ctx dp "createEvent" 1 (this a) (make-event-object ctx "" nil))))
+    (defmethod* ctx dp "createEvent" 1 (this a) (make-event-object ctx "" nil))
+    (defmethod* ctx dp "write" 1 (this a)
+      (dom-write ctx (apply #'concatenate 'string (mapcar #'jstr a))) js:*undefined*)
+    (defmethod* ctx dp "writeln" 1 (this a)
+      (dom-write ctx (concatenate 'string (apply #'concatenate 'string (mapcar #'jstr a)) (string #\Newline)))
+      js:*undefined*)
+    (defmethod* ctx dp "open" 0 (this a) (js:js-get (proto ctx :window) "document"))
+    (defmethod* ctx dp "close" 0 (this a) js:*undefined*)))
+
+(defun dom-write (ctx str)
+  "document.write: parse STR as an HTML fragment and splice its body-level nodes
+   into the DOM right after the currently-executing <script> (or at end of body)."
+  (let* ((frag (h:parse-html str))
+         (body (find-tag frag "body"))
+         (nodes (and body (coerce (h:dnode-children body) 'list)))
+         (script (context-current-script ctx)))
+    (if (and script (h:dnode-parent script))
+        (let* ((parent (h:dnode-parent script)) (ch (h:dnode-children parent))
+               (i (position script ch))
+               (ref (and i (< (1+ i) (length ch)) (aref ch (1+ i)))))
+          (dolist (nd nodes)
+            (h:dom-remove nd)
+            (if ref (h:dom-insert-before parent nd ref) (h:dom-append parent nd))))
+        (let ((b (find-tag (context-document ctx) "body")))
+          (when b (dolist (nd nodes) (h:dom-remove nd) (h:dom-append b nd)))))
+    (setf (context-dirty ctx) t)))
 
 (defun find-tag (root tag)
   (first (dom:get-elements-by-tag-name root tag)))

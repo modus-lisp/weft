@@ -114,6 +114,20 @@
     "keydown" "keyup" "keypress" "mousedown" "mouseup" "mouseover" "mouseout"
     "mousemove" "dblclick" "contextmenu" "scroll" "resize" "unload"))
 
+(defun on-event-attr-p (name)
+  "True if NAME is an on<event> content attribute (onclick, onload, …)."
+  (and (> (length name) 2) (string-equal (subseq name 0 2) "on")
+       (member (string-downcase (subseq name 2)) +on-events+ :test #'string=)))
+
+(defun register-inline-handler (ctx node name code)
+  "Compile an on<event>=\"CODE\" content attribute into an event handler.  The
+   handler body runs with `event` in scope (the classic inline-handler form)."
+  (let ((fn (ignore-errors
+             (js:eval-script (context-realm ctx)
+                             (format nil "(function(event){~a~%})" code)))))
+    (when (js:js-callable-p fn)
+      (set-on-handler ctx node (string-downcase (subseq name 2)) fn))))
+
 (defun install-on-handlers (ctx target)
   "Install on<event> accessor properties on prototype TARGET."
   (dolist (type +on-events+)
@@ -130,6 +144,17 @@
                  js:*undefined*)
                1)
         :enumerable t :configurable t))))
+
+(defun register-parsed-inline-handlers (ctx)
+  "Register on<event> handlers already present as attributes in the parsed DOM
+   (a real page's <button onclick=\"…\">)."
+  (labels ((walk (node)
+             (when (eq (h:dnode-kind node) :element)
+               (dolist (a (h:dnode-attrs node))
+                 (when (on-event-attr-p (car a))
+                   (register-inline-handler ctx node (car a) (cdr a)))))
+             (loop for c across (h:dnode-children node) do (walk c))))
+    (walk (context-document ctx))))
 
 ;;; ---- loading a browsing context (iframe / object) -------------------------
 (defun fire-event-later (ctx node type)

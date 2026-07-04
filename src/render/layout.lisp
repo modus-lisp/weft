@@ -69,7 +69,7 @@ no-op passthrough when the cache is unbound (measurement outside a layout pass).
 (defun float-p (styles node)
   (and (eq (h:dnode-kind node) :element)
        (let ((cs (st styles node))) (and cs (member (css:cstyle-float cs) '("left" "right") :test #'string=)))))
-(defparameter *block-displays* '("block" "list-item" "flex" "table"))
+(defparameter *block-displays* '("block" "list-item" "flex" "table" "flow-root" "grid"))
 (defun inline-level-p (styles node)
   (case (h:dnode-kind node)
     (:text t)
@@ -831,12 +831,19 @@ Returns (values lbox advance-height)."
     (min w 600)))
 
 (defun item-base (item styles content-w)
-  (let* ((cs (st styles item)) (basis (css:cstyle-flex-basis cs)))
+  "The flex base size of ITEM: its flex-basis (a length), else its used width, else
+   — flex-basis auto/content — its content (max-content) size.  flex-grow only adds
+   POSITIVE free space on top of this base (CSS 9.7); a grow item must still reserve
+   its content, or it collapses to nothing when the line is already full."
+  (let* ((cs (st styles item)) (basis (css:cstyle-flex-basis cs))
+         (w (css:cstyle-width cs)))
     (cond
       ((and (stringp basis) (not (member basis '("auto" "content") :test #'string=)))
        (let ((v (css::resolve-len basis (css:cstyle-font-size cs)))) (if (numberp v) v 0)))
-      ((numberp (css:cstyle-width cs)) (css:cstyle-width cs))
-      ((> (css:cstyle-flex-grow cs) 0) 0)
+      ((numberp w) w)
+      ;; width:N% on a flex item resolves against the line's available width.
+      ((and (consp w) (eq (car w) :percent))
+       (* content-w (/ (second w) 100.0)))
       (t (min content-w (est-content-width item styles))))))
 
 (defun layout-flex (node styles cx cy content-w base-cs)

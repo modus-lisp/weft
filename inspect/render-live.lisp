@@ -31,37 +31,51 @@
                    (search "xml" ct :test #'char-equal))) :xml)
       ((and ct (search "image/" ct :test #'char-equal)) :image)
       ((search ".css" url :test #'char-equal) :css)
+      ((search ".js" url :test #'char-equal) :js)
+      ((search "only=scripts" url :test #'char-equal) :js)   ; MediaWiki load.php
       (t :text))))
 
-(defun https-css-loader ()
+(defun js-enabled-p ()
+  "External JavaScript is opt-in here (env WEFT_JS): the default renders stay a
+   deterministic CSS-only reference, since running a site's live JS is slow and
+   non-deterministic.  The interactive shell (loom) turns it on for real browsing."
+  (let ((v (uiop:getenv "WEFT_JS"))) (and v (plusp (length v)) (not (string= v "0")))))
+
+(defun https-subresource-loader (base)
   "A subresource loader (ctx url) -> (values kind content) backed by weft.fetch,
-   so external stylesheets (http:// and https://) are pulled over seal TLS.
-   Serves ONLY :css — a deterministic styling render, no external JS/frames —
-   and degrades to (values nil nil) on any fetch/TLS failure."
+   so external stylesheets — and, when WEFT_JS is set, scripts — travel over seal
+   TLS (relative URLs resolved against BASE).  Degrades to (values nil nil) on any
+   fetch/TLS failure."
   (lambda (ctx url) (declare (ignore ctx))
     (handler-case
-        (multiple-value-bind (text cs resp) (f:fetch-text url)
-          (declare (ignore cs))
-          (if (and text (<= 200 (f:response-status resp) 299)
-                   (eq (content-kind (f:response-headers resp) url) :css))
-              (values :css text)
-              (values nil nil)))
+        (let ((abs (let ((u (ignore-errors (weft.url:parse url base))))
+                     (if u (weft.url:href u) url))))
+          (multiple-value-bind (text cs resp) (f:fetch-text abs)
+            (declare (ignore cs))
+            (if (and text (<= 200 (f:response-status resp) 299))
+                (let ((k (content-kind (f:response-headers resp) abs)))
+                  (cond ((eq k :css) (values :css text))
+                        ((and (eq k :js) (js-enabled-p)) (values :js text))
+                        (t (values nil nil))))
+                (values nil nil))))
       (error () (values nil nil)))))
 
 (defun render (url out &optional (width 1024))
-  "Fetch URL over HTTPS and render it (scripted, external CSS over TLS) to OUT."
+  "Fetch URL over HTTPS and render it to OUT: external CSS (and, when WEFT_JS is
+   set, external JavaScript) travel over seal TLS."
   (multiple-value-bind (html cs resp) (f:fetch-text url)
     (declare (ignore cs))
     (let ((base (f:response-url resp)))         ; the final URL is the document base
-      (format t "~&fetched ~a  (HTTP ~d, base ~a, ~:d chars)~%"
-              url (f:response-status resp) base (length html))
+      (format t "~&fetched ~a  (HTTP ~d, base ~a, ~:d chars)~a~%"
+              url (f:response-status resp) base (length html)
+              (if (js-enabled-p) "  [JS on]" ""))
       (multiple-value-bind (path ctx)
           (s:render-scripted-to-png html "" width out
                                     :min-height 400 :max-height 8000
-                                    :base base :loader (https-css-loader))
+                                    :base base :loader (https-subresource-loader base))
         (declare (ignore ctx))
         (multiple-value-bind (cv) (s:render-scripted-to-canvas html "" width
-                                                               :base base :loader (https-css-loader))
+                                                               :base base :loader (https-subresource-loader base))
           (format t "rendered -> ~a  (~dx~d, ink=~,3f)~%"
                   path (r:canvas-width cv) (r:canvas-height cv) (r:canvas-ink cv)))
         path))))

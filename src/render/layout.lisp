@@ -1225,7 +1225,16 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
                     (if (numberp w) (+ w ml mr extra)
                         (min content-w
                              (max 0 (+ (pref-content-width node styles content-w) extra ml mr))))))
-         (y top))
+         ;; A float with `clear` drops below the relevant existing floats before
+         ;; it is placed (CSS 9.5.2): e.g. two `float:right; clear:right` sidebars
+         ;; stack vertically rather than sitting side by side.
+         (clr (css:cstyle-clear cs))
+         (y (if (member clr '("left" "right" "both") :test #'string=)
+                (clear-y top cleft cright
+                         (cond ((string= clr "left") '(:left))
+                               ((string= clr "right") '(:right))
+                               (t '(:left :right))))
+                top)))
     (setf avail-w (min avail-w content-w))
     ;; drop to a band wide enough for the float
     (loop (multiple-value-bind (lx rx) (float-band y 1 cleft cright)

@@ -30,7 +30,13 @@
                  (loop while (< i n) do
                    (let ((c (char s i)))
                      (cond ((char= c q) (incf i) (return))
-                           ((char= c #\\) (incf i) (when (< i n) (write-char (char s i) b) (incf i)))
+                           ;; CSS escapes decode inside strings too (Syntax 4.3.7):
+                           ;; `\a0 ` -> U+00A0, `\"` -> a literal quote.  Share the
+                           ;; hex-aware decoder with idents (was: naive next-char).
+                           ((char= c #\\)
+                            (if (and (< (1+ i) n) (char= (char s (1+ i)) #\Newline))
+                                (incf i 2)             ; escaped newline: line continuation
+                                (consume-escape b)))
                            ((char= c #\Newline) (return))   ; bad string
                            (t (write-char c b) (incf i)))))
                  (emit :string (get-output-stream-string b))))

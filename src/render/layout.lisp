@@ -19,6 +19,30 @@ positioned element; the top-level binding (layout-tree) is the initial CB.")
 (defvar *fixed-pending* nil
   "Out-of-flow fixed boxes awaiting resolution against the viewport: (lbox . cstyle).")
 
+(defvar *intrinsic-cache* nil
+  "Per-layout-pass memo for intrinsic-width measurement — MIN-CONTENT-WIDTH,
+PREF-CONTENT-WIDTH and TABLE-COLUMN-MODEL.  Bound FRESH at the top of a full page
+layout (LAYOUT-TREE) and never persists across renders.  Without it, a nested
+table re-measures its whole subtree at every enclosing level (each cell is probed
+by cell-max AND cell-min widths, and TABLE-COLUMN-MODEL is itself run by both
+TABLE-NATURAL-WIDTH and LAYOUT-TABLE), so cost was exponential in nesting depth
+(~5x/level).  Memoised, each (node,avail) is measured once and the recursion is
+linear.  Keyed on a (TAG NODE . ROUNDED-AVAIL) list under EQUAL.")
+
+(defmacro with-intrinsic-memo (key &body body)
+  "Memoise BODY's (possibly multiple) values in *INTRINSIC-CACHE* under KEY.  A
+no-op passthrough when the cache is unbound (measurement outside a layout pass)."
+  (let ((k (gensym)) (hit (gensym)) (found (gensym)) (res (gensym)))
+    `(let ((,k ,key))
+       (if *intrinsic-cache*
+           (multiple-value-bind (,hit ,found) (gethash ,k *intrinsic-cache*)
+             (if ,found
+                 (values-list ,hit)
+                 (let ((,res (multiple-value-list (progn ,@body))))
+                   (setf (gethash ,k *intrinsic-cache*) ,res)
+                   (values-list ,res))))
+           (progn ,@body)))))
+
 (defun float-band (y h cleft cright)
   "Available (values left right) at the vertical band [y, y+h) after floats."
   (let ((left cleft) (right cright))
@@ -54,6 +78,12 @@ positioned element; the top-level binding (layout-tree) is the initial CB.")
 (defun block-level-p (styles node)
   (and (eq (h:dnode-kind node) :element)
        (let ((cs (st styles node))) (and cs (member (cdisplay cs) *block-displays* :test #'string=)))))
+(defun table-box-p (styles node)
+  "True when NODE is a display:table (or inline-table) box — one whose intrinsic
+width is its COLUMN model, not its flattened inline content."
+  (and (eq (h:dnode-kind node) :element)
+       (let ((cs (st styles node)))
+         (and cs (member (cdisplay cs) '("table" "inline-table") :test #'string=)))))
 
 ;;; ---- inline content: styled word runs -> line boxes --------------------
 (defun collect-words (node styles default-style content-w)
@@ -932,18 +962,24 @@ token (word or atomic box)."
 
 (defun min-content-width (node styles content-w &optional (depth 0))
   "Min-content CONTENT width of element NODE (widest unbreakable run)."
-  (let ((cs (st styles node)))
-    (if (or (> depth 6) (not (eq (h:dnode-kind node) :element)) (null cs))
-        0
-        (let ((block-kids (remove-if-not (lambda (k) (or (block-level-p styles k) (float-p styles k)))
-                                         (child-elements node))))
-          (min content-w
-               (if block-kids
-                   (loop for k in block-kids
-                         maximize (+ (css:cstyle-padding-left (st styles k)) (css:cstyle-padding-right (st styles k))
-                                     (used-border (st styles k) :l) (used-border (st styles k) :r)
-                                     (min-content-width k styles content-w (1+ depth))))
-                   (min-inline-width node styles cs content-w)))))))
+  (with-intrinsic-memo (list :min node (round content-w))
+    (let ((cs (st styles node)))
+      (cond
+        ((or (not (eq (h:dnode-kind node) :element)) (null cs)) 0)
+        ;; A table's min-content is the sum of its column MIN widths, measured by
+        ;; the (memoised) column model — NOT its subtree flattened onto one inline
+        ;; line, which would re-lay-out every nested table and blow up.
+        ((table-box-p styles node) (min content-w (table-min-width node styles content-w)))
+        (t
+         (let ((block-kids (remove-if-not (lambda (k) (or (block-level-p styles k) (float-p styles k)))
+                                          (child-elements node))))
+           (min content-w
+                (if block-kids
+                     (loop for k in block-kids
+                           maximize (+ (css:cstyle-padding-left (st styles k)) (css:cstyle-padding-right (st styles k))
+                                       (used-border (st styles k) :l) (used-border (st styles k) :r)
+                                       (min-content-width k styles content-w (1+ depth))))
+                     (min-inline-width node styles cs content-w)))))))))
 
 (defun cell-max-content-width (cell styles avail)
   "Max-content border-box width of a table CELL.  An explicit width is the target,
@@ -988,6 +1024,11 @@ a (:percent P) form."
  (values MAXS MINS SPECS NCOLS): parallel simple-vectors of border-box
 max-content, min-content, and specified-width (NIL | px | (:percent P)) per
 column, colspans distributed across the columns they span (CSS 2.1 17.5.2)."
+  (with-intrinsic-memo (list :tcm node (round avail))
+    (%table-column-model node styles avail)))
+
+(defun %table-column-model (node styles avail)
+  "Uncached core of TABLE-COLUMN-MODEL (see it)."
   (let* ((rows (table-rows node styles)) (recs '()) (ncols 0))
     (dolist (row rows)
       (let ((col 0))
@@ -1033,6 +1074,15 @@ max-content (or fixed) widths.  0 when it has no cells."
     (loop for i below ncols
           sum (let ((sp (aref specs i)))
                 (if (numberp sp) (max sp (aref maxs i)) (aref maxs i))))))
+
+(defun table-min-width (node styles avail)
+  "Min-content CONTENT width of a display:table NODE: the sum of its per-column
+min-content (or fixed floor) widths.  0 when it has no cells."
+  (multiple-value-bind (maxs mins specs ncols) (table-column-model node styles avail)
+    (declare (ignore maxs))
+    (loop for i below ncols
+          sum (let ((sp (aref specs i)))
+                (if (numberp sp) (max sp (aref mins i)) (aref mins i))))))
 
 (defun fit-columns (rspecs maxs mins target ncols)
   "Fit per-column widths to a TARGET total (CSS 2.1 17.5.2 pragmatic).  RSPECS is
@@ -1130,17 +1180,23 @@ on a single (unwrapped) line."
 (defun pref-content-width (node styles content-w &optional (depth 0))
   "Shrink-to-fit preferred (max-content) CONTENT width of element NODE: the
 widest of its block/float children's border-box widths, else its inline
-max-content width.  Bounded by DEPTH and CONTENT-W so it stays cheap/resilient."
-  (let ((cs (st styles node)))
-    (if (or (> depth 6) (not (eq (h:dnode-kind node) :element)) (null cs))
-        0
-        (let ((block-kids (remove-if-not (lambda (k) (or (block-level-p styles k) (float-p styles k)))
-                                         (child-elements node))))
-          (min content-w
-               (if block-kids
-                   (loop for k in block-kids
-                         maximize (pref-border-width k styles content-w (1+ depth)))
-                   (pref-inline-width node styles cs content-w)))))))
+max-content width.  Bounded by CONTENT-W so it stays resilient."
+  (with-intrinsic-memo (list :pref node (round content-w))
+    (let ((cs (st styles node)))
+      (cond
+        ((or (not (eq (h:dnode-kind node) :element)) (null cs)) 0)
+        ;; A table's max-content is its natural (column-model) width — measured by
+        ;; the memoised column model, not by flattening the whole subtree (and
+        ;; re-laying-out every nested table) onto one inline line.
+        ((table-box-p styles node) (min content-w (table-natural-width node styles content-w)))
+        (t
+         (let ((block-kids (remove-if-not (lambda (k) (or (block-level-p styles k) (float-p styles k)))
+                                          (child-elements node))))
+           (min content-w
+                (if block-kids
+                    (loop for k in block-kids
+                          maximize (pref-border-width k styles content-w (1+ depth)))
+                    (pref-inline-width node styles cs content-w)))))))))
 
 (defun pref-border-width (node styles content-w depth)
   "Preferred BORDER-box width (incl. margins) of NODE for shrink-to-fit sizing."
@@ -1197,6 +1253,7 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
 
 (defun layout-tree (document styles width &optional viewport-height scroll-to)
   (let ((*floats* nil) (*abs-pending* nil) (*fixed-pending* nil)
+        (*intrinsic-cache* (make-hash-table :test 'equal))
         (body (css:query-select document "body")))
     (when body
       ;; The initial containing block has the viewport height when the viewport

@@ -73,13 +73,15 @@
                 (if (third args) (parse-integer (third args)) 1024))
         ;; default: the capstone proofs — real HTTPS pages whose styling lives in
         ;; external stylesheets fetched over HTTPS (HN's news.css; IANA / W3C's
-        ;; sheets).  (A full Wikipedia article fetches fine over seal but its very
-        ;; deeply nested infobox/table DOM overruns weft's preferred-width layout
-        ;; recursion — a pre-existing layout depth limit, not a fetch/TLS one.)
+        ;; sheets).  A full Wikipedia article is here too: its deeply nested
+        ;; infobox/table DOM once overran weft's intrinsic-width layout recursion
+        ;; (exponential in table-nesting depth); with that memoised it renders in
+        ;; bounded time on a normal stack.
         (let ((dir (asdf:system-relative-pathname "weft" "inspect/")))
           (dolist (job '(("https://news.ycombinator.com/" "live-hn.png" 1024)
                          ("https://www.iana.org/" "live-iana.png" 1000)
-                         ("https://www.w3.org/" "live-w3c.png" 1000)))
+                         ("https://www.w3.org/" "live-w3c.png" 1000)
+                         ("https://en.wikipedia.org/wiki/HTTPS" "live-wikipedia-https.png" 1024)))
             (destructuring-bind (url name width) job
               (handler-case
                   (render url (namestring (merge-pathnames name dir)) width)

@@ -34,10 +34,11 @@
   (min-height 0.0) (max-height :none)
   (cursor "auto")     ; CSS cursor keyword (inherited)
   (text-transform "none") ; none | capitalize | uppercase | lowercase (inherited)
+  (visibility "visible")  ; visible | hidden | collapse (inherited); hidden keeps the box but paints nothing
   (content nil))      ; generated-content string for ::before/::after (NIL = no box)
 
 (defparameter *inherited* '(:color :font-size :font-weight :line-height :text-align :white-space
-                            :font-family :font-style :cursor :text-transform))
+                            :font-family :font-style :cursor :text-transform :visibility))
 
 ;;; ---- UA defaults --------------------------------------------------------
 (defparameter *block-tags*
@@ -60,7 +61,8 @@
             (cstyle-text-align cs) (cstyle-text-align parent-cs)
             (cstyle-white-space cs) (cstyle-white-space parent-cs)
             (cstyle-cursor cs) (cstyle-cursor parent-cs)
-            (cstyle-text-transform cs) (cstyle-text-transform parent-cs)))
+            (cstyle-text-transform cs) (cstyle-text-transform parent-cs)
+            (cstyle-visibility cs) (cstyle-visibility parent-cs)))
     (cond ((member tag *none-tags* :test #'string=) (setf (cstyle-display cs) "none"))
           ((string= tag "li") (setf (cstyle-display cs) "list-item"))
           ((string= tag "table") (setf (cstyle-display cs) "table"))
@@ -386,6 +388,10 @@ Ignores the system-font keywords (caption/icon/...)."
          (let ((v (parse-value "cursor" value))) (when (stringp v) (setf (cstyle-cursor cs) v))))
         ((string= prop "text-transform")
          (let ((v (parse-value "text-transform" value))) (when (stringp v) (setf (cstyle-text-transform cs) v))))
+        ((string= prop "visibility")
+         (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
+           (when (member v '("visible" "hidden" "collapse") :test #'string=)
+             (setf (cstyle-visibility cs) v))))
         ((string= prop "width") (let ((w (parse-size value fs t))) (when w (setf (cstyle-width cs) w))))
         ((string= prop "height") (let ((h (parse-size value fs t))) (when h (setf (cstyle-height cs) h))))
         ((string= prop "max-width") (if (string-equal (string-trim '(#\Space) value) "none") (setf (cstyle-max-width cs) :none)

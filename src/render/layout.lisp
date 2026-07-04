@@ -1547,6 +1547,12 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
           (when (plusp bl) (fill-poly cv (list (cons x0 y0) (cons ix0 iy0) (cons ix0 iy1) (cons x0 y1)) cl))
           (when (plusp br) (fill-poly cv (list (cons x1 y0) (cons x1 y1) (cons ix1 iy1) (cons ix1 iy0)) crr))))))
 
+(defun box-visible-p (cs)
+  "NIL when CS is visibility:hidden/collapse — such a box paints nothing of its
+   own (background, border, image, text) but keeps its layout space, and visible
+   descendants (visibility:visible) still paint (visibility is inherited)."
+  (not (and cs (member (css:cstyle-visibility cs) '("hidden" "collapse") :test #'string=))))
+
 (defun paint-box (cv lb)
   (handler-case (%paint-box cv lb) (error () nil)))
 (defun %paint-box (cv lb)
@@ -1554,6 +1560,7 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
     (case (lbox-kind lb)
       (:block
        (let ((cs (lbox-style lb)))
+        (when (box-visible-p cs)
          (cond ((css:cstyle-bg-gradient cs)
                 (destructuring-bind (dir from to) (css:cstyle-bg-gradient cs)
                   (fill-gradient cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) dir (rgb from) (rgb to))))
@@ -1585,7 +1592,7 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                                (round (- (+ (lbox-x lb) (css:cstyle-padding-left cs)) (* 1.3 fs)))
                                (round (+ (lbox-y lb) (css:cstyle-padding-top cs)))
                                (round (used-line-height cs))
-                               (rgb (css:cstyle-color cs)) fs)))
+                               (rgb (css:cstyle-color cs)) fs))))
          ;; overflow:hidden/clip/scroll clips descendants to this box's padding box.
          (if (member (css:cstyle-overflow cs) '("hidden" "clip" "scroll") :test #'string=)
              (let ((*clip* (clip-intersect
@@ -1600,14 +1607,16 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
          (if (frag-p it)
              (let ((cs (frag-style it)))
                ;; pass the line box geometry so scribe centers the real font
-               ;; em-box (ascent+descent at font-size) within it.
-               (draw-text-scribe cv (frag-text it) (round (frag-x it))
+               ;; em-box (ascent+descent at font-size) within it.  A
+               ;; visibility:hidden run occupies its space but paints no glyphs.
+               (when (box-visible-p cs)
+                 (draw-text-scribe cv (frag-text it) (round (frag-x it))
                           (lbox-y lb) (lbox-h lb)
                           (rgb (css:cstyle-color cs))
                           (css:cstyle-font-size cs)
                           :face (style-face cs)
                           :bold (>= (css:cstyle-font-weight cs) 600)
-                          :underline (member "underline" (css:cstyle-text-decoration cs) :test #'string=)))
+                          :underline (member "underline" (css:cstyle-text-decoration cs) :test #'string=))))
              (paint-box cv it)))))))   ; atomic inline-block / img box
 
 (defun percent-decode (s)

@@ -236,7 +236,9 @@ against AVAIL-H if definite, else computes to none (NIL = no ceiling)."
   "Parse a 'content' value into a generated string, or NIL (none/normal/no box).
 Handles 'string' / \"string\" (incl. an empty string -> an empty but present
 box, marked by the empty string) and concatenated string tokens; non-string
-values (attr(), counters, images) yield an empty box."
+values (attr(), counters, images) yield an empty box.  CSS escapes (e.g. \\a0)
+are already decoded by the tokenizer's string reader, so VALUE's quoted runs are
+literal text here."
   (let ((v (string-trim '(#\Space #\Tab #\Newline) value)))
     (cond ((or (string-equal v "none") (string-equal v "normal")) nil)
           ((and (plusp (length v)) (member (char v 0) '(#\' #\")))

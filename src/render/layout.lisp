@@ -168,7 +168,17 @@ enclosing element(s) (e.g. HN's .hnname margin-right).  Use TOK-META/TOK-SPACE/T
                                     n)))))
                       (t                             ; generic inline: honor horizontal margins
                        (incf pend-px (iedge cs :left))
+                       ;; ::before / ::after generated content on an inline element
+                       ;; (e.g. .hlist li::after { content:"\a0 · " } separators).
+                       ;; Block-level pseudo boxes are materialised in %LAYOUT-CORE;
+                       ;; inline ones are emitted here as text in the enclosing run.
+                       (let ((bcs (gethash (cons n :before) styles)))
+                         (when (and bcs (css:cstyle-content bcs))
+                           (emit-text (css:cstyle-content bcs) bcs n)))
                        (loop for c across (h:dnode-children n) do (rec c cs n))
+                       (let ((acs (gethash (cons n :after) styles)))
+                         (when (and acs (css:cstyle-content acs))
+                           (emit-text (css:cstyle-content acs) acs n)))
                        (incf pend-px (iedge cs :right)))))))))
       (rec node (or (st styles node) default-style) node))
     (nreverse words)))

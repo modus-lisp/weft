@@ -10,6 +10,7 @@
                     (#:r #:weft.render) (#:js #:shuttle) (#:g #:gesso))
   (:export #:make-context #:context-realm #:context-document #:context-dirty
            #:element-object #:wrap #:run-inline-scripts #:run-event-loop
+           #:fire-lifecycle-events
            #:render-scripted-to-canvas #:render-scripted-to-png
            ;; interactive-shell seam: dispatch trusted UI events into the DOM,
            ;; and pump one frame of the timer/animation clock

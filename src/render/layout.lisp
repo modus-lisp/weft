@@ -69,6 +69,17 @@ no-op passthrough when the cache is unbound (measurement outside a layout pass).
 (defun float-p (styles node)
   (and (eq (h:dnode-kind node) :element)
        (let ((cs (st styles node))) (and cs (member (css:cstyle-float cs) '("left" "right") :test #'string=)))))
+(defun out-of-flow-p (styles node)
+  "True when NODE is absolutely/fixed positioned — removed from normal flow, so it
+   contributes nothing to its container's intrinsic (min/max-content) width."
+  (and (eq (h:dnode-kind node) :element)
+       (let ((cs (st styles node)))
+         (and cs (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)))))
+(defun flex-row-p (cs)
+  "True when CS is a flex container whose main axis is horizontal (a row)."
+  (and cs (string= (cdisplay cs) "flex")
+       (let ((d (css:cstyle-flex-direction cs)))
+         (not (or (string= d "column") (string= d "column-reverse"))))))
 (defparameter *block-displays* '("block" "list-item" "flex" "table" "flow-root" "grid"))
 (defun inline-level-p (styles node)
   (case (h:dnode-kind node)
@@ -575,10 +586,14 @@ Returns (values lbox advance-height)."
            (spec-w (unless table-cell (css::resolve-size (css:cstyle-width cs) avail-w))) ; px or nil
            (max-w (css::resolve-size (css:cstyle-max-width cs) avail-w))
            (min-w (css::resolve-size (css:cstyle-min-width cs) avail-w))
-           ;; an absolutely-positioned / fixed box with width:auto is sized
-           ;; shrink-to-fit (CSS 10.3.7): min(available, preferred max-content).
+           ;; a box with width:auto that is shrink-to-fit (CSS 10.3.7 / 10.3.9):
+           ;; absolute/fixed boxes AND atomic inlines (inline-block/-flex/-table)
+           ;; size to min(available, max-content), not the full available width —
+           ;; else an auto-width inline-block (e.g. an icon) balloons to fill.
            (shrink (and (null spec-w)
-                        (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)))
+                        (or (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)
+                            (member (cdisplay cs) '("inline-block" "inline-flex" "inline-table")
+                                    :test #'string=))))
            ;; a display:table box with auto width is shrink-to-fit (CSS 17.5.2):
            ;; it sizes to the sum of its column widths, not the available width.
            (table-shrink (and (null spec-w) (string= (cdisplay cs) "table")))
@@ -848,7 +863,10 @@ Returns (values lbox advance-height)."
       ;; width:N% on a flex item resolves against the line's available width.
       ((and (consp w) (eq (car w) :percent))
        (* content-w (/ (second w) 100.0)))
-      (t (min content-w (est-content-width item styles))))))
+      ;; flex-basis auto with no width: the item's max-content size, measured by
+      ;; the structural intrinsic pass (flex rows sum, block stacks take the widest,
+      ;; out-of-flow is skipped) rather than the crude inline-flatten estimate.
+      (t (min content-w (pref-content-width item styles content-w))))))
 
 (defun layout-flex (node styles cx cy content-w base-cs)
   "Single-line flexbox layout.  Returns (values child-lboxes content-height)."
@@ -1198,9 +1216,13 @@ specified width), rows stacked, cells stretched to row height.  Returns
         (values boxes (- y cy))))))
 
 (defun pref-inline-width (node styles cs content-w)
-  "Max-content width of NODE's inline content: word + atomic-box widths summed
-on a single (unwrapped) line."
-  (let ((words (collect-words node styles cs content-w)) (w 0))
+  "Max-content width of NODE's inline content: word + atomic-box widths summed on
+a single (unwrapped) line.  Measures NODE's CHILDREN — collecting NODE itself would
+re-wrap an inline-block/atomic node as one atomic box laid out at the full available
+width (an empty icon then reports content-w instead of ~0)."
+  (let ((words (loop for child across (h:dnode-children node)
+                     append (collect-words child styles cs content-w)))
+        (w 0))
     (dolist (wd words)
       (incf w (+ (if (eq (car wd) :atomic) (lbox-w (tok-meta wd)) (word-w (car wd) (tok-meta wd)))
                  (tok-gap wd)
@@ -1219,8 +1241,18 @@ max-content width.  Bounded by CONTENT-W so it stays resilient."
         ;; the memoised column model, not by flattening the whole subtree (and
         ;; re-laying-out every nested table) onto one inline line.
         ((table-box-p styles node) (min content-w (table-natural-width node styles content-w)))
+        ;; A flex ROW's max-content is the SUM of its items' outer widths plus the
+        ;; gaps between them (they sit side by side), NOT the max — an inline-block
+        ;; heuristic that flattened a vertical menu onto one line and over-sized the
+        ;; item badly.  Out-of-flow children contribute nothing.
+        ((flex-row-p cs)
+         (let ((items (remove-if (lambda (k) (out-of-flow-p styles k)) (child-elements node))))
+           (min content-w
+                (+ (loop for k in items sum (pref-border-width k styles content-w (1+ depth)))
+                   (* (css:cstyle-gap cs) (max 0 (1- (length items))))))))
         (t
-         (let ((block-kids (remove-if-not (lambda (k) (or (block-level-p styles k) (float-p styles k)))
+         (let ((block-kids (remove-if-not (lambda (k) (and (not (out-of-flow-p styles k))
+                                                           (or (block-level-p styles k) (float-p styles k))))
                                           (child-elements node))))
            (min content-w
                 (if block-kids

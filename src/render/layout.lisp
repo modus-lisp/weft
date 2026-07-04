@@ -664,12 +664,21 @@ Returns (values lbox advance-height)."
                  (when group
                    (let ((words (loop for g in (nreverse group) append (collect-words g styles cs content-w))))
                      (when words
+                       ;; The preceding block's pending bottom margin applies in
+                       ;; FULL before inline content — inline boxes have no
+                       ;; collapsible margin, so it does not collapse away (a block
+                       ;; followed by an inline sibling, e.g. an <h2> then its
+                       ;; `.mw-editsection` [edit] span, keeps that margin between
+                       ;; them).  Only non-empty inline runs count; whitespace that
+                       ;; collapses to nothing leaves PREV-MB to meet the next block.
+                       (when prev-mb
+                         (let ((m (+ (max 0 (car prev-mb)) (min 0 (cdr prev-mb)))))
+                           (incf yy m) (incf content-h m)))
+                       (setf prev-mb nil)
                        (multiple-value-bind (lines lh-total) (layout-inline words cx yy content-w cs)
                          (dolist (l lines) (push l children))
                          (incf yy lh-total) (incf content-h lh-total)
-                         ;; inline content separates block margins: no collapse,
-                         ;; and the box is no longer empty / a fresh first child.
-                         (setf prev-mb nil content-started t))))
+                         (setf content-started t))))
                    (setf group '()))))
           (dolist (k kids)
             (let* ((kcs (st styles k))

@@ -117,6 +117,10 @@ enclosing element(s) (e.g. HN's .hnname margin-right).  Use TOK-META/TOK-SPACE/T
                   (let ((cs (or (st styles n) owner)))
                     (cond
                       ((and cs (string= (cdisplay cs) "none")))
+                      ;; out-of-flow (absolute/fixed) elements are not part of the
+                      ;; inline run and must not contribute to a line's / a flex
+                      ;; item's content width (they are placed separately).
+                      ((and cs (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)))
                       ((member (h:dnode-name n) '("script" "style") :test #'string=))
                       ;; Replaced elements (img, decodable <object>) render at their
                       ;; OWN intrinsic/attr size — checked BEFORE inline-block, because

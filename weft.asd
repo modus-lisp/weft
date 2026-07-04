@@ -69,7 +69,7 @@
 ;; The resource loader depends on the pure-CL codecs (sibling systems) + chipz
 ;; for gzip/deflate; kept separate so the core engine stays dependency-light.
 (defsystem "weft/fetch"
-  :depends-on ("weft" "brotli-pure" "zstd-pure" "chipz")
+  :depends-on ("weft" "seal" "brotli-pure" "zstd-pure" "chipz")
   :components ((:module "src" :components ((:file "fetch")))))
 
 (defsystem "weft/render"

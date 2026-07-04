@@ -107,6 +107,10 @@ outline but keeps sub-pixel horizontal positioning, so spacing stays smooth."
 (defvar *shape-cache* (make-hash-table :test 'equal)
   "Memo of (font text ppem) -> shaped px glyph list; a page repeats many words
 (\"points\", \"by\", \"hours\", \"comments\"), so shape each once.")
+(defparameter *shape-cache-limit* 50000
+  "Bound on *SHAPE-CACHE* — keyed by every unique word×size, it would otherwise grow
+without limit across a long browsing session.  When exceeded the cache is dropped
+(entries are pure memoization: cheaply recomputed on next use).")
 
 (defun shape-px (font text ppem upem)
   "Shape TEXT with scribe (GPOS kerning + GSUB ligatures) into a list of
@@ -115,6 +119,9 @@ DRAW-TEXT-SCRIBE so the kerned advances are identical (measure = paint).  A .not
 (gid 0) advances half an em (tofu suppression)."
   (let ((key (list font text ppem)))
     (or (gethash key *shape-cache*)
+        (progn
+          (when (> (hash-table-count *shape-cache*) *shape-cache-limit*)
+            (clrhash *shape-cache*))
         (setf (gethash key *shape-cache*)
               (let ((s (/ ppem upem)))
                 (loop for g across (scribe:shape-run font text)
@@ -122,7 +129,7 @@ DRAW-TEXT-SCRIBE so the kerned advances are identical (measure = paint).  A .not
                       collect (list gid
                                     (if (zerop gid) (* 0.5d0 ppem) (* (scribe::glyph-pos-x-advance g) s))
                                     (* (scribe::glyph-pos-x-offset g) s)
-                                    (* (scribe::glyph-pos-y-offset g) s))))))))
+                                    (* (scribe::glyph-pos-y-offset g) s)))))))))
 
 (defun measure-text-width (text size &optional face)
   "Width of the shaped (kerned) TEXT at px SIZE in FACE — the width scribe will

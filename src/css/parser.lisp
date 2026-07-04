@@ -183,8 +183,11 @@ malformed query (a bare token where a feature group is required) evaluates to
          (unless (%media-feature-match (%paren-interior first) vw vh dpr) (setf result nil)))
         (t                                                    ; a media type
          (pop toks)
-         (unless (member first '("all" "screen" "print" "speech" "handheld" "tv"
-                                 "projection" "") :test #'string=)
+         ;; This is a screen user agent: only `all`, `screen`, and a bare/empty
+         ;; type match.  Other valid types (print, speech, tv, handheld, …) name
+         ;; a different device and must NOT match — so `@media print` rules are
+         ;; ignored and `@media not print` applies here (negate handles the flip).
+         (unless (member first '("all" "screen" "") :test #'string=)
            (setf result nil))))
       ;; the tail must be a sequence of `and (feature)` pairs
       (loop while (and (not (eq result :bad)) toks) do

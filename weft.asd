@@ -78,7 +78,7 @@
                 ((:module "render" :serial t
                   :components ((:file "packages") (:file "font") (:file "font-bold")
                                (:file "canvas") (:file "image") (:file "vector")
-                               (:file "text") (:file "layout")))))))
+                               (:file "text") (:file "layout") (:file "interact")))))))
 
 ;; The scripting seam: binds shuttle (a pure-CL JavaScript engine) to the weft
 ;; DOM so inline <script> can read and mutate the live tree, with the change
@@ -91,7 +91,7 @@
                                (:file "events") (:file "cssom") (:file "dom")
                                (:file "canvas") (:file "svg")
                                (:file "traversal") (:file "range") (:file "xml") (:file "loader")
-                               (:file "tables") (:file "bridge")))))))
+                               (:file "tables") (:file "bridge") (:file "interact")))))))
 
 (defsystem "weft/test"
   :depends-on ("weft" "weft/fetch" "weft/render")

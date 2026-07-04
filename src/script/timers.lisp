@@ -30,15 +30,24 @@
                        (< (timer-id tm) (timer-id best))))
           (setf best tm))))))
 
-(defun run-event-loop (ctx &key (max-tasks 200000))
+(defun run-event-loop (ctx &key (max-tasks 200000) until)
   "Drain the macrotask queue: run each due timer (advancing the virtual clock),
    then shuttle's microtasks, until nothing remains or MAX-TASKS is hit (a guard
-   against a runaway setInterval/setTimeout loop). Returns the tasks run."
+   against a runaway setInterval/setTimeout loop). Returns the tasks run.
+
+   UNTIL bounds the virtual clock: when supplied, only timers due at or before
+   that virtual time run, and the clock is advanced to it — so an interactive
+   shell can pump ~one frame of time per real frame instead of draining a
+   self-rescheduling setTimeout to the task cap. UNTIL NIL keeps the full-drain
+   behavior (unchanged)."
   (js:drain-microtasks)
   (let ((n 0))
     (loop
       (let ((tm (next-timer ctx)))
         (when (null tm) (return))
+        (when (and until (> (timer-when tm) until))
+          (setf (context-now ctx) (max (context-now ctx) until))
+          (return))
         (when (>= n max-tasks) (return))
         (incf n)
         (setf (context-now ctx) (max (context-now ctx) (timer-when tm)))

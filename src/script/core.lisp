@@ -37,6 +37,7 @@
   (loader nil)              ; (ctx url) -> (values kind content); NIL disables file/network loads
   (cookie "")               ; document.cookie backing store
   (current-script nil)      ; the <script> node currently executing (for document.write)
+  (ran-scripts (make-hash-table :test 'eq)) ; <script> nodes already executed (run once)
   (dirty nil))              ; a DOM mutation happened; styles cache is stale
 
 ;;; ---- small value helpers --------------------------------------------------
@@ -73,6 +74,7 @@
 (defun wrap (ctx node)
   "The JS wrapper for weft NODE, memoized (DOM object identity). NIL -> JS null."
   (cond ((null node) js:*null*)
+        ((js:js-object-p node) node)   ; already a JS object (e.g. window as an event target)
         (t (or (gethash node (context-node-objs ctx))
                (let ((obj (js:make-object :proto (proto ctx (proto-key-for node)))))
                  (setf (gethash node (context-node-objs ctx)) obj

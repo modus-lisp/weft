@@ -133,7 +133,19 @@
     (install-range ctx)
     (install-timers ctx)
     (install-globals ctx)
+    (install-window-events ctx)
     ctx))
+
+(defun fire-lifecycle-events (ctx)
+  "Signal that parsing is done: DOMContentLoaded (on document, and on window) then
+   window `load`.  Real pages gate their startup on these — e.g. skin/menu code
+   that runs on ready.  Each is followed by draining the task queue so handlers
+   they schedule (module init, deferred work) get to run."
+  (dispatch-event ctx (context-document ctx) (make-event-object ctx "DOMContentLoaded" nil))
+  (fire-window-event ctx "DOMContentLoaded")
+  (run-event-loop ctx :max-tasks 10000)
+  (fire-window-event ctx "load")
+  (run-event-loop ctx :max-tasks 10000))
 
 ;; Retained from M1: the element wrapper accessor.
 (defun element-object (ctx node) (wrap ctx node))
@@ -166,22 +178,51 @@
         (member (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) type))
                 +classic-js-types+ :test #'string=))))
 
-(defun run-inline-scripts (ctx)
-  "Execute every classic-JavaScript <script> in document order against CTX's
-   realm.  A script error is reported but does not abort (browser behavior);
-   non-JS <script> blocks (JSON-LD, templates, modules) are skipped."
-  (let ((realm (context-realm ctx)))
-    (dolist (script (dom:get-elements-by-tag-name (context-document ctx) "script"))
-      (let ((source (and (classic-javascript-p script) (script-source ctx script))))
-        (when (and source (plusp (length source)))
+(defun execute-script (ctx script)
+  "Run one classic-JavaScript SCRIPT node once against CTX's realm.  Marks it so
+   it never runs twice (re-insertion is a no-op); a script error is reported but
+   does not abort (browser behavior).  Returns T if it ran."
+  (unless (or (gethash script (context-ran-scripts ctx))
+              (not (classic-javascript-p script)))
+    (setf (gethash script (context-ran-scripts ctx)) t)
+    (let ((source (script-source ctx script)))
+      (when (and source (plusp (length source)))
+        (let ((saved (context-current-script ctx)))
           (setf (context-current-script ctx) script)
-          (handler-case (js:eval-script realm source)
-            (js:shuttle-error (e)
-              (format *error-output* "~&weft.script: uncaught ~a~%" e))
-            (error (e)
-              (format *error-output* "~&weft.script: script error: ~a~%" e)))))))
-  (setf (context-current-script ctx) nil)
+          (unwind-protect
+               (handler-case (js:eval-script (context-realm ctx) source)
+                 (js:shuttle-error (e)
+                   (format *error-output* "~&weft.script: uncaught ~a~%" e))
+                 (error (e)
+                   (format *error-output* "~&weft.script: script error: ~a~%" e)))
+            (setf (context-current-script ctx) saved)))
+        t))))
+
+(defun run-inline-scripts (ctx)
+  "Execute every classic-JavaScript <script> present at parse time, in document
+   order.  Non-JS <script> blocks (JSON-LD, templates, modules) are skipped."
+  (dolist (script (dom:get-elements-by-tag-name (context-document ctx) "script"))
+    (execute-script ctx script))
   ctx)
+
+(defun connected-p (ctx node)
+  "True when NODE is in CTX's live document tree."
+  (loop for n = node then (h:dnode-parent n)
+        while n thereis (eq n (context-document ctx))))
+
+(defun run-inserted-scripts (ctx node)
+  "Browser 'a script element is inserted into a document' behavior: after NODE is
+   inserted (and connected), execute any not-yet-run classic <script> it brings
+   in — this is how a page's module loader (e.g. MediaWiki ResourceLoader) pulls
+   code by appending <script src>.  A load event is fired so onload chains run."
+  (when (and (context-loader ctx) (connected-p ctx node))
+    (labels ((walk (n)
+               (when (eq (h:dnode-kind n) :element)
+                 (when (and (string-equal (h:dnode-name n) "script")
+                            (execute-script ctx n))
+                   (fire-event-later ctx n "load"))
+                 (loop for c across (h:dnode-children n) do (walk c)))))
+      (walk node))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Scripted render
@@ -200,7 +241,8 @@
                              (setf ctx (make-context doc :css (or css "") :width width
                                                      :base (or base "") :loader loader))
                              (run-inline-scripts ctx)
-                             (run-event-loop ctx :max-tasks 10000))
+                             (run-event-loop ctx :max-tasks 10000)
+                             (fire-lifecycle-events ctx))
             render-keys)
      ctx)))
 

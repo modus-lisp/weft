@@ -126,6 +126,41 @@
       (setf (evt-phase ev) 0 (evt-current-target ev) nil)
       (jbool (not (evt-default-prevented ev))))))
 
+(defun dispatch-to-window (ctx evt-obj)
+  "Invoke WINDOW's own listeners for EVT-OBJ (window is the top of the tree, so
+   there is no capture/bubble path — just its target-phase listeners)."
+  (let ((window (proto ctx :window)) (ev (evt-of ctx evt-obj)))
+    (when (and window ev)
+      (setf (evt-target ev) window (evt-dispatched ev) t (evt-phase ev) 2)
+      (invoke-listeners ctx window evt-obj ev t)
+      (invoke-listeners ctx window evt-obj ev nil)
+      (setf (evt-phase ev) 0 (evt-current-target ev) nil))
+    (jbool (not (and ev (evt-default-prevented ev))))))
+
+(defun fire-window-event (ctx type)
+  "Fire a fresh simple event of TYPE at WINDOW's listeners."
+  (dispatch-to-window ctx (make-event-object ctx type nil)))
+
+(defun install-window-events (ctx)
+  "Make WINDOW (globalThis) an EventTarget: addEventListener/removeEventListener/
+   dispatchEvent keyed by the window object itself.  Real pages register
+   load/resize/scroll/DOMContentLoaded here, not on a node."
+  (let ((window (proto ctx :window)) (realm (context-realm ctx)))
+    (flet ((put (name arity fn) (js:put window name (js:native-function realm name fn arity)
+                                        :enumerable nil)))
+      (put "addEventListener" 2
+           (lambda (this a) (declare (ignore this))
+             (let ((l (arg a 1)))
+               (when (or (js:js-callable-p l) (js:js-object-p l))
+                 (add-listener ctx window (jstr (arg a 0)) l (js:js-truthy (arg a 2)))))
+             js:*undefined*))
+      (put "removeEventListener" 2
+           (lambda (this a) (declare (ignore this))
+             (remove-listener ctx window (jstr (arg a 0)) (arg a 1) (js:js-truthy (arg a 2)))
+             js:*undefined*))
+      (put "dispatchEvent" 1
+           (lambda (this a) (declare (ignore this)) (dispatch-to-window ctx (arg a 0)))))))
+
 (defun install-events (ctx np)
   "EventTarget methods onto the Node prototype NP, plus the Event constructors."
   (let ((realm (context-realm ctx)))

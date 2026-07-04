@@ -41,6 +41,27 @@
    non-deterministic.  The interactive shell (loom) turns it on for real browsing."
   (let ((v (uiop:getenv "WEFT_JS"))) (and v (plusp (length v)) (not (string= v "0")))))
 
+(defun images-enabled-p ()
+  "Network <img> loading is opt-in here (env WEFT_IMG, or implied by WEFT_JS): the
+   default references stay offline/deterministic."
+  (or (js-enabled-p)
+      (let ((v (uiop:getenv "WEFT_IMG"))) (and v (plusp (length v)) (not (string= v "0"))))))
+
+(defun make-image-loader (base)
+  "An (url) -> (values bytes mime) image fetcher over seal, resolving relative and
+   protocol-relative URLs against BASE.  NIL bytes on any failure."
+  (lambda (url)
+    (handler-case
+        (let ((abs (cond ((and (>= (length url) 2) (string= (subseq url 0 2) "//"))
+                          (concatenate 'string "https:" url))
+                         (t (let ((u (ignore-errors (weft.url:parse url base))))
+                              (if u (weft.url:href u) url))))))
+          (let ((resp (f:fetch abs)))
+            (when (and resp (<= 200 (f:response-status resp) 299))
+              (values (f:response-body resp)
+                      (f:get-header (f:response-headers resp) "content-type")))))
+      (error () (values nil nil)))))
+
 (defun https-subresource-loader (base)
   "A subresource loader (ctx url) -> (values kind content) backed by weft.fetch,
    so external stylesheets — and, when WEFT_JS is set, scripts — travel over seal
@@ -65,10 +86,11 @@
    set, external JavaScript) travel over seal TLS."
   (multiple-value-bind (html cs resp) (f:fetch-text url)
     (declare (ignore cs))
-    (let ((base (f:response-url resp)))         ; the final URL is the document base
-      (format t "~&fetched ~a  (HTTP ~d, base ~a, ~:d chars)~a~%"
+    (let ((base (f:response-url resp))          ; the final URL is the document base
+          (r:*image-loader* (and (images-enabled-p) (make-image-loader (f:response-url resp)))))
+      (format t "~&fetched ~a  (HTTP ~d, base ~a, ~:d chars)~a~a~%"
               url (f:response-status resp) base (length html)
-              (if (js-enabled-p) "  [JS on]" ""))
+              (if (js-enabled-p) "  [JS on]" "") (if (images-enabled-p) "  [images on]" ""))
       (multiple-value-bind (path ctx)
           (s:render-scripted-to-png html "" width out
                                     :min-height 400 :max-height 8000

@@ -220,8 +220,13 @@ reserves the browser's real box (20x20 for an 18x18 + 1px border) instead of jus
 its content.  The decoded/CSS/HTML intrinsic size is the CONTENT size; else an
 alt-text placeholder."
   (let* ((src (cdr (assoc "src" (h:dnode-attrs node) :test #'string-equal)))
-         (decoded (and src (>= (length src) 5) (string-equal (subseq src 0 5) "data:")
-                       (ignore-errors (decode-image src))))
+         (decoded (cond
+                    ((null src) nil)
+                    ((and (>= (length src) 5) (string-equal (subseq src 0 5) "data:"))
+                     (ignore-errors (decode-image src)))
+                    ;; a network <img src> — fetched, decoded and cached through
+                    ;; *IMAGE-LOADER* (NIL when running offline: stays a placeholder).
+                    (t (fetch-image src))))
          (cw (let ((sw (css::resolve-size (css:cstyle-width cs) 300))) (and (numberp sw) sw)))
          (chh (let ((sh (css::resolve-size (css:cstyle-height cs) 200))) (and (numberp sh) sh)))
          (w (or cw (img-attr-num node "width") (and decoded (img-w decoded)) 120))

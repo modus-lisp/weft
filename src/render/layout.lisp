@@ -9,7 +9,7 @@
 (in-package #:weft.render)
 
 (defstruct lbox x y w h style node kind children marker img vpaint)   ; kind :block | :line; img = decoded IMG; vpaint = (cv x y w h) replaced-content painter
-(defstruct frag x w text style)                            ; a positioned styled text run on a line
+(defstruct frag x w text style node)                       ; a positioned styled text run on a line; node = source DOM element (for hit-testing)
 
 (defvar *floats* nil "Page-scoped float list: each (side left right top bottom).")
 (defvar *abs-pending* nil
@@ -65,24 +65,24 @@ one — adjacent runs across an element boundary like \"(\", <a>x</a>, \")\" get
 spurious space).  GAP is extra leading px from inline horizontal margins on the
 enclosing element(s) (e.g. HN's .hnname margin-right).  Use TOK-META/TOK-SPACE/TOK-GAP."
   (let ((words '()) (pend nil) (pend-px 0))        ; whitespace + inline-margin px before next token
-    (labels ((emit1 (payload meta)
-               (push (list payload meta pend pend-px) words) (setf pend nil pend-px 0))
-             (atom! (lb) (when lb (emit1 :atomic lb)))
+    (labels ((emit1 (payload meta node)
+               (push (list payload meta pend pend-px node) words) (setf pend nil pend-px 0))
+             (atom! (lb node) (when lb (emit1 :atomic lb node)))
              (iedge (cs side)                        ; inline horizontal margin px on :left / :right
                (let ((v (if (eq side :left) (css:cstyle-margin-left cs) (css:cstyle-margin-right cs))))
                  (if (numberp v) (max 0 v) 0)))
-             (emit-text (s style)
+             (emit-text (s style node)
                (let ((b (make-string-output-stream)) (any nil))
-                 (flet ((flush () (when any (emit1 (get-output-stream-string b) style)
+                 (flet ((flush () (when any (emit1 (get-output-stream-string b) style node)
                                     (setf any nil b (make-string-output-stream)))))
                    (loop for c across s do
                      (if (member c '(#\Space #\Tab #\Newline #\Return))
                          (progn (flush) (setf pend t))
                          (progn (write-char c b) (setf any t))))
                    (flush))))
-             (rec (n owner)
+             (rec (n owner onode)
                (case (h:dnode-kind n)
-                 (:text (emit-text (h:dnode-data n) owner))
+                 (:text (emit-text (h:dnode-data n) owner onode))
                  (:element
                   (let ((cs (or (st styles n) owner)))
                     (cond
@@ -93,24 +93,24 @@ enclosing element(s) (e.g. HN's .hnname margin-right).  Use TOK-META/TOK-SPACE/T
                       ;; <img> is UA display:inline-block and must not fall into generic
                       ;; block layout, which collapses it to a ~0-height content box.
                       ((string= (h:dnode-name n) "img")
-                       (let ((lb (img-box n cs))) (atom! lb)))
+                       (let ((lb (img-box n cs))) (atom! lb n)))
                       ;; <object data="data:...image..."> that decodes renders as a
                       ;; replaced image (with its own background, e.g. Acid2's eye
                       ;; tile); otherwise it falls back to its child content.
                       ((and (string= (h:dnode-name n) "object") (object-data-image n))
                        (let ((lb (object-box n cs (object-data-image n))))
-                         (atom! lb)))
+                         (atom! lb n)))
                       ;; <svg> / <canvas>: replaced vector content, sized to its
                       ;; intrinsic box (viewBox/width/height for SVG; width/height
                       ;; attrs for canvas) and composited during paint.
                       ((string= (h:dnode-name n) "svg")
-                       (atom! (svg-box n cs)))
+                       (atom! (svg-box n cs) n))
                       ((string= (h:dnode-name n) "canvas")
-                       (atom! (canvas-box n cs)))
+                       (atom! (canvas-box n cs) n))
                       ((and cs (member (cdisplay cs) '("inline-block" "flex" "table") :test #'string=))
                        (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
                          (declare (ignore adv))
-                         (atom! lb)))
+                         (atom! lb n)))
                       ;; A block-level element with an explicit px width AND height
                       ;; that appears in inline flow (e.g. HN's <div class=votearrow>
                       ;; 10x10 inside an inline <a>) is not part of the surrounding
@@ -134,21 +134,23 @@ enclosing element(s) (e.g. HN's .hnname margin-right).  Use TOK-META/TOK-SPACE/T
                              (atom! (make-lbox :x 0 :y 0
                                                :w (+ ml (lbox-w lb) mr)
                                                :h (+ mt (lbox-h lb) mb)
-                                               :kind :block :children (list lb)))))))
+                                               :kind :block :children (list lb))
+                                    n)))))
                       (t                             ; generic inline: honor horizontal margins
                        (incf pend-px (iedge cs :left))
-                       (loop for c across (h:dnode-children n) do (rec c cs))
+                       (loop for c across (h:dnode-children n) do (rec c cs n))
                        (incf pend-px (iedge cs :right)))))))))
-      (rec node (or (st styles node) default-style)))
+      (rec node (or (st styles node) default-style) node))
     (nreverse words)))
 
 ;;; Inline-token accessors: (PAYLOAD META SPACE GAP) — PAYLOAD is (CAR tok) (a word
 ;;; string or :ATOMIC), META its style or lbox, SPACE whether whitespace preceded it,
 ;;; GAP extra leading px from the enclosing element's inline horizontal margins.
-(declaim (inline tok-meta tok-space tok-gap))
+(declaim (inline tok-meta tok-space tok-gap tok-node))
 (defun tok-meta (tok) (cadr tok))
 (defun tok-space (tok) (caddr tok))
 (defun tok-gap (tok) (cadddr tok))
+(defun tok-node (tok) (fifth tok))      ; source DOM element node (for hit-testing)
 
 (defun img-attr-num (node name)
   (let ((v (cdr (assoc name (h:dnode-attrs node) :test #'string-equal))))
@@ -218,7 +220,7 @@ alt-text placeholder."
     (when (and (not decoded) has-alt)
       (setf (lbox-children content)
             (list (make-lbox :x 2 :y (max 0 (floor (- hh *font-h*) 2)) :w (- w 4) :h *font-h* :kind :line
-                             :children (list (make-frag :x 2 :w (word-w alt cs) :text alt :style cs))))))
+                             :children (list (make-frag :x 2 :w (word-w alt cs) :text alt :style cs :node node))))))
     lb))
 
 (defun object-data-image (node)
@@ -368,13 +370,13 @@ text-align.  Returns (values line-boxes total-height)."
                   (let ((lb (tok-meta wd)))
                     (shift-box lb (round (- cx (lbox-x lb))) 0)
                     (setf line-h (max line-h (lbox-h lb))) (push lb cur))
-                  (push (make-frag :x cx :w ww :text (car wd) :style (tok-meta wd)) cur))
+                  (push (make-frag :x cx :w ww :text (car wd) :style (tok-meta wd) :node (tok-node wd)) cur))
               (incf cx ww) (incf i)))
           (when (null cur)                       ; one item too wide for the band: force it
             (let* ((wd (aref ws i)))
               (if (eq (car wd) :atomic) (let ((lb (tok-meta wd))) (shift-box lb (round (- lx (lbox-x lb))) 0)
                                           (setf line-h (max line-h (lbox-h lb))) (push lb cur))
-                  (push (make-frag :x lx :w (word-w (car wd) (tok-meta wd)) :text (car wd) :style (tok-meta wd)) cur))
+                  (push (make-frag :x lx :w (word-w (car wd) (tok-meta wd)) :text (car wd) :style (tok-meta wd) :node (tok-node wd)) cur))
               (incf i)))
           (let* ((items (nreverse cur))
                  (lastx (let ((it (car (last items)))) (if (frag-p it) (+ (frag-x it) (frag-w it)) (+ (lbox-x it) (lbox-w it)))))
@@ -582,7 +584,7 @@ Returns (values lbox advance-height)."
           (dolist (ln (split-newlines text))
             (push (make-lbox :x cx :y yy :w content-w :h lh :kind :line
                              :children (when (plusp (length ln))
-                                         (list (make-frag :x cx :w (word-w ln cs) :text ln :style cs))))
+                                         (list (make-frag :x cx :w (word-w ln cs) :text ln :style cs :node node))))
                   children)
             (incf yy lh) (incf content-h lh)))
         (let* ((box-h (+ content-h pt pb bt bb))

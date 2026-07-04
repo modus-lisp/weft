@@ -840,14 +840,6 @@ Returns (values lbox advance-height)."
           (if (frag-p it) (incf (frag-x it) dx) (shift-box it dx dy)))
         (dolist (c (lbox-children lb)) (shift-box c dx dy)))))
 
-(defun est-content-width (node styles)
-  "Rough shrink-to-fit width estimate for a flex item."
-  (let* ((base (st styles node)) (words (collect-words node styles base 600)) (w 0))
-    (dolist (wd words)
-      (if (eq (car wd) :atomic)
-          (incf w (+ (lbox-w (tok-meta wd)) (tok-gap wd) (if (tok-space wd) (space-w base) 0)))
-          (incf w (+ (word-w (car wd) (tok-meta wd)) (tok-gap wd) (if (tok-space wd) (space-w (tok-meta wd)) 0)))))
-    (min w 600)))
 
 (defun item-base (item styles content-w)
   "The flex base size of ITEM: its flex-basis (a length), else its used width, else

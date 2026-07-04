@@ -186,18 +186,21 @@ background-filled canvas size so layout at least gets dimensions)."
             (map 'string #'code-char (base64-decode payload))
             (percent-decode payload))))))
 
+(defun decode-svg-source (src)
+  "Render an SVG source string through stencil to a straight-alpha IMG at the SVG's
+   intrinsic size, or NIL."
+  (when (and src (plusp (length src)))
+    (let ((root (ignore-errors (st:parse-svg src))))
+      (when root
+        (multiple-value-bind (iw ih) (st:svg-intrinsic-size root)
+          (let* ((w (max 1 (round iw))) (h (max 1 (round ih)))
+                 (cv (sc:make-rgba-canvas w h)))
+            (ignore-errors (st:render-svg-to-canvas root :width w :height h :canvas cv))
+            (rgba-canvas->img cv)))))))
+
 (defun decode-svg-image (uri)
-  "Render a data:image/svg+xml URI through stencil to a straight-alpha IMG at the
-   SVG's intrinsic size, or NIL."
-  (let ((src (svg-data-uri-source uri)))
-    (when (and src (plusp (length src)))
-      (let ((root (ignore-errors (st:parse-svg src))))
-        (when root
-          (multiple-value-bind (iw ih) (st:svg-intrinsic-size root)
-            (let* ((w (max 1 (round iw))) (h (max 1 (round ih)))
-                   (cv (sc:make-rgba-canvas w h)))
-              (ignore-errors (st:render-svg-to-canvas root :width w :height h :canvas cv))
-              (rgba-canvas->img cv))))))))
+  "Render a data:image/svg+xml URI through stencil to a straight-alpha IMG, or NIL."
+  (decode-svg-source (svg-data-uri-source uri)))
 
 ;;; ---- entry -------------------------------------------------------------
 (defun decode-image (uri)
@@ -209,6 +212,59 @@ background-filled canvas size so layout at least gets dimensions)."
           ((search "gif" (or mime "") :test #'char-equal) (gif-decode bytes))
           ((and (>= (length bytes) 2) (= (aref bytes 0) 137)) (png-decode bytes))
           (t nil))))
+
+(defun %svg-bytes-p (bytes)
+  "True when BYTES look like SVG/XML text (starts with '<' after optional BOM/space)."
+  (loop for i from 0 below (min 64 (length bytes))
+        for c = (aref bytes i)
+        do (cond ((member c '(9 10 13 32 #xef #xbb #xbf)))   ; whitespace / UTF-8 BOM
+                 ((= c (char-code #\<))
+                  (return (let ((s (map 'string #'code-char (subseq bytes i (min (length bytes) (+ i 256))))))
+                            (or (search "<svg" s :test #'char-equal)
+                                (search "<?xml" s :test #'char-equal)))))
+                 (t (return nil)))))
+
+(defun decode-image-bytes (bytes &optional mime)
+  "Decode raw image BYTES (from a network fetch, not a data: URI) to an IMG, or NIL.
+   Dispatches on MIME when given, else on the leading magic bytes."
+  (when (and bytes (plusp (length bytes)))
+    (cond
+      ((and mime (search "svg" mime :test #'char-equal))
+       (decode-svg-source (map 'string #'code-char bytes)))
+      ((and (>= (length bytes) 8) (= (aref bytes 0) 137) (= (aref bytes 1) 80)) (png-decode bytes))
+      ((and (>= (length bytes) 3) (= (aref bytes 0) 71) (= (aref bytes 1) 73) (= (aref bytes 2) 70))
+       (gif-decode bytes))               ; "GIF"
+      ((and mime (search "png" mime :test #'char-equal)) (png-decode bytes))
+      ((and mime (search "gif" mime :test #'char-equal)) (gif-decode bytes))
+      ((%svg-bytes-p bytes) (decode-svg-source (map 'string #'code-char bytes)))
+      (t nil))))
+
+;;; ---- network image loading + cache -------------------------------------
+(defvar *image-loader* nil
+  "When bound to a function (URL) -> (values BYTES MIME), FETCH-IMAGE pulls network
+   <img> bitmaps through it (backed by weft.fetch over seal in the browsing paths).
+   NIL disables network images — the render stays offline/deterministic.")
+(defparameter *image-store* (make-hash-table :test 'equal :synchronized t)
+  "Persistent URL -> IMG (or :FAILED) cache, so re-layout and re-visits don't
+   refetch or re-decode.  Bounded by *IMAGE-STORE-CAP*.")
+(defparameter *image-store-cap* 256)
+
+(defun clear-image-cache () (clrhash *image-store*))
+
+(defun fetch-image (url)
+  "Fetch, decode, and cache the network image at URL — returns an IMG or NIL.
+   Memoizes successes and failures in the bounded *IMAGE-STORE*."
+  (when (and *image-loader* url (plusp (length url)))
+    (multiple-value-bind (hit found) (gethash url *image-store*)
+      (if found
+          (and (not (eq hit :failed)) hit)
+          (let ((img (handler-case
+                         (multiple-value-bind (bytes mime) (funcall *image-loader* url)
+                           (and bytes (decode-image-bytes bytes mime)))
+                       (error () nil))))
+            (when (>= (hash-table-count *image-store*) *image-store-cap*) (clrhash *image-store*))
+            (setf (gethash url *image-store*) (or img :failed))
+            img)))))
 
 (defun blit-img (cv img x y &optional dw dh)
   "Paint IMG onto CV at (X,Y), straight-alpha over existing pixels, optionally

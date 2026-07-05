@@ -256,16 +256,37 @@ background-filled canvas size so layout at least gets dimensions)."
 
 (defun clear-image-cache () (clrhash *image-store*))
 
+(defun image-size-bytes (bytes)
+  "Read an image's intrinsic (values WIDTH HEIGHT) from just its header (PNG IHDR,
+   GIF screen descriptor, JPEG SOF) — no full decode.  So a box can be reserved at
+   the right size even when the pixels can't (yet) be decoded."
+  (when (and bytes (>= (length bytes) 24))
+    (cond
+      ((and (= (aref bytes 0) 137) (= (aref bytes 1) 80))          ; PNG: IHDR at 16/20, big-endian
+       (values (logior (ash (aref bytes 16) 24) (ash (aref bytes 17) 16) (ash (aref bytes 18) 8) (aref bytes 19))
+               (logior (ash (aref bytes 20) 24) (ash (aref bytes 21) 16) (ash (aref bytes 22) 8) (aref bytes 23))))
+      ((and (= (aref bytes 0) 71) (= (aref bytes 1) 73))           ; GIF: screen w/h at 6/8, little-endian
+       (values (logior (aref bytes 6) (ash (aref bytes 7) 8)) (logior (aref bytes 8) (ash (aref bytes 9) 8))))
+      ((and (= (aref bytes 0) #xff) (= (aref bytes 1) #xd8))       ; JPEG: SOF
+       (jpeg-size bytes))
+      (t nil))))
+
 (defun fetch-image (url)
   "Fetch, decode, and cache the network image at URL — returns an IMG or NIL.
-   Memoizes successes and failures in the bounded *IMAGE-STORE*."
+   If the pixels can't be decoded (unsupported feature, truncation) but the header
+   gives a size, returns a dimensions-only IMG (RGBA NIL) so the box is still
+   reserved at the correct intrinsic size and does not reflow later.  Memoizes
+   successes and failures in the bounded *IMAGE-STORE*."
   (when (and *image-loader* url (plusp (length url)))
     (multiple-value-bind (hit found) (gethash url *image-store*)
       (if found
           (and (not (eq hit :failed)) hit)
           (let ((img (handler-case
                          (multiple-value-bind (bytes mime) (funcall *image-loader* url)
-                           (and bytes (decode-image-bytes bytes mime)))
+                           (and bytes
+                                (or (decode-image-bytes bytes mime)
+                                    (multiple-value-bind (w h) (image-size-bytes bytes)
+                                      (and w h (plusp w) (plusp h) (make-img :w w :h h :rgba nil))))))
                        (error () nil))))
             (when (>= (hash-table-count *image-store*) *image-store-cap*) (clrhash *image-store*))
             (setf (gethash url *image-store*) (or img :failed))

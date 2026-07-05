@@ -274,7 +274,9 @@ alt-text placeholder."
                         (css:cstyle-border-bottom-width c) 0 (css:cstyle-border-left-width c) 0)
                   c))
          (content (make-lbox :x (+ bl pl) :y (+ bt pt) :w w :h hh
-                             :style inner :kind :block :img decoded))
+                             ;; a dimensions-only image (header parsed, pixels not
+                             ;; decoded) sizes the box but carries no bitmap to blit.
+                             :style inner :kind :block :img (and decoded (img-rgba decoded) decoded)))
          (lb (make-lbox :x 0 :y 0 :w (+ bl pl w pr br) :h (+ bt pt hh pb bb)
                         :style style :node node :kind :block :children (list content))))
     (when (and (not decoded) has-alt)

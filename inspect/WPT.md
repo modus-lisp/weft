@@ -8,6 +8,14 @@ comparison purely exercises weft's layout of the tested feature against a refere
 that produces the same result another way.  This covers a far larger and more
 targeted slice of the platform than the Acid tests, and pinpoints gaps by feature.
 
+There are two harnesses:
+
+- **`wpt-run.py`** — *reftests* (rendering), described above.
+- **`wpt-harness.py`** — *testharness.js* tests: the assert-based JS suite that
+  covers the non-visual browser (DOM, HTML parsing, URL, encoding, events…).  weft
+  runs them through shuttle; results come back through a completion callback we
+  register in place of `testharnessreport.js`.
+
 ## Getting the tests
 
 A partial + sparse checkout keeps it small (the full suite is ~2 GB):
@@ -16,11 +24,12 @@ A partial + sparse checkout keeps it small (the full suite is ~2 GB):
 git clone --no-checkout --depth 1 --filter=blob:none \
     https://github.com/web-platform-tests/wpt.git ../wpt
 cd ../wpt
-git sparse-checkout set css/css-flexbox css/css-text css/css-position fonts common css/support
+git sparse-checkout set css/css-flexbox css/css-text css/css-position \
+    fonts common css/support resources dom url encoding
 git checkout
 ```
 
-## Running
+## Running (reftests)
 
 ```sh
 python3 inspect/wpt-run.py ../wpt css/css-position            # a whole category
@@ -33,13 +42,24 @@ a file-backed subresource loader resolves the tests' relative / `/root-relative`
 CSS and support files), then the PNG pairs are compared and pass/fail is reported
 per category.  Requires Pillow.
 
+## Running (testharness.js)
+
+```sh
+python3 inspect/wpt-harness.py ../wpt dom/nodes
+python3 inspect/wpt-harness.py ../wpt url --limit 50
+```
+
+Reports subtest pass rate (each file has one or more `test(...)` subtests) and
+file pass rate (a file all-passes when every subtest does).
+
 ## Baseline (indicative, sampled)
 
-| category      | pass |
-|---------------|------|
-| css-position  | ~27% |
-| css-text      | ~27% |
-| css-flexbox   | ~10% (single-line/row-focused; no column shrink, wrap, align-content, baseline) |
+| suite                     | pass |
+|---------------------------|------|
+| reftest css-position      | ~27% |
+| reftest css-text          | ~27% |
+| reftest css-flexbox       | ~10% (single-line/row-focused; no column shrink, wrap, align-content, baseline) |
+| testharness dom/nodes     | ~16% of subtests |
 
 These are honest starting points for a from-scratch engine; each failing category
-is a worklist of concrete, spec-referenced layout bugs.
+is a worklist of concrete, spec-referenced bugs.

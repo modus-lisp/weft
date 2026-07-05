@@ -43,7 +43,7 @@
                   do (incf pos)))))
       (let* ((num-str (subseq lower 0 pos))
              (unit-str (subseq lower pos))
-             (value (read-from-string num-str)))
+             (value (safe-number num-str)))
         (if (string= unit-str "")
             (if (= value 0)
                 (list (float value 0d0) "")

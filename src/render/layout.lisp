@@ -876,6 +876,8 @@ Returns (values lbox advance-height)."
          (align (css:cstyle-align-items base-cs))
          (gap (css:cstyle-gap base-cs))
          (items (remove-if-not (lambda (k) (let ((c (st styles k))) (and c (not (string= (css:cstyle-display c) "none"))))) (child-elements node)))
+         ;; *-reverse lays the items out in reverse order along the main axis.
+         (items (if (member dir '("row-reverse" "column-reverse") :test #'string=) (reverse items) items))
          (nitems (length items)))
     (when (zerop nitems) (return-from layout-flex (values nil 0)))
     (let* ((main-avail (if row content-w content-w))   ; column main size is intrinsic; treat width as cross

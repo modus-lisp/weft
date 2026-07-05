@@ -415,6 +415,12 @@ Ignores the system-font keywords (caption/icon/...)."
          (let ((v (parse-value "overflow" value))) (when (stringp v) (setf (cstyle-overflow cs) v))))
         ((string= prop "flex-direction") (setf (cstyle-flex-direction cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "flex-wrap") (setf (cstyle-flex-wrap cs) (string-downcase (string-trim '(#\Space) value))))
+        ((string= prop "flex-flow")   ; shorthand: <flex-direction> and/or <flex-wrap>
+         (dolist (tok (remove "" (split-ws (string-downcase (string-trim '(#\Space) value))) :test #'string=))
+           (cond ((member tok '("row" "row-reverse" "column" "column-reverse") :test #'string=)
+                  (setf (cstyle-flex-direction cs) tok))
+                 ((member tok '("nowrap" "wrap" "wrap-reverse") :test #'string=)
+                  (setf (cstyle-flex-wrap cs) tok)))))
         ((string= prop "justify-content") (setf (cstyle-justify-content cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "align-items") (setf (cstyle-align-items cs) (string-downcase (string-trim '(#\Space) value))))
         ((member prop '("gap" "column-gap" "row-gap") :test #'string=) (let ((v (len))) (when v (setf (cstyle-gap cs) v))))

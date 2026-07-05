@@ -961,9 +961,17 @@ Returns (values lbox advance-height)."
            (free (- main-avail sum-base))
            (grows (mapcar (lambda (it) (css:cstyle-flex-grow (st styles it))) items))
            (sum-grow (reduce #'+ grows))
-           (sizes (if (and row (> free 0) (> sum-grow 0))
-                      (mapcar (lambda (b g) (+ b (* free (/ g sum-grow)))) bases grows)
-                      bases)))
+           ;; flex-shrink is weighted by shrink-factor * base-size (CSS 9.7): an item
+           ;; with a larger base gives up proportionally more of the negative free space.
+           (shrinks (mapcar (lambda (it) (css:cstyle-flex-shrink (st styles it))) items))
+           (scaled (mapcar #'* shrinks bases))
+           (sum-scaled (reduce #'+ scaled))
+           (sizes (cond ((and row (> free 0) (> sum-grow 0))
+                         (mapcar (lambda (b g) (+ b (* free (/ g sum-grow)))) bases grows))
+                        ((and row (< free 0) (> sum-scaled 0))
+                         (mapcar (lambda (b sc) (max 0 (+ b (* free (/ sc sum-scaled)))))
+                                 bases scaled))
+                        (t bases))))
       (if row
           ;; ---- ROW ----
           (let* ((used (+ (reduce #'+ sizes) total-gap))

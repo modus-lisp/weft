@@ -745,7 +745,7 @@ Returns (values lbox advance-height)."
       (when (member (cdisplay cs) '("flex" "table") :test #'string=)
         (multiple-value-bind (boxes ch)
             (if (string= (cdisplay cs) "flex")
-                (layout-flex node styles cx cy content-w cs)
+                (layout-flex node styles cx cy content-w cs child-avail-h)
                 (layout-table node styles cx cy content-w cs))
           (let* ((box-h (+ ch pt pb bt bb))
                  (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
@@ -951,8 +951,10 @@ Returns (values lbox advance-height)."
       ;; out-of-flow is skipped) rather than the crude inline-flatten estimate.
       (t (min content-w (pref-content-width item styles content-w))))))
 
-(defun layout-flex (node styles cx cy content-w base-cs)
-  "Single-line flexbox layout.  Returns (values child-lboxes content-height)."
+(defun layout-flex (node styles cx cy content-w base-cs &optional avail-h)
+  "Single-line flexbox layout.  Returns (values child-lboxes content-height).  AVAIL-H
+is the container's definite content height (px) when known — the main-axis size a
+column distributes grow/shrink into; NIL means auto (size to content)."
   (let* ((dir (css:cstyle-flex-direction base-cs))
          (row (not (or (string= dir "column") (string= dir "column-reverse"))))
          (justify (css:cstyle-justify-content base-cs))
@@ -1003,17 +1005,34 @@ Returns (values lbox advance-height)."
                       ((string= align "flex-end") (shift-box lb 0 (round (- max-h (lbox-h lb)))))))
               (values boxes max-h)))
           ;; ---- COLUMN ----
-          (let ((y cy) (boxes '()) (max-w 0))
-            (loop for it in items do
-              (multiple-value-bind (lb adv) (layout-node it styles cx y content-w)
-                (when lb (push lb boxes) (setf max-w (max max-w (lbox-w lb))))
-                (incf y (+ adv gap))))
-            (let ((boxes (nreverse boxes)))
-              ;; cross-axis (horizontal) alignment of the column's items
-              (dolist (lb boxes)
-                (cond ((string= align "center") (shift-box lb (round (/ (- content-w (lbox-w lb)) 2)) 0))
-                      ((string= align "flex-end") (shift-box lb (round (- content-w (lbox-w lb))) 0))))
-              (values boxes (- y cy gap))))))))
+          ;; Lay each item out at its natural size to get its main-axis (height) base;
+          ;; then, if the container has a definite height, distribute the free space by
+          ;; flex-grow / flex-shrink (weighted by shrink*height) along the vertical axis.
+          (let ((boxes '()) (heights '()) (max-w 0))
+            (dolist (it items)
+              (multiple-value-bind (lb adv) (layout-node it styles cx cy content-w)
+                (push lb boxes) (push (if lb adv 0) heights)
+                (when lb (setf max-w (max max-w (lbox-w lb))))))
+            (setf boxes (nreverse boxes) heights (nreverse heights))
+            (let* ((base-sum (+ (reduce #'+ heights) total-gap))
+                   (hfree (if (numberp avail-h) (- avail-h base-sum) 0))
+                   (hscaled (mapcar #'* shrinks heights))
+                   (sum-hscaled (reduce #'+ hscaled))
+                   (tgt (cond ((and (numberp avail-h) (> hfree 0) (> sum-grow 0))
+                               (mapcar (lambda (h g) (+ h (* hfree (/ g sum-grow)))) heights grows))
+                              ((and (numberp avail-h) (< hfree 0) (> sum-hscaled 0))
+                               (mapcar (lambda (h sc) (max 0 (+ h (* hfree (/ sc sum-hscaled))))) heights hscaled))
+                              (t heights)))
+                   (y cy))
+              (loop for lb in boxes for h in tgt do
+                (when lb
+                  (shift-box lb 0 (round (- y (lbox-y lb))))   ; stack at the running main-axis offset
+                  (setf (lbox-h lb) (round h))
+                  (cond ((string= align "center") (shift-box lb (round (/ (- content-w (lbox-w lb)) 2)) 0))
+                        ((string= align "flex-end") (shift-box lb (round (- content-w (lbox-w lb))) 0))
+                        ((string= align "stretch") (setf (lbox-w lb) content-w))))
+                (incf y (+ h gap)))
+              (values (remove nil boxes) (max 0 (- y cy gap)))))))))
 
 (defun cell-like-p (c styles)
   "True when child C of a table participates as a cell — i.e. it is not itself an

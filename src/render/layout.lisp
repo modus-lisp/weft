@@ -115,7 +115,10 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                  (if (numberp v) (max 0 v) 0)))
              (emit-text (s style node)
                (let ((b (make-string-output-stream)) (any nil))
-                 (flet ((flush () (when any (emit1 (get-output-stream-string b) style node)
+                 (flet ((flush () (when any
+                                    (emit1 (apply-text-transform (get-output-stream-string b)
+                                                                 (and style (css:cstyle-text-transform style)))
+                                           style node)
                                     (setf any nil b (make-string-output-stream)))))
                    (loop for c across s do
                      (if (member c '(#\Space #\Tab #\Newline #\Return))
@@ -372,16 +375,29 @@ explicit <number>/<length>/<percentage> multiplier is used as-is; `normal`
   (let ((lh (css:cstyle-line-height cs)) (fs (css:cstyle-font-size cs)))
     (* fs (if (eq lh :normal) (face-normal-lh-factor face) lh))))
 
+(defun apply-text-transform (word transform)
+  "Apply CSS text-transform to WORD (a whitespace-delimited token, so `capitalize`
+   upper-cases the token's first character)."
+  (cond ((or (null transform) (string= transform "none")) word)
+        ((string= transform "uppercase") (string-upcase word))
+        ((string= transform "lowercase") (string-downcase word))
+        ((and (string= transform "capitalize") (plusp (length word)))
+         (concatenate 'string (string (char-upcase (char word 0))) (subseq word 1)))
+        (t word)))
+
 (defun word-w (word &optional style)
   "Reserved width for WORD at its style's font-size, measured in the style's
 resolved face — the width scribe will paint (falls back to the bitmap metric
-inside MEASURE-TEXT-WIDTH on font failure)."
-  (round (measure-text-width word (style-size style) (style-face style))))
+inside MEASURE-TEXT-WIDTH on font failure).  Includes letter-spacing."
+  (round (measure-text-width word (style-size style) (style-face style)
+                             (if style (css:cstyle-letter-spacing style) 0))))
 
 (defun space-w (&optional style)
   "Reserved inter-word space width at STYLE's font-size in its resolved face (the
-font's space-glyph advance), defaulting to the bitmap metric."
-  (round (measure-text-width " " (style-size style) (style-face style))))
+font's space-glyph advance plus letter- and word-spacing)."
+  (round (+ (measure-text-width " " (style-size style) (style-face style)
+                                (if style (css:cstyle-letter-spacing style) 0))
+            (if style (css:cstyle-word-spacing style) 0))))
 
 (defun next-float-bottom (y)
   "Smallest float bottom strictly greater than Y, or NIL."
@@ -1660,6 +1676,7 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                           (css:cstyle-font-size cs)
                           :face (style-face cs)
                           :bold (>= (css:cstyle-font-weight cs) 600)
+                          :letter-spacing (css:cstyle-letter-spacing cs)
                           :underline (member "underline" (css:cstyle-text-decoration cs) :test #'string=))))
              (paint-box cv it)))))))   ; atomic inline-block / img box
 

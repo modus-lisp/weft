@@ -149,11 +149,12 @@ DRAW-TEXT-SCRIBE so the kerned advances are identical (measure = paint).  A .not
                                     (* (scribe::glyph-pos-x-offset g) s)
                                     (* (scribe::glyph-pos-y-offset g) s)))))))))
 
-(defun measure-text-width (text size &optional face)
+(defun measure-text-width (text size &optional face (letter-spacing 0))
   "Width of the shaped (kerned) TEXT at px SIZE in FACE — the width scribe will
-actually paint.  FACE defaults to the generic sans-serif face.  Falls back to
-the bitmap metric (LEN*7) if no face is available or anything errors, so layout
-never depends on the font succeeding."
+actually paint.  FACE defaults to the generic sans-serif face.  LETTER-SPACING px
+is added after each glyph (CSS letter-spacing).  Falls back to the bitmap metric
+(LEN*7) if no face is available or anything errors, so layout never depends on the
+font succeeding."
   (let ((face (or face (default-face))))
     (if (or (null face) (zerop (length text)))
         (* (length text) *font-w*)
@@ -162,9 +163,9 @@ never depends on the font succeeding."
                    (ppem (float (max 1 size) 1d0))
                    (upem (face-upem face))
                    (w 0d0))
-              (dolist (g (shape-px font text ppem upem)) (incf w (second g)))
+              (dolist (g (shape-px font text ppem upem)) (incf w (+ (second g) letter-spacing)))
               w)
-          (error () (* (length text) *font-w*))))))
+          (error () (+ (* (length text) *font-w*) (* (length text) letter-spacing)))))))
 
 (defun bitmap-top (line-top line-h)
   "Where the bitmap DRAW-TEXT path centers its fixed *FONT-H* slot in a line box."
@@ -184,7 +185,7 @@ heavier than the old 1.5 — that value had to compensate for the stem hinting w
 gamma carries the weight match; kept as a separate knob.")
 
 (defun draw-text-scribe (cv text x line-top line-h color size
-                         &key bold underline face)
+                         &key bold underline face (letter-spacing 0))
   "Paint TEXT with scribe glyphs from FACE (defaulting to the generic sans-serif
 face).  X is the left edge; LINE-TOP/LINE-H are the line box's top and height —
 the real font em-box (ascent+descent at SIZE px) is centered within it, so large
@@ -233,7 +234,7 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                   ;; run keeps its layout position.  Advance by the SHAPED (kerned)
                   ;; x-advance so painting matches MEASURE-TEXT-WIDTH to the pixel.
                   (if (zerop gid)
-                      (incf penx xadv)
+                      (incf penx (+ xadv letter-spacing))
                       (multiple-value-bind (cov w h left top adv)
                           (scribe:rasterize-glyph font gid ppem :subpixel sub)
                         (declare (ignore adv))
@@ -248,7 +249,7 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                                         (let ((c (aref cov (+ (* yy w) xx))))
                                           (when (> c 0d0)
                                             (scribe:blend-coverage scv px py c color)))))))))))
-                        (incf penx xadv)))))
+                        (incf penx (+ xadv letter-spacing))))))
               (when underline
                 (let ((uy (min (1- cy1) (+ baseline (max 1 (round (* 0.12d0 ppem)))))))
                   (fill-rect cv x uy (- (round penx) x) (max 1 (round (* 0.06d0 ppem))) color)))

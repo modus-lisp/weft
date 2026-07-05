@@ -35,10 +35,13 @@
   (cursor "auto")     ; CSS cursor keyword (inherited)
   (text-transform "none") ; none | capitalize | uppercase | lowercase (inherited)
   (visibility "visible")  ; visible | hidden | collapse (inherited); hidden keeps the box but paints nothing
+  (letter-spacing 0.0)    ; extra px after each glyph (inherited)
+  (word-spacing 0.0)      ; extra px at each inter-word space (inherited)
   (content nil))      ; generated-content string for ::before/::after (NIL = no box)
 
 (defparameter *inherited* '(:color :font-size :font-weight :line-height :text-align :white-space
-                            :font-family :font-style :cursor :text-transform :visibility))
+                            :font-family :font-style :cursor :text-transform :visibility
+                            :letter-spacing :word-spacing))
 
 ;;; ---- UA defaults --------------------------------------------------------
 (defparameter *block-tags*
@@ -392,6 +395,13 @@ Ignores the system-font keywords (caption/icon/...)."
          (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
            (when (member v '("visible" "hidden" "collapse") :test #'string=)
              (setf (cstyle-visibility cs) v))))
+        ((member prop '("letter-spacing" "word-spacing") :test #'string=)
+         (let ((v (if (string-equal (string-trim '(#\Space #\Tab #\Newline #\Return) value) "normal") 0.0
+                      (parse-size value fs nil))))     ; a <length>; `normal` is 0
+           (when (numberp v)
+             (if (string= prop "letter-spacing")
+                 (setf (cstyle-letter-spacing cs) (float v))
+                 (setf (cstyle-word-spacing cs) (float v))))))
         ((string= prop "width") (let ((w (parse-size value fs t))) (when w (setf (cstyle-width cs) w))))
         ((string= prop "height") (let ((h (parse-size value fs t))) (when h (setf (cstyle-height cs) h))))
         ((string= prop "max-width") (if (string-equal (string-trim '(#\Space) value) "none") (setf (cstyle-max-width cs) :none)

@@ -1,10 +1,15 @@
-;;;; src/render/jpeg.lisp — a baseline (sequential DCT) JPEG/JFIF decoder to RGBA.
+;;;; src/render/jpeg.lisp — a pure-CL JPEG/JFIF decoder to RGBA (baseline + progressive).
 ;;;;
-;;;; Enough to paint real <img src="…jpg">: marker parse (DQT/SOF0/DHT/DRI/SOS),
+;;;; Decodes real <img src="…jpg">: marker parse (DQT/SOF0/SOF2/DHT/DRI/SOS),
 ;;;; canonical-Huffman entropy decode with byte-stuffing and restart intervals,
-;;;; dequantise + de-zigzag, a separable 8x8 inverse DCT, level shift, chroma
-;;;; upsampling and YCbCr->RGB.  Progressive (SOF2) and arithmetic coding are not
-;;;; handled (return NIL) — the vast majority of web JPEGs are baseline Huffman.
+;;;; and — for both sequential (baseline) and PROGRESSIVE images — accumulates the
+;;;; DCT coefficients across every scan (spectral selection + successive
+;;;; approximation) before a single dequantise / 8x8 inverse DCT / level-shift /
+;;;; chroma-upsample / YCbCr->RGB pass.  Because the frame's SOF dimensions are
+;;;; fixed up front and every scan only refines coefficients, the result is always
+;;;; the full intrinsic size — a partial/truncated progressive stream yields a
+;;;; lower-quality image at the SAME size, so the layout box never resizes.
+;;;; Arithmetic coding is not handled.
 (in-package #:weft.render)
 
 (defun j16 (v i) (logior (ash (aref v i) 8) (aref v (+ i 1))))
@@ -90,26 +95,90 @@
                 (+ (aref (jhuff-valptr huff) l) (- code (aref (jhuff-mincode huff) l)))))))
     0))
 
-;;; ---- block decode + IDCT -------------------------------------------------
-(defun decode-block (br dc-huff ac-huff qtable pred block)
-  "Decode one 8x8 block into BLOCK (64 doubles, natural order, dequantised).
-   Returns the new DC predictor."
-  (fill block 0d0)
+;;; ---- per-block coefficient decoders --------------------------------------
+;;; COEF is a component's flat (signed-byte 16) coefficient buffer (natural order,
+;;; one 64-slot block per grid cell); OFF is this block's base index.  EOB is a
+;;; one-element list holding the shared end-of-band run counter for AC scans.
+
+(defun decode-baseline-block (br dc-huff ac-huff comp coef off)
+  "Sequential (baseline) block: DC diff + the full AC run, no bit shifting."
   (let* ((s (jhuff-decode br dc-huff))
-         (dc (+ pred (if (plusp s) (jhuff-extend (jbr-receive br s) s) 0))))
-    (setf (aref block 0) (* (coerce dc 'double-float) (aref qtable 0)))
+         (diff (if (plusp s) (jhuff-extend (jbr-receive br s) s) 0)))
+    (incf (jcomp-pred comp) diff)
+    (setf (aref coef off) (jcomp-pred comp))
     (let ((k 1))
       (loop while (< k 64) do
         (let* ((rs (jhuff-decode br ac-huff)) (r (ash rs -4)) (sz (logand rs 15)))
-          (cond ((zerop sz) (if (= r 15) (incf k 16) (return)))   ; ZRL (16 zeros) or EOB
+          (cond ((zerop sz) (if (= r 15) (incf k 16) (return)))     ; ZRL / EOB
                 (t (incf k r)
                    (when (< k 64)
-                     (setf (aref block (aref +zigzag+ k))
-                           (* (coerce (jhuff-extend (jbr-receive br sz) sz) 'double-float)
-                              (aref qtable k)))
-                     (incf k)))))))
-    dc))
+                     (setf (aref coef (+ off (aref +zigzag+ k))) (jhuff-extend (jbr-receive br sz) sz))
+                     (incf k)))))))))
 
+(defun decode-dc-first (br dc-huff comp coef off al)
+  (let* ((s (jhuff-decode br dc-huff))
+         (diff (if (plusp s) (jhuff-extend (jbr-receive br s) s) 0)))
+    (incf (jcomp-pred comp) diff)
+    (setf (aref coef off) (ash (jcomp-pred comp) al))))
+
+(defun decode-dc-refine (br coef off al)
+  (when (= (jbr-next-bit br) 1)
+    (setf (aref coef off) (logior (aref coef off) (ash 1 al)))))
+
+(defun decode-ac-first (br ac-huff coef off ss se al eob)
+  "Progressive first AC scan for one band [Ss,Se], approximation bit Al."
+  (if (plusp (car eob))
+      (decf (car eob))
+      (let ((k ss))
+        (loop while (<= k se) do
+          (let* ((rs (jhuff-decode br ac-huff)) (r (ash rs -4)) (sz (logand rs 15)))
+            (cond ((zerop sz)
+                   (if (< r 15)
+                       (progn (setf (car eob) (1- (ash 1 r)))
+                              (when (plusp r) (incf (car eob) (jbr-receive br r)))
+                              (return))
+                       (incf k 16)))                       ; ZRL: 16 zeros
+                  (t (incf k r)
+                     (when (<= k se)
+                       (setf (aref coef (+ off (aref +zigzag+ k)))
+                             (ash (jhuff-extend (jbr-receive br sz) sz) al))
+                       (incf k)))))))))
+
+(defun decode-ac-refine (br ac-huff coef off ss se al eob)
+  "Progressive AC refinement scan: correction bits for already-nonzero
+   coefficients plus newly-significant ones (JPEG Annex G.1.2.3)."
+  (let ((p1 (ash 1 al)) (m1 (- (ash 1 al))) (k ss))
+    (when (zerop (car eob))
+      (loop while (<= k se) do
+        (let* ((rs (jhuff-decode br ac-huff)) (r (ash rs -4)) (sz (logand rs 15)) (val 0))
+          (cond ((zerop sz)
+                 (when (< r 15)
+                   (setf (car eob) (ash 1 r))
+                   (when (plusp r) (incf (car eob) (jbr-receive br r)))
+                   (return)))
+                (t (setf val (if (= (jbr-next-bit br) 1) p1 m1))))   ; sz is 1: a new coefficient
+          ;; advance over R zero-history coefficients, refining nonzero ones met
+          (loop while (<= k se) do
+            (let ((idx (+ off (aref +zigzag+ k))))
+              (if (/= (aref coef idx) 0)
+                  (when (and (= (jbr-next-bit br) 1) (zerop (logand (aref coef idx) p1)))
+                    (incf (aref coef idx) (if (plusp (aref coef idx)) p1 m1)))
+                  (if (zerop r) (return) (decf r))))
+            (incf k))
+          (when (and (/= sz 0) (<= k se))
+            (setf (aref coef (+ off (aref +zigzag+ k))) val))
+          (incf k))))
+    ;; within an EOB run: refine every remaining nonzero coefficient
+    (when (plusp (car eob))
+      (loop while (<= k se) do
+        (let ((idx (+ off (aref +zigzag+ k))))
+          (when (and (/= (aref coef idx) 0)
+                     (= (jbr-next-bit br) 1) (zerop (logand (aref coef idx) p1)))
+            (incf (aref coef idx) (if (plusp (aref coef idx)) p1 m1))))
+        (incf k))
+      (decf (car eob)))))
+
+;;; ---- inverse DCT ---------------------------------------------------------
 (defun idct-8x8 (block out)
   "Separable inverse DCT of the 64-double coefficient BLOCK into OUT (spatial)."
   (let ((tmp (make-array 64 :element-type 'double-float)))
@@ -128,113 +197,173 @@
 (defun clamp8 (x) (cond ((< x 0d0) 0) ((> x 255d0) 255) (t (round x))))
 
 ;;; ---- top level -----------------------------------------------------------
-(defstruct jcomp id h v qsel plane cw ch (pred 0))
+(defstruct jcomp id h v qsel coef bpl bh (pred 0))   ; coef: natural-order (s16) blocks
 
-(defun jpeg-decode (bytes)
-  "Decode a baseline JPEG byte vector to an IMG (RGBA), or NIL."
+(defun jpeg-size (bytes)
+  "Read a JPEG's intrinsic (values WIDTH HEIGHT) from its SOF marker without
+   decoding the pixels — so a box can be reserved before/without a full decode."
   (when (and (>= (length bytes) 3) (= (aref bytes 0) #xff) (= (aref bytes 1) #xd8))
-    (let ((n (length bytes)) (i 2)
-          (qt (make-array 4 :initial-element nil))     ; 4 quant tables, zig-zag order
-          (dht (make-array 4 :initial-element nil)) (aht (make-array 4 :initial-element nil))
-          (w 0) (h 0) (comps nil) (ri 0) (scan nil) (progressive nil))
+    (let ((n (length bytes)) (i 2))
       (loop
         (loop while (and (< i n) (/= (aref bytes i) #xff)) do (incf i))
-        (loop while (and (< i n) (= (aref bytes i) #xff)) do (incf i))   ; fill FFs
-        (when (>= i n) (return))
+        (loop while (and (< i n) (= (aref bytes i) #xff)) do (incf i))
+        (when (>= i (- n 4)) (return))
         (let ((m (aref bytes i))) (incf i)
-          (cond
-            ((= m #xd9) (return))                                        ; EOI
-            ((<= #xd0 m #xd7))                                           ; stray RSTn
-            ((= m #xdb)                                                  ; DQT
-             (let ((len (j16 bytes i)) (p (+ i 2)))
-               (loop while (< p (+ i len)) do
-                 (let* ((pq/tq (aref bytes p)) (prec (ash pq/tq -4)) (id (logand pq/tq 15))
-                        (tbl (make-array 64)))
-                   (incf p)
-                   (dotimes (k 64) (setf (aref tbl k) (if (zerop prec) (aref bytes (+ p k))
-                                                          (j16 bytes (+ p (* k 2))))))
-                   (incf p (if (zerop prec) 64 128))
-                   (setf (aref qt id) tbl)))
-               (incf i len)))
-            ((or (= m #xc0) (= m #xc1))                                  ; SOF0/1 baseline
-             (let ((nc (aref bytes (+ i 7))))
-               (setf h (j16 bytes (+ i 3)) w (j16 bytes (+ i 5)))
-               (dotimes (c nc)
-                 (let ((o (+ i 8 (* c 3))))
-                   (push (make-jcomp :id (aref bytes o)
-                                     :h (ash (aref bytes (+ o 1)) -4)
-                                     :v (logand (aref bytes (+ o 1)) 15)
-                                     :qsel (aref bytes (+ o 2))) comps)))
-               (setf comps (nreverse comps))
-               (incf i (j16 bytes i))))
-            ((or (= m #xc2) (= m #xc3) (<= #xc5 m #xcf))                 ; progressive/other SOF
-             (setf progressive t) (incf i (j16 bytes i)))
-            ((= m #xc4)                                                  ; DHT
-             (let ((len (j16 bytes i)) (p (+ i 2)))
-               (loop while (< p (+ i len)) do
-                 (let* ((tc/th (aref bytes p)) (class (ash tc/th -4)) (id (logand tc/th 15))
-                        (counts (make-array 16)) (total 0))
-                   (incf p)
-                   (dotimes (l 16) (setf (aref counts l) (aref bytes (+ p l))) (incf total (aref bytes (+ p l))))
-                   (incf p 16)
-                   (let ((syms (subseq bytes p (+ p total))))
-                     (incf p total)
-                     (if (zerop class) (setf (aref dht id) (build-huff counts syms))
-                         (setf (aref aht id) (build-huff counts syms))))))
-               (incf i len)))
-            ((= m #xdd) (setf ri (j16 bytes (+ i 2))) (incf i (j16 bytes i)))   ; DRI
-            ((= m #xda)                                                  ; SOS
-             (let* ((len (j16 bytes i)) (ns (aref bytes (+ i 2))))
-               (setf scan (loop for c below ns
-                                for o = (+ i 3 (* c 2))
-                                collect (cons (aref bytes o) (aref bytes (+ o 1)))))
-               (incf i len)
-               (return)))                                                ; entropy data at I
-            (t (incf i (j16 bytes i))))))                                ; APPn/COM/…
-      (when (or progressive (zerop w) (zerop h) (null comps) (null scan)) (return-from jpeg-decode nil))
-      ;; ---- decode the single baseline scan ----
-      (let* ((hmax (reduce #'max comps :key #'jcomp-h)) (vmax (reduce #'max comps :key #'jcomp-v))
-             (mx (ceiling w (* 8 hmax))) (my (ceiling h (* 8 vmax)))
-             (br (make-jbr :data bytes :pos i))
-             (block (make-array 64 :element-type 'double-float))
-             (spatial (make-array 64 :element-type 'double-float)))
-        (dolist (c comps)
-          (setf (jcomp-cw c) (* mx (jcomp-h c) 8) (jcomp-ch c) (* my (jcomp-v c) 8)
-                (jcomp-plane c) (make-array (* (jcomp-cw c) (jcomp-ch c))
-                                            :element-type '(unsigned-byte 8) :initial-element 0)))
-        (let ((mcu 0))
-          (dotimes (myi my)
-            (dotimes (mxi mx)
-              (dolist (c comps)
-                (let* ((sc (find (jcomp-id c) scan :key #'car))
-                       (dh (aref dht (ash (cdr sc) -4))) (ah (aref aht (logand (cdr sc) 15)))
-                       (qtab (aref qt (jcomp-qsel c))) (cw (jcomp-cw c)) (plane (jcomp-plane c)))
-                  (dotimes (byi (jcomp-v c))
-                    (dotimes (bxi (jcomp-h c))
-                      (setf (jcomp-pred c) (decode-block br dh ah qtab (jcomp-pred c) block))
-                      (idct-8x8 block spatial)
-                      (let ((col (* (+ (* mxi (jcomp-h c)) bxi) 8)) (row (* (+ (* myi (jcomp-v c)) byi) 8)))
-                        (dotimes (yy 8)
-                          (dotimes (xx 8)
-                            (setf (aref plane (+ (* (+ row yy) cw) col xx))
-                                  (clamp8 (+ (aref spatial (+ (* yy 8) xx)) 128d0))))))))))
-              (incf mcu)
-              (when (and (plusp ri) (zerop (mod mcu ri)) (not (and (= mxi (1- mx)) (= myi (1- my)))))
-                (jbr-restart br) (dolist (c comps) (setf (jcomp-pred c) 0))))))
-        ;; ---- compose RGBA (upsample chroma by replication) ----
-        (let ((out (make-array (* w h 4) :element-type '(unsigned-byte 8)))
-              (c0 (first comps)) (c1 (second comps)) (c2 (third comps)))
-          (dotimes (py h)
-            (dotimes (px w)
-              (flet ((samp (c) (aref (jcomp-plane c)
-                                     (+ (* (floor (* py (jcomp-v c)) vmax) (jcomp-cw c))
-                                        (floor (* px (jcomp-h c)) hmax)))))
-                (let ((o (* (+ (* py w) px) 4)))
-                  (if (and c1 c2)
-                      (let* ((yy (samp c0)) (cb (- (samp c1) 128)) (cr (- (samp c2) 128)))
-                        (setf (aref out o)       (clamp8 (+ yy (* 1.402d0 cr)))
-                              (aref out (+ o 1)) (clamp8 (- yy (* 0.344136d0 cb) (* 0.714136d0 cr)))
-                              (aref out (+ o 2)) (clamp8 (+ yy (* 1.772d0 cb)))))
-                      (let ((g (samp c0))) (setf (aref out o) g (aref out (+ o 1)) g (aref out (+ o 2)) g)))
-                  (setf (aref out (+ o 3)) 255)))))
-          (make-img :w w :h h :rgba out))))))
+          (cond ((or (<= #xc0 m #xc3) (<= #xc5 m #xc7) (<= #xc9 m #xcb) (<= #xcd m #xcf))  ; any SOF
+                 (return-from jpeg-size (values (j16 bytes (+ i 5)) (j16 bytes (+ i 3)))))
+                ((or (= m #xd8) (= m #xd9) (<= #xd0 m #xd7)))       ; standalone markers
+                (t (incf i (j16 bytes i)))))))
+    nil))
+
+(defun jpeg-decode (bytes)
+  "Decode a baseline OR progressive JPEG byte vector to an IMG (RGBA), or NIL."
+  (when (and (>= (length bytes) 3) (= (aref bytes 0) #xff) (= (aref bytes 1) #xd8))
+    (let ((n (length bytes)) (i 2)
+          (qt (make-array 4 :initial-element nil))     ; 4 quant tables, NATURAL order
+          (dht (make-array 4 :initial-element nil)) (aht (make-array 4 :initial-element nil))
+          (w 0) (h 0) (comps nil) (ri 0) (hmax 1) (vmax 1) (mx 0) (my 0)
+          (br nil) (spatial (make-array 64 :element-type 'double-float))
+          (fblock (make-array 64 :element-type 'double-float)))
+      (labels
+          ((setup-frame ()
+             (setf hmax (reduce #'max comps :key #'jcomp-h) vmax (reduce #'max comps :key #'jcomp-v)
+                   mx (ceiling w (* 8 hmax)) my (ceiling h (* 8 vmax)))
+             (dolist (c comps)
+               (setf (jcomp-bpl c) (* mx (jcomp-h c)) (jcomp-bh c) (* my (jcomp-v c))
+                     (jcomp-coef c) (make-array (* (jcomp-bpl c) (jcomp-bh c) 64)
+                                                :element-type '(signed-byte 16) :initial-element 0))))
+           (decode-scan (sos-i)
+             ;; parse the SOS header at SOS-I, then decode its entropy segment.
+             (let* ((ns (aref bytes (+ sos-i 2)))
+                    (sc (loop for k below ns for o = (+ sos-i 3 (* k 2))
+                              for c = (find (aref bytes o) comps :key #'jcomp-id)
+                              collect (list c (ash (aref bytes (+ o 1)) -4) (logand (aref bytes (+ o 1)) 15))))
+                    (p (+ sos-i 3 (* ns 2)))
+                    (ss (aref bytes p)) (se (aref bytes (+ p 1)))
+                    (ah (ash (aref bytes (+ p 2)) -4)) (al (logand (aref bytes (+ p 2)) 15)))
+               (setf (jbr-pos br) (+ p 3) (jbr-cnt br) 0 (jbr-eof br) nil)
+               (dolist (e sc) (setf (jcomp-pred (first e)) 0))
+               (if (plusp ss)
+                   ;; ---- AC scan: single component, non-interleaved block order ----
+                   (destructuring-bind (c dc-id ac-id) (first sc)
+                     (declare (ignore dc-id))
+                     (let* ((ach (aref aht ac-id)) (eob (list 0)) (cnt 0)
+                            (bw (ceiling (ceiling (* w (jcomp-h c)) hmax) 8))
+                            (bh (ceiling (ceiling (* h (jcomp-v c)) vmax) 8)))
+                       (dotimes (by bh)
+                         (dotimes (bx bw)
+                           (let ((off (* (+ (* by (jcomp-bpl c)) bx) 64)))
+                             (if (zerop ah) (decode-ac-first br ach (jcomp-coef c) off ss se al eob)
+                                 (decode-ac-refine br ach (jcomp-coef c) off ss se al eob)))
+                           (incf cnt)
+                           (when (and (plusp ri) (zerop (mod cnt ri)) (< cnt (* bw bh)))
+                             (jbr-restart br) (setf (car eob) 0))))))
+                   ;; ---- DC / baseline scan: interleaved MCU order ----
+                   (let ((mcu 0))
+                     (dotimes (myi my)
+                       (dotimes (mxi mx)
+                         (dolist (e sc)
+                           (destructuring-bind (c dc-id ac-id) e
+                             (let ((dch (aref dht dc-id)) (ach (aref aht ac-id)) (coef (jcomp-coef c)))
+                               (dotimes (byi (jcomp-v c))
+                                 (dotimes (bxi (jcomp-h c))
+                                   (let ((off (* (+ (* (+ (* myi (jcomp-v c)) byi) (jcomp-bpl c))
+                                                    (+ (* mxi (jcomp-h c)) bxi)) 64)))
+                                     (cond ((and (= se 63) (zerop ah)) (decode-baseline-block br dch ach c coef off))
+                                           ((zerop ah) (decode-dc-first br dch c coef off al))
+                                           (t (decode-dc-refine br coef off al)))))))))
+                         (incf mcu)
+                         (when (and (plusp ri) (zerop (mod mcu ri)) (< mcu (* mx my)))
+                           (jbr-restart br) (dolist (e sc) (setf (jcomp-pred (first e)) 0))))))))))
+        ;; ---- marker loop (parses tables + drives every scan) ----
+        (block markers
+          (loop
+            (loop while (and (< i n) (/= (aref bytes i) #xff)) do (incf i))
+            (loop while (and (< i n) (= (aref bytes i) #xff)) do (incf i))
+            (when (>= i n) (return-from markers))
+            (let ((m (aref bytes i))) (incf i)
+              (cond
+                ((= m #xd9) (return-from markers))                          ; EOI
+                ((<= #xd0 m #xd7))                                          ; stray RSTn
+                ((= m #xdb)                                                 ; DQT (store natural order)
+                 (let ((len (j16 bytes i)) (p (+ i 2)))
+                   (loop while (< p (+ i len)) do
+                     (let* ((pq/tq (aref bytes p)) (prec (ash pq/tq -4)) (id (logand pq/tq 15))
+                            (tbl (make-array 64)))
+                       (incf p)
+                       (dotimes (k 64)
+                         (setf (aref tbl (aref +zigzag+ k))
+                               (if (zerop prec) (aref bytes (+ p k)) (j16 bytes (+ p (* k 2))))))
+                       (incf p (if (zerop prec) 64 128))
+                       (setf (aref qt id) tbl)))
+                   (incf i len)))
+                ((or (= m #xc0) (= m #xc1) (= m #xc2))                      ; SOF0/1 (baseline) / SOF2 (progressive)
+                 (let ((nc (aref bytes (+ i 7))))
+                   (setf h (j16 bytes (+ i 3)) w (j16 bytes (+ i 5)) comps nil)
+                   (dotimes (c nc)
+                     (let ((o (+ i 8 (* c 3))))
+                       (push (make-jcomp :id (aref bytes o) :h (ash (aref bytes (+ o 1)) -4)
+                                         :v (logand (aref bytes (+ o 1)) 15) :qsel (aref bytes (+ o 2))) comps)))
+                   (setf comps (nreverse comps))
+                   (incf i (j16 bytes i))
+                   (setup-frame)
+                   (setf br (make-jbr :data bytes))))
+                ((= m #xc4)                                                 ; DHT (in the C3-CF range, so BEFORE the decline)
+                 (let ((len (j16 bytes i)) (p (+ i 2)))
+                   (loop while (< p (+ i len)) do
+                     (let* ((tc/th (aref bytes p)) (class (ash tc/th -4)) (id (logand tc/th 15))
+                            (counts (make-array 16)) (total 0))
+                       (incf p)
+                       (dotimes (l 16) (setf (aref counts l) (aref bytes (+ p l))) (incf total (aref bytes (+ p l))))
+                       (incf p 16)
+                       (let ((syms (subseq bytes p (+ p total))))
+                         (incf p total)
+                         (if (zerop class) (setf (aref dht id) (build-huff counts syms))
+                             (setf (aref aht id) (build-huff counts syms))))))
+                   (incf i len)))
+                ((<= #xc3 m #xcf) (return-from markers))                    ; lossless / arithmetic / other SOF — decline
+                ((= m #xdd) (setf ri (j16 bytes (+ i 2))) (incf i (j16 bytes i)))   ; DRI
+                ((= m #xda)                                                 ; SOS — decode this scan
+                 (when (null br) (return-from markers))
+                 (let ((sos-i i))
+                   ;; a truncated / malformed scan must not abort the whole image:
+                   ;; keep whatever coefficients decoded so far (progressive-friendly).
+                   (ignore-errors (decode-scan sos-i))
+                   ;; resume marker parsing right after the entropy segment.
+                   (setf i (if (and br (> (jbr-pos br) sos-i)) (jbr-pos br) (+ sos-i (j16 bytes i))))))
+                (t (incf i (j16 bytes i))))))))                              ; APPn / COM / …
+      (when (or (zerop w) (zerop h) (null comps)) (return-from jpeg-decode nil))
+      ;; ---- dequantise + IDCT into per-component planes ----
+      (dolist (c comps)
+        (let* ((cw (* (jcomp-bpl c) 8)) (ch (* (jcomp-bh c) 8)) (coef (jcomp-coef c))
+               (qtab (aref qt (jcomp-qsel c)))
+               (plane (make-array (* cw ch) :element-type '(unsigned-byte 8) :initial-element 0)))
+          (dotimes (by (jcomp-bh c))
+            (dotimes (bx (jcomp-bpl c))
+              (let ((off (* (+ (* by (jcomp-bpl c)) bx) 64)))
+                (dotimes (k 64) (setf (aref fblock k) (* (coerce (aref coef (+ off k)) 'double-float)
+                                                         (coerce (aref qtab k) 'double-float))))
+                (idct-8x8 fblock spatial)
+                (let ((col (* bx 8)) (row (* by 8)))
+                  (dotimes (yy 8)
+                    (dotimes (xx 8)
+                      (setf (aref plane (+ (* (+ row yy) cw) col xx))
+                            (clamp8 (+ (aref spatial (+ (* yy 8) xx)) 128d0)))))))))
+          (setf (jcomp-coef c) plane (jcomp-bpl c) cw)))    ; reuse slots: coef->plane, bpl->plane width
+      ;; ---- compose RGBA (upsample chroma by replication) ----
+      (let ((out (make-array (* w h 4) :element-type '(unsigned-byte 8)))
+            (c0 (first comps)) (c1 (second comps)) (c2 (third comps)))
+        (dotimes (py h)
+          (dotimes (px w)
+            (flet ((samp (c) (aref (jcomp-coef c)
+                                   (+ (* (floor (* py (jcomp-v c)) vmax) (jcomp-bpl c))
+                                      (floor (* px (jcomp-h c)) hmax)))))
+              (let ((o (* (+ (* py w) px) 4)))
+                (if (and c1 c2)
+                    (let* ((yy (samp c0)) (cb (- (samp c1) 128)) (cr (- (samp c2) 128)))
+                      (setf (aref out o)       (clamp8 (+ yy (* 1.402d0 cr)))
+                            (aref out (+ o 1)) (clamp8 (- yy (* 0.344136d0 cb) (* 0.714136d0 cr)))
+                            (aref out (+ o 2)) (clamp8 (+ yy (* 1.772d0 cb)))))
+                    (let ((g (samp c0))) (setf (aref out o) g (aref out (+ o 1)) g (aref out (+ o 2)) g)))
+                (setf (aref out (+ o 3)) 255)))))
+        (make-img :w w :h h :rgba out)))))

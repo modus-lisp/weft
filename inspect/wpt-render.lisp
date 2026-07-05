@@ -51,10 +51,22 @@
         collect (subseq line start (or pos (length line)))
         while pos))
 
-(let ((manifest (second sb-ext:*posix-argv*)))
+(defun register-ahem (wpt-root)
+  "Register the WPT Ahem test font so `font-family:Ahem` resolves with its exact
+   1em-square metrics — most CSS reftests use it and mismatch the fallback otherwise."
+  (let ((path (merge-pathnames "fonts/Ahem.ttf" wpt-root)))
+    (when (probe-file path)
+      (with-open-file (in path :element-type '(unsigned-byte 8))
+        (let ((b (make-array (file-length in) :element-type '(unsigned-byte 8))))
+          (read-sequence b in)
+          (r:register-font "Ahem" b))))))
+
+(let ((manifest (second sb-ext:*posix-argv*)) (ahem-done nil))
   (with-open-file (m manifest :external-format :utf-8)
     (loop for line = (read-line m nil) while line
           when (plusp (length line)) do
             (destructuring-bind (html out root) (split-tabs line)
-              (render-one html out (truename root)))))
+              (let ((root (truename root)))
+                (unless ahem-done (register-ahem root) (setf ahem-done t))
+                (render-one html out root)))))
   (format t "done~%"))

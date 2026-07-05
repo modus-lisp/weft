@@ -56,10 +56,14 @@ file pass rate (a file all-passes when every subtest does).
 
 | suite                     | pass |
 |---------------------------|------|
-| reftest css-position      | ~27% |
-| reftest css-text          | ~27% |
+| reftest css-text          | ~39% (with the Ahem test font registered) |
+| reftest css-position      | ~24% (failures dominated by position:sticky + vertical writing modes) |
 | reftest css-flexbox       | ~10% (single-line/row-focused; no column shrink, wrap, align-content, baseline) |
 | testharness dom/nodes     | ~16% of subtests |
+
+The runner registers WPT's **Ahem** font (every glyph a 1em square with fixed
+metrics — the standard way CSS tests stay font-rendering-independent); without it
+many text tests mismatch the fallback even when the layout is right.
 
 These are honest starting points for a from-scratch engine; each failing category
 is a worklist of concrete, spec-referenced bugs.

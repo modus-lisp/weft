@@ -93,8 +93,13 @@
     ("svg-inline.html"  . "http://weft.local/svg-inline.html")
     ("canvas-draw.html" . "http://weft.local/canvas-draw.html")))
 
-(defun slurp (p) (with-open-file (in p :external-format :latin-1)
-                   (let ((str (make-string (file-length in)))) (subseq str 0 (read-sequence str in)))))
+(defun slurp (p)
+  "Read P's bytes and decode them the way the fetch path does (the corpus pages are
+UTF-8), so the smoke test renders real text instead of latin-1 mojibake (– · “ ” etc.)."
+  (let ((bytes (with-open-file (in p :element-type '(unsigned-byte 8))
+                 (let ((b (make-array (file-length in) :element-type '(unsigned-byte 8))))
+                   (read-sequence b in) b))))
+    (weft.encoding:decode "utf-8" bytes)))
 
 (defun run ()
   (let ((dir (asdf:system-relative-pathname "weft" "inspect/vectors/pages/corpus/"))

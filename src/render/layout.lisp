@@ -467,6 +467,14 @@ text-align.  Returns (values line-boxes total-height)."
                               ((string= align "right") (max 0 (- avail used))) (t 0))))
             (when (plusp shift)
               (dolist (it items) (if (frag-p it) (incf (frag-x it) shift) (shift-box it shift 0))))
+            (when (and (string= align "justify") (< i n))
+              (let* ((frags (remove-if-not #'frag-p items))
+                     (f (length frags)))
+                (when (>= f 2)
+                  (let ((extra (- avail used)))
+                    (when (plusp extra)
+                      (loop for j from 0 for it in frags
+                            do (incf (frag-x it) (round (* j (/ extra (1- f)))))))))))
             (dolist (it items) (unless (frag-p it) (shift-box it 0 (round y))))  ; atomic to line y
             (push (make-lbox :x lx :y y :w avail :h line-h :kind :line :children items) lines))
           (incf y line-h) (incf h line-h))))

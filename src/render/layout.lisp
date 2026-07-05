@@ -399,6 +399,14 @@ font's space-glyph advance plus letter- and word-spacing)."
                                 (if style (css:cstyle-letter-spacing style) 0))
             (if style (css:cstyle-word-spacing style) 0))))
 
+(defun break-to-width (text style w)
+  "Longest character prefix of TEXT (at least one char) whose painted width fits W px,
+and the remainder.  Used by word-break:break-all and overflow-wrap:break-word to split
+a word that would otherwise overflow.  Returns (values prefix rest)."
+  (let ((n (length text)) (k 1))
+    (loop while (and (< k n) (<= (word-w (subseq text 0 (1+ k)) style) w)) do (incf k))
+    (values (subseq text 0 k) (subseq text k))))
+
 (defun next-float-bottom (y)
   "Smallest float bottom strictly greater than Y, or NIL."
   (let ((best nil))
@@ -446,14 +454,42 @@ text-align.  Returns (values line-boxes total-height)."
                           (tok-gap wd)))
                    (ww (if atomic (lbox-w (tok-meta wd)) (word-w (car wd) (tok-meta wd))))
                    (need (+ sw ww)))
-              (when (and cur (not nowrap) (> (+ (- cx lx) need) avail)) (return))
+              ;; break-all keeps filling the current line (break the word here), so it
+              ;; is exempt from the wrap-to-next-line check.
+              (when (and cur (not nowrap) (> (+ (- cx lx) need) avail)
+                         (not (and (not atomic)
+                                   (string= (css:cstyle-word-break (tok-meta wd)) "break-all"))))
+                (return))
               (when (and (> sw 0) (> (- cx lx) 0)) (incf cx sw))
-              (if atomic
-                  (let ((lb (tok-meta wd)))
-                    (shift-box lb (round (- cx (lbox-x lb))) 0)
-                    (setf line-h (max line-h (lbox-h lb))) (push lb cur))
-                  (push (make-frag :x cx :w ww :text (car wd) :style (tok-meta wd) :node (tok-node wd)) cur))
-              (incf cx ww) (incf i)))
+              (let ((room (- avail (- cx lx))))
+                (cond
+                  ;; word-break:break-all (break anywhere) or overflow-wrap:break-word
+                  ;; on a word too wide to fit any line: place the char-prefix that fits
+                  ;; and requeue the remainder to start the next line.
+                  ((and (not atomic) (not nowrap) (> ww room) (>= room 1)
+                        (let ((wb (css:cstyle-word-break (tok-meta wd)))
+                              (ow (css:cstyle-overflow-wrap (tok-meta wd))))
+                          (or (string= wb "break-all")
+                              (and (member ow '("break-word" "anywhere") :test #'string=)
+                                   (> ww avail)))))
+                   (multiple-value-bind (prefix rest) (break-to-width (car wd) (tok-meta wd) room)
+                     (cond
+                       ((zerop (length prefix))          ; nothing fits: wrap if the line has content
+                        (if cur (return)
+                            (progn (push (make-frag :x cx :w ww :text (car wd) :style (tok-meta wd) :node (tok-node wd)) cur)
+                                   (incf cx ww) (incf i))))
+                       (t (push (make-frag :x cx :w (word-w prefix (tok-meta wd)) :text prefix :style (tok-meta wd) :node (tok-node wd)) cur)
+                          (cond ((plusp (length rest))
+                                 (setf (aref ws i) (list rest (tok-meta wd) nil 0 (tok-node wd)))
+                                 (return))               ; remainder -> next line
+                                (t (incf cx (word-w prefix (tok-meta wd))) (incf i)))))))
+                  (atomic
+                   (let ((lb (tok-meta wd)))
+                     (shift-box lb (round (- cx (lbox-x lb))) 0)
+                     (setf line-h (max line-h (lbox-h lb))) (push lb cur))
+                   (incf cx ww) (incf i))
+                  (t (push (make-frag :x cx :w ww :text (car wd) :style (tok-meta wd) :node (tok-node wd)) cur)
+                     (incf cx ww) (incf i))))))
           (when (null cur)                       ; one item too wide for the band: force it
             (let* ((wd (aref ws i)))
               (if (eq (car wd) :atomic) (let ((lb (tok-meta wd))) (shift-box lb (round (- lx (lbox-x lb))) 0)

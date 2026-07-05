@@ -120,10 +120,16 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                                                                  (and style (css:cstyle-text-transform style)))
                                            style node)
                                     (setf any nil b (make-string-output-stream)))))
-                   (loop for c across s do
-                     (if (member c '(#\Space #\Tab #\Newline #\Return))
-                         (progn (flush) (setf pend t))
-                         (progn (write-char c b) (setf any t))))
+                   ;; white-space:pre-line / pre-wrap preserve newlines as forced
+                   ;; line breaks (emitted as a :break token); other whitespace still
+                   ;; collapses to a single inter-word space.
+                   (let ((keep-nl (and style (member (css:cstyle-white-space style)
+                                                     '("pre-line" "pre-wrap") :test #'string=))))
+                     (loop for c across s do
+                       (cond
+                         ((and keep-nl (char= c #\Newline)) (flush) (push (list :break nil nil 0 node) words))
+                         ((member c '(#\Space #\Tab #\Newline #\Return)) (flush) (setf pend t))
+                         (t (write-char c b) (setf any t)))))
                    (flush))))
              (rec (n owner onode)
                (case (h:dnode-kind n)
@@ -444,9 +450,12 @@ text-align.  Returns (values line-boxes total-height)."
         (loop while (and (< (- rx lx) (* 3 *font-w*)) (next-float-bottom y)) do
           (let ((ny (next-float-bottom y))) (incf h (- ny y)) (setf y ny)
             (multiple-value-setq (lx rx) (float-band y lh content-x cright))))
-        (let* ((avail (- rx lx)) (cur '()) (cx (if (null lines) (+ lx indent) lx)) (line-h lh))
+        (let* ((avail (- rx lx)) (cur '()) (cx (if (null lines) (+ lx indent) lx)) (line-h lh) (broke nil))
           (loop while (< i n) do
-            (let* ((wd (aref ws i)) (atomic (eq (car wd) :atomic))
+            (let ((wd (aref ws i)))
+             (if (eq (car wd) :break)
+                 (progn (incf i) (setf broke t) (return))   ; forced break: end this line here
+             (let* ((atomic (eq (car wd) :atomic))
                    ;; leading gap = inter-word space (only where the source had
                    ;; whitespace and not line-start) + inline horizontal margins
                    (spb (and cur (tok-space wd)))
@@ -489,15 +498,17 @@ text-align.  Returns (values line-boxes total-height)."
                      (setf line-h (max line-h (lbox-h lb))) (push lb cur))
                    (incf cx ww) (incf i))
                   (t (push (make-frag :x cx :w ww :text (car wd) :style (tok-meta wd) :node (tok-node wd)) cur)
-                     (incf cx ww) (incf i))))))
-          (when (null cur)                       ; one item too wide for the band: force it
+                     (incf cx ww) (incf i))))))))
+          (when (and (null cur) (not broke))     ; one item too wide for the band: force it
             (let* ((wd (aref ws i)))
               (if (eq (car wd) :atomic) (let ((lb (tok-meta wd))) (shift-box lb (round (- lx (lbox-x lb))) 0)
                                           (setf line-h (max line-h (lbox-h lb))) (push lb cur))
                   (push (make-frag :x lx :w (word-w (car wd) (tok-meta wd)) :text (car wd) :style (tok-meta wd) :node (tok-node wd)) cur))
               (incf i)))
           (let* ((items (nreverse cur))
-                 (lastx (let ((it (car (last items)))) (if (frag-p it) (+ (frag-x it) (frag-w it)) (+ (lbox-x it) (lbox-w it)))))
+                 (lastx (if items
+                            (let ((it (car (last items)))) (if (frag-p it) (+ (frag-x it) (frag-w it)) (+ (lbox-x it) (lbox-w it))))
+                            lx))    ; blank line (pre-line/pre-wrap forced break): empty line box
                  (used (- lastx lx))
                  (shift (cond ((string= align "center") (max 0 (floor (- avail used) 2)))
                               ((string= align "right") (max 0 (- avail used))) (t 0))))

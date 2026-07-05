@@ -97,14 +97,15 @@ width is its COLUMN model, not its flattened inline content."
          (and cs (member (cdisplay cs) '("table" "inline-table") :test #'string=)))))
 
 ;;; ---- inline content: styled word runs -> line boxes --------------------
-(defun collect-words (node styles default-style content-w)
-  "Walk inline content of NODE; return inline tokens (PAYLOAD META SPACE GAP):
-PAYLOAD is a word string with META its style, or :ATOMIC with META an lbox
-(inline-block / replaced).  SPACE is T when collapsible whitespace preceded the token
-in the source (so the line layout adds an inter-word space only where the source had
-one — adjacent runs across an element boundary like \"(\", <a>x</a>, \")\" get no
-spurious space).  GAP is extra leading px from inline horizontal margins on the
-enclosing element(s) (e.g. HN's .hnname margin-right).  Use TOK-META/TOK-SPACE/TOK-GAP."
+(defun collect-words (nodes styles default-style content-w)
+  "Walk the inline content of NODES (a list of sibling inline-level nodes laid out
+as one run) into inline tokens (PAYLOAD META SPACE GAP): PAYLOAD is a word string
+with META its style, or :ATOMIC with META an lbox (inline-block / replaced).  SPACE
+is T when collapsible whitespace preceded the token in the source.  Sharing the
+whitespace state across the whole run is what keeps a space at a text/element
+boundary — \"see \" <a>x</a> stays \"see x\" — while genuinely adjacent runs like
+\"(\", <a>x</a>, \")\" still get none.  GAP is extra leading px from inline
+horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP."
   (let ((words '()) (pend nil) (pend-px 0))        ; whitespace + inline-margin px before next token
     (labels ((emit1 (payload meta node)
                (push (list payload meta pend pend-px node) words) (setf pend nil pend-px 0))
@@ -195,7 +196,7 @@ enclosing element(s) (e.g. HN's .hnname margin-right).  Use TOK-META/TOK-SPACE/T
                          (when (and acs (css:cstyle-content acs))
                            (emit-text (css:cstyle-content acs) acs n)))
                        (incf pend-px (iedge cs :right)))))))))
-      (rec node (or (st styles node) default-style) node))
+      (dolist (n nodes) (rec n (or (st styles n) default-style) n)))
     (nreverse words)))
 
 ;;; Inline-token accessors: (PAYLOAD META SPACE GAP) — PAYLOAD is (CAR tok) (a word
@@ -688,7 +689,7 @@ Returns (values lbox advance-height)."
             (min-cn 0))
         (flet ((flush-inline ()
                  (when group
-                   (let ((words (loop for g in (nreverse group) append (collect-words g styles cs content-w))))
+                   (let ((words (collect-words (nreverse group) styles cs content-w)))
                      (when words
                        ;; The preceding block's pending bottom margin applies in
                        ;; FULL before inline content — inline boxes have no
@@ -1002,7 +1003,7 @@ line must tuck against the cell bottom by."
 (defun min-inline-width (node styles cs content-w)
   "Min-content width of NODE's inline content: the widest single unbreakable
 token (word or atomic box)."
-  (let ((words (collect-words node styles cs content-w)) (w 0))
+  (let ((words (collect-words (coerce (h:dnode-children node) 'list) styles cs content-w)) (w 0))
     (dolist (wd words)
       (setf w (max w (if (eq (car wd) :atomic) (lbox-w (tok-meta wd)) (word-w (car wd) (tok-meta wd))))))
     w))
@@ -1219,8 +1220,7 @@ specified width), rows stacked, cells stretched to row height.  Returns
 a single (unwrapped) line.  Measures NODE's CHILDREN — collecting NODE itself would
 re-wrap an inline-block/atomic node as one atomic box laid out at the full available
 width (an empty icon then reports content-w instead of ~0)."
-  (let ((words (loop for child across (h:dnode-children node)
-                     append (collect-words child styles cs content-w)))
+  (let ((words (collect-words (coerce (h:dnode-children node) 'list) styles cs content-w))
         (w 0))
     (dolist (wd words)
       (incf w (+ (if (eq (car wd) :atomic) (lbox-w (tok-meta wd)) (word-w (car wd) (tok-meta wd)))

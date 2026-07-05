@@ -160,7 +160,7 @@ font succeeding."
         (* (length text) *font-w*)
         (handler-case
             (let* ((font (face-font face))
-                   (ppem (float (max 1 size) 1d0))
+                   (ppem (float (min 2000 (max 1 size)) 1d0))   ; cap ppem: no real glyph exceeds this, and it bounds rasterization memory
                    (upem (face-upem face))
                    (w 0d0))
               (dolist (g (shape-px font text ppem upem)) (incf w (+ (second g) letter-spacing)))
@@ -199,7 +199,7 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
         (draw-text cv text x (bitmap-top line-top line-h) color :bold bold :underline underline)
         (handler-case
             (let* ((font (face-font face))
-                   (ppem (float (max 1 size) 1d0))
+                   (ppem (float (min 2000 (max 1 size)) 1d0))   ; cap ppem: no real glyph exceeds this, and it bounds rasterization memory
                    (asc-ratio (face-ascent-ratio face))
                    (desc-ratio (face-descent-ratio face))
                    (upem (face-upem face))

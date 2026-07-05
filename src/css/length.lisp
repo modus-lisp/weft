@@ -49,7 +49,7 @@
             ;; now split into number and unit
             (let* ((num-str (subseq lower 0 pos))
                    (unit-str (subseq lower pos))
-                   (value (read-from-string num-str)))
+                   (value (safe-number num-str)))
               (if (string= unit-str "")
                   ;; no unit: only value 0 is valid
                   (if (= value 0)

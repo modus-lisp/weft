@@ -80,7 +80,7 @@
                                 (and (member (la 1) '(#\+ #\-)) (digit-p (la 2)))))
                    (incf i) (when (member (cur) '(#\+ #\-)) (incf i))
                    (loop while (and (< i n) (digit-p (char s i))) do (incf i)))
-                 (read-from-string (subseq s start i)))))
+                 (safe-number (subseq s start i)))))
       (loop while (< i n) do
         (let ((c (char s i)))
           (cond

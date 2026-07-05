@@ -423,6 +423,9 @@ text-align.  Returns (values line-boxes total-height)."
          ;; 30-story list.  Integer / clean-fraction line-heights are unaffected.
          (lh (max 1 (floor (used-line-height base-cs))))
          (align (css:cstyle-text-align base-cs))
+         (indent (let ((ti (css:cstyle-text-indent base-cs)))
+                   (cond ((and (consp ti) (eq (car ti) :percent)) (* content-w (/ (second ti) 100.0)))
+                         ((numberp ti) ti) (t 0))))
          (nowrap (member (css:cstyle-white-space base-cs) '("nowrap" "pre") :test #'string=))
          (cright (+ content-x content-w))
          (ws (coerce words 'vector)) (n (length ws)) (i 0)
@@ -433,7 +436,7 @@ text-align.  Returns (values line-boxes total-height)."
         (loop while (and (< (- rx lx) (* 3 *font-w*)) (next-float-bottom y)) do
           (let ((ny (next-float-bottom y))) (incf h (- ny y)) (setf y ny)
             (multiple-value-setq (lx rx) (float-band y lh content-x cright))))
-        (let* ((avail (- rx lx)) (cur '()) (cx lx) (line-h lh))
+        (let* ((avail (- rx lx)) (cur '()) (cx (if (null lines) (+ lx indent) lx)) (line-h lh))
           (loop while (< i n) do
             (let* ((wd (aref ws i)) (atomic (eq (car wd) :atomic))
                    ;; leading gap = inter-word space (only where the source had

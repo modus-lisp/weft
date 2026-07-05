@@ -209,8 +209,11 @@ background-filled canvas size so layout at least gets dimensions)."
     (cond ((and mime (search "svg" mime :test #'char-equal)) (decode-svg-image uri))
           ((null bytes) nil)
           ((search "png" (or mime "") :test #'char-equal) (png-decode bytes))
+          ((or (search "jpeg" (or mime "") :test #'char-equal) (search "jpg" (or mime "") :test #'char-equal))
+           (jpeg-decode bytes))
           ((search "gif" (or mime "") :test #'char-equal) (gif-decode bytes))
           ((and (>= (length bytes) 2) (= (aref bytes 0) 137)) (png-decode bytes))
+          ((and (>= (length bytes) 2) (= (aref bytes 0) #xff) (= (aref bytes 1) #xd8)) (jpeg-decode bytes))
           (t nil))))
 
 (defun %svg-bytes-p (bytes)
@@ -232,9 +235,11 @@ background-filled canvas size so layout at least gets dimensions)."
       ((and mime (search "svg" mime :test #'char-equal))
        (decode-svg-source (map 'string #'code-char bytes)))
       ((and (>= (length bytes) 8) (= (aref bytes 0) 137) (= (aref bytes 1) 80)) (png-decode bytes))
+      ((and (>= (length bytes) 2) (= (aref bytes 0) #xff) (= (aref bytes 1) #xd8)) (jpeg-decode bytes))
       ((and (>= (length bytes) 3) (= (aref bytes 0) 71) (= (aref bytes 1) 73) (= (aref bytes 2) 70))
        (gif-decode bytes))               ; "GIF"
       ((and mime (search "png" mime :test #'char-equal)) (png-decode bytes))
+      ((and mime (or (search "jpeg" mime :test #'char-equal) (search "jpg" mime :test #'char-equal))) (jpeg-decode bytes))
       ((and mime (search "gif" mime :test #'char-equal)) (gif-decode bytes))
       ((%svg-bytes-p bytes) (decode-svg-source (map 'string #'code-char bytes)))
       (t nil))))

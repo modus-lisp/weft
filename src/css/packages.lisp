@@ -31,5 +31,5 @@
            #:cstyle-top #:cstyle-left #:cstyle-right #:cstyle-bottom #:cstyle-z-index #:cstyle-bg-gradient
            #:cstyle-min-height #:cstyle-max-height #:cstyle-content #:cstyle-cursor
            #:cstyle-text-transform #:cstyle-visibility
-           #:cstyle-letter-spacing #:cstyle-word-spacing
+           #:cstyle-letter-spacing #:cstyle-word-spacing #:cstyle-text-indent
            #:cstyle-bg-image #:cstyle-bg-repeat #:cstyle-bg-position #:cstyle-bg-attachment))

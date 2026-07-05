@@ -980,7 +980,12 @@ Returns (values lbox advance-height)."
               (multiple-value-bind (lb adv) (layout-node it styles cx y content-w)
                 (when lb (push lb boxes) (setf max-w (max max-w (lbox-w lb))))
                 (incf y (+ adv gap))))
-            (values (nreverse boxes) (- y cy gap)))))))
+            (let ((boxes (nreverse boxes)))
+              ;; cross-axis (horizontal) alignment of the column's items
+              (dolist (lb boxes)
+                (cond ((string= align "center") (shift-box lb (round (/ (- content-w (lbox-w lb)) 2)) 0))
+                      ((string= align "flex-end") (shift-box lb (round (- content-w (lbox-w lb))) 0))))
+              (values boxes (- y cy gap))))))))
 
 (defun cell-like-p (c styles)
   "True when child C of a table participates as a cell — i.e. it is not itself an

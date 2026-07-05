@@ -38,20 +38,38 @@ for `normal`).  ~1.15 for Liberation Sans, vs the flat 1.2 fallback for no face.
 (defvar *face-cache* (make-hash-table :test 'equal)
   "Cache of (family-list weight style-kw) -> FACE (or :FAILED).")
 
-(defun %build-face (family-list weight style-kw)
-  "Resolve a FACE via scribe:match-font, or NIL on any failure."
+(defun %face-from-font (font)
+  "Wrap a scribe FONT in a weft FACE (upem + ascent/descent/line-gap ratios)."
+  (let* ((upem (float (scribe:font-units-per-em font) 1d0))
+         (asc (scribe:font-ascent font)) (desc (scribe:font-descent font)) (gap (scribe:font-line-gap font))
+         (f (%make-face :font font :upem (if (plusp upem) upem 1000d0))))
+    (when (and asc (plusp upem)) (setf (face-ascent-ratio f) (/ asc upem)))
+    (when (and desc (plusp upem)) (setf (face-descent-ratio f) (/ (abs desc) upem)))
+    (when (and gap (plusp upem)) (setf (face-line-gap-ratio f) (/ (abs gap) upem)))
+    f))
+
+(defvar *registered-faces* (make-hash-table :test 'equal)
+  "family-name (lowercase) -> FACE, from REGISTER-FONT: @font-face web fonts and the
+   Ahem test font.  Consulted before the generic Liberation substitutes.")
+
+(defun register-font (family bytes)
+  "Load a font from BYTES (a TTF/OTF octet vector) and register it under FAMILY, so
+   `font-family:FAMILY` resolves to it.  Returns the FACE, or NIL on failure."
   (handler-case
-      (let* ((font (scribe:match-font family-list :weight weight :style style-kw))
-             (upem (float (scribe:font-units-per-em font) 1d0))
-             (asc (scribe:font-ascent font))
-             (desc (scribe:font-descent font))
-             (gap (scribe:font-line-gap font))
-             (f (%make-face :font font :upem (if (plusp upem) upem 1000d0))))
-        (when (and asc (plusp upem)) (setf (face-ascent-ratio f) (/ asc upem)))
-        (when (and desc (plusp upem)) (setf (face-descent-ratio f) (/ (abs desc) upem)))
-        (when (and gap (plusp upem)) (setf (face-line-gap-ratio f) (/ (abs gap) upem)))
+      (let ((f (%face-from-font (scribe:open-font bytes))))
+        (setf (gethash (string-downcase family) *registered-faces*) f)
+        (clrhash *face-cache*)          ; a newly-registered family may satisfy cached misses
         f)
     (error () nil)))
+
+(defun %build-face (family-list weight style-kw)
+  "Resolve a FACE: a registered (@font-face / Ahem) family first, else
+   scribe:match-font.  NIL on any failure."
+  (or (loop for fam in family-list
+            for r = (gethash (string-downcase fam) *registered-faces*)
+            when r return r)
+      (handler-case (%face-from-font (scribe:match-font family-list :weight weight :style style-kw))
+        (error () nil))))
 
 (defun resolve-face (family-list weight style-kw)
   "Return the cached FACE for (FAMILY-LIST WEIGHT STYLE-KW), resolving+caching on

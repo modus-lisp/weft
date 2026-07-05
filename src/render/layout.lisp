@@ -543,12 +543,21 @@ text-align.  Returns (values line-boxes total-height)."
 
 ;;; ---- block layout -------------------------------------------------------
 (defvar *layout-debug* nil)
+(defparameter *max-layout-depth* 400
+  "Cap on layout recursion depth.  Real pages nest far shallower; capping keeps a
+pathological or hostile document (thousands of nested boxes) from exhausting the
+control stack — the outer levels render and the runaway interior is dropped, rather
+than the whole render crashing.")
+(defvar *layout-depth* 0)
 (defun layout-node (node styles x y avail-w &optional avail-h)
   "Resilient wrapper: a failing subtree degrades to an empty box, not a crash.
 AVAIL-H is the containing-block height in px when definite, else NIL (CSS 2.1
 10.5: a percentage height resolves against it only when definite)."
-  (handler-case (%layout-node node styles x y avail-w avail-h)
-    (error (e) (if *layout-debug* (error e) (values nil 0 0 0)))))
+  (if (> *layout-depth* *max-layout-depth*)
+      (values nil 0 0 0)                 ; too deep: drop this subtree instead of crashing
+      (let ((*layout-depth* (1+ *layout-depth*)))
+        (handler-case (%layout-node node styles x y avail-w avail-h)
+          (error (e) (if *layout-debug* (error e) (values nil 0 0 0)))))))
 
 (defun used-border (cs edge)
   "Used border width for EDGE (:t :r :b :l): the declared width, or 0 when that

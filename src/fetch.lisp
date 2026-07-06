@@ -97,8 +97,11 @@ Returns (values string charset-used)."
 
 (defvar *read-timeout* 30
   "Per-connection socket read timeout, seconds (also the TLS handshake timeout).")
-(defvar *user-agent* "weft/0.0.1 (+https://github.com/ynniv/weft)"
-  "User-Agent advertised on outgoing requests.")
+(defvar *user-agent*
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+  "User-Agent advertised on outgoing requests.  weft is a real rendering engine, so it
+identifies as a browser — many sites serve a bot interstitial (\"enable JS and cookies\")
+to any non-browser UA.")
 
 (defun %ascii-octets (string)
   "Encode an ASCII/Latin-1 request STRING to octets."
@@ -145,7 +148,8 @@ Connection: close (one exchange per stream) and advertises our decoders."
                (format s "~a ~a HTTP/1.1~c~c" method path #\Return #\Linefeed)
                (format s "Host: ~a~c~c" host #\Return #\Linefeed)
                (format s "User-Agent: ~a~c~c" *user-agent* #\Return #\Linefeed)
-               (format s "Accept: */*~c~c" #\Return #\Linefeed)
+               (format s "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8~c~c" #\Return #\Linefeed)
+               (format s "Accept-Language: en-US,en;q=0.9~c~c" #\Return #\Linefeed)
                (format s "Accept-Encoding: gzip, deflate, br, zstd~c~c" #\Return #\Linefeed)
                (format s "Connection: close~c~c" #\Return #\Linefeed)
                (loop for (k . v) in req-headers

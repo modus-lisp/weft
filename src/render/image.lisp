@@ -227,6 +227,18 @@ background-filled canvas size so layout at least gets dimensions)."
                                 (search "<?xml" s :test #'char-equal)))))
                  (t (return nil)))))
 
+(defun webp-to-img (bytes)
+  "Decode a WebP (VP8) via webp-pure into an opaque RGBA IMG, or NIL."
+  (multiple-value-bind (w h rgb) (webp-pure:decode bytes)
+    (when (and w h rgb (plusp w) (plusp h))
+      (let ((rgba (make-array (* w h 4) :element-type '(unsigned-byte 8))))
+        (dotimes (i (* w h))
+          (setf (aref rgba (* i 4))       (aref rgb (* i 3))
+                (aref rgba (+ (* i 4) 1)) (aref rgb (+ (* i 3) 1))
+                (aref rgba (+ (* i 4) 2)) (aref rgb (+ (* i 3) 2))
+                (aref rgba (+ (* i 4) 3)) 255))
+        (make-img :w w :h h :rgba rgba)))))
+
 (defun decode-image-bytes (bytes &optional mime)
   "Decode raw image BYTES (from a network fetch, not a data: URI) to an IMG, or NIL.
    Dispatches on MIME when given, else on the leading magic bytes."
@@ -236,6 +248,7 @@ background-filled canvas size so layout at least gets dimensions)."
        (decode-svg-source (map 'string #'code-char bytes)))
       ((and (>= (length bytes) 8) (= (aref bytes 0) 137) (= (aref bytes 1) 80)) (png-decode bytes))
       ((and (>= (length bytes) 2) (= (aref bytes 0) #xff) (= (aref bytes 1) #xd8)) (jpeg-decode bytes))
+      ((webp-pure:webp-p bytes) (ignore-errors (webp-to-img bytes)))
       ((and (>= (length bytes) 3) (= (aref bytes 0) 71) (= (aref bytes 1) 73) (= (aref bytes 2) 70))
        (gif-decode bytes))               ; "GIF"
       ((and mime (search "png" mime :test #'char-equal)) (png-decode bytes))

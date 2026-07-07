@@ -73,7 +73,7 @@
   :components ((:module "src" :components ((:file "fetch")))))
 
 (defsystem "weft/render"
-  :depends-on ("weft" "chipz" "scribe" "gesso" "stencil")
+  :depends-on ("weft" "chipz" "scribe" "gesso" "stencil" "webp-pure")
   :components ((:module "src" :components
                 ((:module "render" :serial t
                   :components ((:file "packages") (:file "font") (:file "font-bold")

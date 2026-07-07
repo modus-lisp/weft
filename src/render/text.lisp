@@ -185,7 +185,7 @@ heavier than the old 1.5 — that value had to compensate for the stem hinting w
 gamma carries the weight match; kept as a separate knob.")
 
 (defun draw-text-scribe (cv text x line-top line-h color size
-                         &key bold underline face (letter-spacing 0))
+                         &key bold underline face (letter-spacing 0) underline-end-x)
   "Paint TEXT with scribe glyphs from FACE (defaulting to the generic sans-serif
 face).  X is the left edge; LINE-TOP/LINE-H are the line box's top and height —
 the real font em-box (ascent+descent at SIZE px) is centered within it, so large
@@ -251,8 +251,11 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                                             (scribe:blend-coverage scv px py c color)))))))))))
                         (incf penx (+ xadv letter-spacing))))))
               (when underline
-                (let ((uy (min (1- cy1) (+ baseline (max 1 (round (* 0.12d0 ppem)))))))
-                  (fill-rect cv x uy (- (round penx) x) (max 1 (round (* 0.06d0 ppem))) color)))
+                ;; underline to UNDERLINE-END-X when given (so a multi-word link's
+                ;; underline runs continuously across the spaces), else to the pen.
+                (let ((uy (min (1- cy1) (+ baseline (max 1 (round (* 0.12d0 ppem))))))
+                      (uend (if underline-end-x (round underline-end-x) (round penx))))
+                  (fill-rect cv x uy (max 0 (- uend x)) (max 1 (round (* 0.06d0 ppem))) color)))
               (round penx))
           (error ()
             ;; partial paint may have happened; finish the string with the bitmap

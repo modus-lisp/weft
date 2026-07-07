@@ -674,6 +674,40 @@ this is applied before author rules."
                    (when (member a '("left" "right" "center" "justify") :test #'string=)
                      (setf (cstyle-text-align cs) a))))))))
 
+;;; ---- custom properties (CSS variables) ----------------------------------
+(defun custom-prop-p (prop)
+  "True for a `--name` custom-property declaration."
+  (and (>= (length prop) 2) (char= (char prop 0) #\-) (char= (char prop 1) #\-)))
+
+(defun resolve-vars (value vars)
+  "Substitute var(--name[, fallback]) in VALUE using VARS (a hash --name -> string),
+   resolving recursively; an unresolved var with no fallback yields empty (so the
+   declaration usually becomes invalid, per CSS).  VARS may be NIL."
+  (if (or (null vars) (null (search "var(" value)))
+      value
+      (with-output-to-string (out)
+        (let ((i 0) (n (length value)))
+          (loop
+            (let ((p (search "var(" value :start2 i)))
+              (cond
+                ((null p) (write-string value out :start i) (return))
+                (t (write-string value out :start i :end p)
+                   (let ((depth 1) (k (+ p 4)) (end nil))
+                     (loop while (< k n) do
+                       (case (char value k)
+                         (#\( (incf depth))
+                         (#\) (decf depth) (when (zerop depth) (setf end k) (loop-finish))))
+                       (incf k))
+                     (if (null end)
+                         (progn (write-string value out :start p) (return))
+                         (let* ((inner (subseq value (+ p 4) end))
+                                (comma (position #\, inner))
+                                (name (string-trim '(#\Space #\Tab) (subseq inner 0 (or comma (length inner)))))
+                                (fb (and comma (string-trim '(#\Space #\Tab) (subseq inner (1+ comma)))))
+                                (v (gethash name vars)))
+                           (write-string (cond (v v) (fb (resolve-vars fb vars)) (t "")) out)
+                           (setf i (1+ end)))))))))))))
+
 ;;; ---- the cascade --------------------------------------------------------
 (defun compute-styles (document stylesheet)
   "Compute a CSTYLE for every element under DOCUMENT, applying STYLESHEET (a list
@@ -689,16 +723,18 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                (stable-sort (nreverse matched)
                             (lambda (x y) (or (spec< (first x) (first y))
                                               (and (equal (first x) (first y)) (< (second x) (second y)))))))
-             (pseudo-style (parent-cs matched)
+             (pseudo-style (parent-cs matched vars)
                "Build a CSTYLE for a ::before/::after box, or NIL if no content."
                (when matched
                  (let ((cs (make-cstyle :color (cstyle-color parent-cs) :font-size (cstyle-font-size parent-cs)
                                         :font-weight (cstyle-font-weight parent-cs) :line-height (cstyle-line-height parent-cs)
                                         :font-family (cstyle-font-family parent-cs) :font-style (cstyle-font-style parent-cs))))
                    (dolist (m (sort-matched matched))
-                     (dolist (d (third m)) (apply-decl cs (css-decl-prop d) (css-decl-value d) parent-cs)))
+                     (dolist (d (third m))
+                       (unless (custom-prop-p (css-decl-prop d))
+                         (apply-decl cs (css-decl-prop d) (resolve-vars (css-decl-value d) vars) parent-cs))))
                    (and (cstyle-content cs) cs))))
-             (walk (n parent-cs)
+             (walk (n parent-cs parent-vars)
                (when (eq (weft.html:dnode-kind n) :element)
                  (let* ((tag (string-downcase (weft.html:dnode-name n)))
                         (cs (ua-style tag parent-cs)))
@@ -713,20 +749,42 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                              (:before (push (list spec order decls) m-before))
                              (:after  (push (list spec order decls) m-after))
                              (t       (push (list spec order decls) matched))))))
-                     (dolist (m (sort-matched matched))
-                       (dolist (d (third m)) (apply-decl cs (css-decl-prop d) (css-decl-value d) parent-cs)))
-                     ;; inline style attribute (wins)
-                     (let ((inline (el-attr n "style")))
-                       (when inline
-                         (dolist (pv (parse-inline inline))
-                           (apply-decl cs (car pv) (cdr pv) parent-cs))))
-                     (setf (gethash n styles) cs)
-                     ;; generated content (computed after the element's own style is known)
-                     (let ((bs (pseudo-style cs m-before)) (as (pseudo-style cs m-after)))
-                       (when bs (setf (gethash (cons n :before) styles) bs))
-                       (when as (setf (gethash (cons n :after) styles) as))))
-                   (loop for c across (weft.html:dnode-children n) do (walk c cs))))))
-      (loop for c across (weft.html:dnode-children document) do (walk c nil)))
+                     (let* ((sorted (sort-matched matched))
+                            (inline (el-attr n "style"))
+                            (inline-pvs (and inline (parse-inline inline)))
+                            ;; custom properties (--name) inherit; only allocate a fresh
+                            ;; environment when this element actually declares one.
+                            (has-custom (or (some (lambda (m) (some (lambda (d) (custom-prop-p (css-decl-prop d))) (third m))) sorted)
+                                            (some (lambda (pv) (custom-prop-p (car pv))) inline-pvs)))
+                            (vars (if has-custom
+                                      (let ((h (make-hash-table :test 'equal)))
+                                        (when parent-vars (maphash (lambda (k v) (setf (gethash k h) v)) parent-vars))
+                                        h)
+                                      parent-vars)))
+                       ;; pass 1: resolve the custom-property environment (cascade order)
+                       (when has-custom
+                         (dolist (m sorted)
+                           (dolist (d (third m))
+                             (when (custom-prop-p (css-decl-prop d))
+                               (setf (gethash (css-decl-prop d) vars) (resolve-vars (css-decl-value d) vars)))))
+                         (dolist (pv inline-pvs)
+                           (when (custom-prop-p (car pv))
+                             (setf (gethash (car pv) vars) (resolve-vars (cdr pv) vars)))))
+                       ;; pass 2: author rules (var()-resolved), then inline style (wins)
+                       (dolist (m sorted)
+                         (dolist (d (third m))
+                           (unless (custom-prop-p (css-decl-prop d))
+                             (apply-decl cs (css-decl-prop d) (resolve-vars (css-decl-value d) vars) parent-cs))))
+                       (dolist (pv inline-pvs)
+                         (unless (custom-prop-p (car pv))
+                           (apply-decl cs (car pv) (resolve-vars (cdr pv) vars) parent-cs)))
+                       (setf (gethash n styles) cs)
+                       ;; generated content (computed after the element's own style is known)
+                       (let ((bs (pseudo-style cs m-before vars)) (as (pseudo-style cs m-after vars)))
+                         (when bs (setf (gethash (cons n :before) styles) bs))
+                         (when as (setf (gethash (cons n :after) styles) as)))
+                       (loop for c across (weft.html:dnode-children n) do (walk c cs vars))))))))
+      (loop for c across (weft.html:dnode-children document) do (walk c nil nil)))
     styles))
 
 (defun spec< (a b)

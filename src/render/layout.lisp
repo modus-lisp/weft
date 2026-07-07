@@ -780,11 +780,13 @@ Returns (values lbox advance-height)."
                               :kind :block :children (nreverse children))))
           (return-from %layout-core (values lb (+ mt box-h mb) mt mb))))
       ;; flex / table containers
-      (when (member (cdisplay cs) '("flex" "table") :test #'string=)
+      (when (member (cdisplay cs) '("flex" "table" "grid") :test #'string=)
         (multiple-value-bind (boxes ch)
-            (if (string= (cdisplay cs) "flex")
-                (layout-flex node styles cx cy content-w cs child-avail-h)
-                (layout-table node styles cx cy content-w cs))
+            (cond ((string= (cdisplay cs) "flex")
+                   (layout-flex node styles cx cy content-w cs child-avail-h))
+                  ((string= (cdisplay cs) "grid")
+                   (layout-grid node styles cx cy content-w cs child-avail-h))
+                  (t (layout-table node styles cx cy content-w cs)))
           (let* ((box-h (+ ch pt pb bt bb))
                  (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                                 :kind :block :children boxes)))

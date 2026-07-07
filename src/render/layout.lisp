@@ -148,7 +148,7 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                       ;; <img> is UA display:inline-block and must not fall into generic
                       ;; block layout, which collapses it to a ~0-height content box.
                       ((string= (h:dnode-name n) "img")
-                       (let ((lb (img-box n cs))) (atom! lb n)))
+                       (let ((lb (img-box n cs content-w))) (atom! lb n)))
                       ;; <object data="data:...image..."> that decodes renders as a
                       ;; replaced image (with its own background, e.g. Acid2's eye
                       ;; tile); otherwise it falls back to its child content.
@@ -239,7 +239,7 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                      (and v (plusp (length (string-trim '(#\Space) v))) v))))
     (or (a "src") (%srcset-url (a "srcset")) (a "data-src") (%srcset-url (a "data-srcset")))))
 
-(defun img-box (node cs)
+(defun img-box (node cs &optional avail-w)
   "An atomic replaced box for <img>, sized to its BORDER box: the layout footprint
 is the content WxH plus its border (and padding) widths, with the decoded image (or
 an alt-text placeholder) painted in the content area inset by that border/padding.
@@ -255,10 +255,20 @@ alt-text placeholder."
                     ;; a network <img src> — fetched, decoded and cached through
                     ;; *IMAGE-LOADER* (NIL when running offline: stays a placeholder).
                     (t (fetch-image src))))
-         (cw (let ((sw (css::resolve-size (css:cstyle-width cs) 300))) (and (numberp sw) sw)))
+         (cw (let ((sw (css::resolve-size (css:cstyle-width cs) (or avail-w 300)))) (and (numberp sw) sw)))
          (chh (let ((sh (css::resolve-size (css:cstyle-height cs) 200))) (and (numberp sh) sh)))
-         (w (or cw (img-attr-num node "width") (and decoded (img-w decoded)) 120))
-         (hh (or chh (img-attr-num node "height") (and decoded (img-h decoded)) 90))
+         ;; intrinsic dimensions: the width/height attributes, else the decoded image
+         (iw (or (img-attr-num node "width") (and decoded (img-w decoded))))
+         (ih (or (img-attr-num node "height") (and decoded (img-h decoded))))
+         ;; When only one of width/height is given, derive the other from the intrinsic
+         ;; aspect ratio (CSS 2.1 10.3.2 replaced-element sizing) rather than taking the
+         ;; raw intrinsic value — so width:100% on a 3824x2640 image stays wide, not tall.
+         (w (cond (cw cw)
+                  ((and chh iw ih (plusp ih)) (* chh (/ iw ih)))
+                  (iw iw) (t 120)))
+         (hh (cond (chh chh)
+                   ((and cw iw ih (plusp iw)) (* cw (/ ih iw)))
+                   (ih ih) (t 90)))
          (alt (cdr (assoc "alt" (h:dnode-attrs node) :test #'string-equal)))
          (has-alt (and alt (plusp (length alt))))
          ;; An unfetchable image with NO alt text (HN's SVG logo, a 14x1 spacer
@@ -620,15 +630,16 @@ CB=(px py pw ph) using top/left/right/bottom from CS.  When top (or left) is
                        (t (lbox-y lb)))))
         (shift-box lb (round (- nx (lbox-x lb))) (round (- ny (lbox-y lb))))))))
 
-(defun replaced-box (node cs)
+(defun replaced-box (node cs &optional avail-w)
   "The replaced-content box for a leaf replaced element (img / svg / canvas / an
    <object> that decodes to an image), or NIL when NODE is not one.  These have no
    flow children — the box IS the content — so block-level and out-of-flow (absolute,
    e.g. the Next.js Image fill pattern) replaced elements render here, not only the
-   inline ones handled in COLLECT-WORDS."
+   inline ones handled in COLLECT-WORDS.  AVAIL-W is the containing width for a
+   percentage-sized image."
   (when (eq (h:dnode-kind node) :element)
     (let ((name (h:dnode-name node)))
-      (cond ((string-equal name "img") (img-box node cs))
+      (cond ((string-equal name "img") (img-box node cs avail-w))
             ((string-equal name "svg") (svg-box node cs))
             ((string-equal name "canvas") (canvas-box node cs))
             ((and (string-equal name "object") (object-data-image node))
@@ -684,7 +695,7 @@ Returns (values lbox advance-height)."
     (when (or (null cs) (string= (cdisplay cs) "none")) (return-from %layout-core (values nil 0 0 0)))
     ;; replaced elements (img/svg/canvas/object-image) reaching block layout — as a
     ;; block-level or out-of-flow box — are their own content; render and return.
-    (let ((rb (replaced-box node cs)))
+    (let ((rb (replaced-box node cs avail-w)))
       (when rb
         (setf (lbox-x rb) x (lbox-y rb) y)
         (return-from %layout-core (values rb (lbox-h rb) 0 0 0))))

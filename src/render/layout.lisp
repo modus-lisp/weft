@@ -1762,22 +1762,35 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                (paint-children cv (lbox-children lb)))
              (paint-children cv (lbox-children lb)))))
       (:line
-       (dolist (it (lbox-children lb))
-         (if (frag-p it)
-             (let ((cs (frag-style it)))
-               ;; pass the line box geometry so scribe centers the real font
-               ;; em-box (ascent+descent at font-size) within it.  A
-               ;; visibility:hidden run occupies its space but paints no glyphs.
-               (when (box-visible-p cs)
-                 (draw-text-scribe cv (frag-text it) (round (frag-x it))
-                          (lbox-y lb) (lbox-h lb)
-                          (rgb (css:cstyle-color cs))
-                          (css:cstyle-font-size cs)
-                          :face (style-face cs)
-                          :bold (>= (css:cstyle-font-weight cs) 600)
-                          :letter-spacing (css:cstyle-letter-spacing cs)
-                          :underline (member "underline" (css:cstyle-text-decoration cs) :test #'string=))))
-             (paint-box cv it)))))))   ; atomic inline-block / img box
+       (loop for cell on (lbox-children lb)
+             for it = (car cell)
+             do (if (frag-p it)
+                    (let ((cs (frag-style it)))
+                      ;; pass the line box geometry so scribe centers the real font
+                      ;; em-box (ascent+descent at font-size) within it.  A
+                      ;; visibility:hidden run occupies its space but paints no glyphs.
+                      (when (box-visible-p cs)
+                        (let* ((ul (member "underline" (css:cstyle-text-decoration cs) :test #'string=))
+                               (nxt (cadr cell))
+                               ;; run the underline across the space into the next
+                               ;; fragment when it is also underlined, so a multi-word
+                               ;; link underlines continuously instead of per word.
+                               (uend (when ul
+                                       (if (and (frag-p nxt)
+                                                (member "underline" (css:cstyle-text-decoration (frag-style nxt))
+                                                        :test #'string=))
+                                           (frag-x nxt)
+                                           (+ (frag-x it) (frag-w it))))))
+                          (draw-text-scribe cv (frag-text it) (round (frag-x it))
+                                   (lbox-y lb) (lbox-h lb)
+                                   (rgb (css:cstyle-color cs))
+                                   (css:cstyle-font-size cs)
+                                   :face (style-face cs)
+                                   :bold (>= (css:cstyle-font-weight cs) 600)
+                                   :letter-spacing (css:cstyle-letter-spacing cs)
+                                   :underline ul
+                                   :underline-end-x uend))))
+                    (paint-box cv it)))))))   ; atomic inline-block / img box
 
 (defun percent-decode (s)
   "Decode %XX escapes in a URI component (leaves '+' literal — data: URIs are not

@@ -602,6 +602,20 @@ CB=(px py pw ph) using top/left/right/bottom from CS.  When top (or left) is
                        (t (lbox-y lb)))))
         (shift-box lb (round (- nx (lbox-x lb))) (round (- ny (lbox-y lb))))))))
 
+(defun replaced-box (node cs)
+  "The replaced-content box for a leaf replaced element (img / svg / canvas / an
+   <object> that decodes to an image), or NIL when NODE is not one.  These have no
+   flow children — the box IS the content — so block-level and out-of-flow (absolute,
+   e.g. the Next.js Image fill pattern) replaced elements render here, not only the
+   inline ones handled in COLLECT-WORDS."
+  (when (eq (h:dnode-kind node) :element)
+    (let ((name (h:dnode-name node)))
+      (cond ((string-equal name "img") (img-box node cs))
+            ((string-equal name "svg") (svg-box node cs))
+            ((string-equal name "canvas") (canvas-box node cs))
+            ((and (string-equal name "object") (object-data-image node))
+             (object-box node cs (object-data-image node)))))))
+
 (defun %layout-node (node styles x y avail-w &optional avail-h)
   "Establish an absolute containing block for positioned elements, then lay the
 node out.  A positioned element (relative/absolute/fixed) is the containing block
@@ -650,6 +664,12 @@ AVAIL-H the containing-block height (px when definite, else NIL).
 Returns (values lbox advance-height)."
   (let ((cs (st styles node)))
     (when (or (null cs) (string= (cdisplay cs) "none")) (return-from %layout-core (values nil 0 0 0)))
+    ;; replaced elements (img/svg/canvas/object-image) reaching block layout — as a
+    ;; block-level or out-of-flow box — are their own content; render and return.
+    (let ((rb (replaced-box node cs)))
+      (when rb
+        (setf (lbox-x rb) x (lbox-y rb) y)
+        (return-from %layout-core (values rb (lbox-h rb) 0 0 0))))
     (let* ((mt (css:cstyle-margin-top cs)) (mb (css:cstyle-margin-bottom cs))
            (ml (css:cstyle-margin-left cs)) (mr (css:cstyle-margin-right cs))
            (pt (css:cstyle-padding-top cs)) (pb (css:cstyle-padding-bottom cs))

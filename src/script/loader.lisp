@@ -146,15 +146,21 @@
                (setf i (if semi (1+ semi) n))))))))))
 
 (defun fetch-stylesheet (ctx abs-url depth)
-  "Load the CSS at ABS-URL through the loader and expand its @imports.  Applies
-   only when the loader reports kind :css and the sheet is within the size cap.
-   Returns the expanded CSS text or NIL.  Never signals."
+  "Load the CSS at ABS-URL through the loader and expand its @imports.  Called only
+   for a confirmed <link rel=stylesheet>, so the content IS a stylesheet — the loader's
+   URL-suffix kind guess is not authoritative (CSS is routinely served from a query or
+   extensionless URL, e.g. news.css?hash).  Applies any string within the size cap that
+   isn't obviously an HTML error page.  Returns the expanded CSS text or NIL; never signals."
   (when (> depth *max-import-depth*) (return-from fetch-stylesheet nil))
   (handler-case
       (multiple-value-bind (kind content) (load-resource ctx abs-url)
-        (when (and (eq kind :css) (stringp content)
-                   (<= (length content) *max-stylesheet-bytes*))
-          (expand-imports ctx content abs-url depth)))
+        (declare (ignore kind))
+        (when (stringp content)
+          (let ((trimmed (string-left-trim '(#\Space #\Tab #\Newline #\Return) content)))
+            (when (and (plusp (length trimmed))
+                       (<= (length content) *max-stylesheet-bytes*)
+                       (not (char= (char trimmed 0) #\<)))   ; a 404 HTML page is not a sheet
+              (expand-imports ctx content abs-url depth)))))
     (error () nil)))
 
 (defun external-stylesheet-link-p (node)

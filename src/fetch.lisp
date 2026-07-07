@@ -151,7 +151,7 @@ Connection: close (one exchange per stream) and advertises our decoders."
                (format s "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8~c~c" #\Return #\Linefeed)
                (format s "Accept-Language: en-US,en;q=0.9~c~c" #\Return #\Linefeed)
                (format s "Accept-Encoding: gzip, deflate, br, zstd~c~c" #\Return #\Linefeed)
-               (format s "Connection: close~c~c" #\Return #\Linefeed)
+               (format s "Connection: keep-alive~c~c" #\Return #\Linefeed)
                (loop for (k . v) in req-headers
                      do (format s "~a: ~a~c~c" k v #\Return #\Linefeed))
                (format s "~c~c" #\Return #\Linefeed))))
@@ -235,24 +235,154 @@ Returns NIL at end of stream with no bytes read."
        (if (and n (plusp n)) (read-n-bytes stream n) (%octets #()))))
     (t (read-to-eof stream))))
 
+;;; ---- cookie jar -------------------------------------------------------
+;;; A process-wide session jar: Set-Cookie is parsed and stored; matching cookies
+;;; are replayed as a Cookie header.  Enough for logins and the "enable cookies"
+;;; bot interstitials — domain/path/secure matching, Max-Age=0 deletion; no
+;;; persistence to disk (the session lasts as long as the process).
+
+(defun split-on (string char)
+  "Split STRING on CHAR into a list of substrings (CHAR removed)."
+  (loop with start = 0
+        for pos = (position char string :start start)
+        collect (subseq string start pos)
+        while pos do (setf start (1+ pos))))
+
+(defstruct cookie name value domain path secure)
+(defvar *cookies* '() "The session cookie jar (a list of COOKIEs).")
+(defvar *cookie-lock* (sb-thread:make-mutex))
+(defvar *enable-cookies* t)
+
+(defun %domain-match (host domain)
+  "HOST is DOMAIN or a subdomain of it (RFC 6265 domain-match)."
+  (let ((h (string-downcase host)) (d (string-downcase domain)))
+    (or (string= h d)
+        (and (> (length h) (length d))
+             (string= d (subseq h (- (length h) (length d))))
+             (char= (char h (- (length h) (length d) 1)) #\.)))))
+
+(defun store-cookies (headers request-host)
+  "Parse every Set-Cookie in HEADERS into the jar (or delete on Max-Age<=0)."
+  (when *enable-cookies*
+    (dolist (h headers)
+      (when (string-equal (car h) "set-cookie")
+        (let* ((parts (mapcar (lambda (s) (string-trim " " s)) (split-on (cdr h) #\;)))
+               (nv (first parts))
+               (eq (position #\= nv)))
+          (when (and eq (plusp eq))
+            (let ((name (string-trim " " (subseq nv 0 eq)))
+                  (val (string-trim " " (subseq nv (1+ eq))))
+                  (domain request-host) (path "/") (secure nil) (delete nil))
+              (dolist (attr (rest parts))
+                (let* ((ae (position #\= attr))
+                       (k (string-downcase (if ae (subseq attr 0 ae) attr)))
+                       (v (and ae (subseq attr (1+ ae)))))
+                  (cond ((and (string= k "domain") v) (setf domain (string-left-trim "." v)))
+                        ((and (string= k "path") v (plusp (length v))) (setf path v))
+                        ((string= k "secure") (setf secure t))
+                        ((and (string= k "max-age") v (<= (or (ignore-errors (parse-integer v)) 1) 0))
+                         (setf delete t)))))
+              (sb-thread:with-mutex (*cookie-lock*)
+                (setf *cookies* (remove-if (lambda (c) (and (string= (cookie-name c) name)
+                                                            (string-equal (cookie-domain c) domain)
+                                                            (string= (cookie-path c) path)))
+                                           *cookies*))
+                (unless delete
+                  (push (make-cookie :name name :value val :domain domain :path path :secure secure)
+                        *cookies*))))))))))
+
+(defun cookie-header (host path https)
+  "The Cookie header value for cookies matching HOST/PATH/scheme, or NIL."
+  (when *enable-cookies*
+    (let ((matches (sb-thread:with-mutex (*cookie-lock*)
+                     (remove-if-not (lambda (c)
+                                      (and (%domain-match host (cookie-domain c))
+                                           (let ((cp (cookie-path c)))
+                                             (or (string= cp "/")
+                                                 (and (>= (length path) (length cp))
+                                                      (string= cp (subseq path 0 (length cp))))))
+                                           (or (not (cookie-secure c)) https)))
+                                    *cookies*))))
+      (when matches
+        (format nil "~{~a~^; ~}"
+                (mapcar (lambda (c) (format nil "~a=~a" (cookie-name c) (cookie-value c))) matches))))))
+
+;;; ---- connection pool (HTTP/1.1 keep-alive) ----------------------------
+(defvar *conn-pool* (make-hash-table :test 'equal) "pool-key -> list of idle streams.")
+(defvar *pool-lock* (sb-thread:make-mutex))
+(defvar *reuse-connections* t)
+(defparameter *pool-max-idle* 4 "Idle connections kept per host.")
+
+(defun pool-key (scheme host port) (format nil "~(~a~)://~a:~a" scheme host port))
+
+(defun acquire-stream (scheme host port timeout)
+  "An idle pooled stream for the host if any (reused), else a fresh one.  Returns
+   (values stream pooled-p)."
+  (or (and *reuse-connections*
+           (sb-thread:with-mutex (*pool-lock*)
+             (let ((idle (gethash (pool-key scheme host port) *conn-pool*)))
+               (when idle
+                 (setf (gethash (pool-key scheme host port) *conn-pool*) (rest idle))
+                 (values (first idle) t)))))
+      (values (open-stream-for scheme host port timeout) nil)))
+
+(defun release-stream (scheme host port stream keep)
+  "Return STREAM to the pool if KEEP and there's room, else close it."
+  (if (and keep *reuse-connections*)
+      (let ((closed nil))
+        (sb-thread:with-mutex (*pool-lock*)
+          (let* ((k (pool-key scheme host port)) (idle (gethash k *conn-pool*)))
+            (if (< (length idle) *pool-max-idle*)
+                (setf (gethash k *conn-pool*) (cons stream idle))
+                (setf closed t))))
+        (when closed (ignore-errors (close stream))))
+      (ignore-errors (close stream))))
+
+(defun keep-alive-p (headers)
+  "Whether the connection may be reused: the body was self-delimiting (Content-Length
+   or chunked) and the server didn't ask to close."
+  (let ((conn (get-header headers "connection")))
+    (and (not (and conn (search "close" conn :test #'char-equal)))
+         (or (get-header headers "content-length")
+             (let ((te (get-header headers "transfer-encoding")))
+               (and te (search "chunked" te :test #'char-equal)))))))
+
 (defun socket-transport (method url req-headers)
-  "Pure-CL transport: run one HTTP/1.1 exchange to URL over a raw socket
-(http) or a seal TLS 1.3 stream (https, :verify t).  Returns a RESPONSE."
+  "One HTTP/1.1 exchange to URL over a pooled raw socket (http) or seal TLS stream
+(https).  Connections are kept alive and reused per host; a stale reused connection
+is retried once on a fresh one.  Cookies are attached and Set-Cookie stored."
   (let* ((u (url:parse url))
          (scheme (url:url-scheme u))
          (host (url:hostname u))
+         (https (string-equal scheme "https"))
          (port (or (url:url-port u) (scheme-default-port scheme)))
          (path (let ((p (url:pathname-str u)) (q (url:search-str u)))
                  (concatenate 'string (if (plusp (length p)) p "/") q)))
-         (stream (open-stream-for scheme host port *read-timeout*)))
-    (unwind-protect
-         (progn
-           (write-request stream method host path req-headers)
-           (let* ((status (parse-status-line (read-header-line stream)))
-                  (headers (read-headers stream))
-                  (body (read-body stream headers method status)))
-             (make-response :status status :headers headers :body body :url url)))
-      (ignore-errors (close stream)))))
+         (ck (cookie-header host path https))
+         (all-headers (if ck (cons (cons "Cookie" ck) req-headers) req-headers)))
+    (flet ((exchange (stream)
+             (write-request stream method host path all-headers)
+             (let* ((status (parse-status-line (read-header-line stream)))
+                    (headers (read-headers stream))
+                    (body (read-body stream headers method status)))
+               (store-cookies headers host)
+               (values (make-response :status status :headers headers :body body :url url)
+                       (keep-alive-p headers)))))
+      (multiple-value-bind (stream pooled) (acquire-stream scheme host port *read-timeout*)
+        (handler-case
+            (multiple-value-bind (resp keep) (exchange stream)
+              (release-stream scheme host port stream keep)
+              resp)
+          (error (e)
+            (ignore-errors (close stream))
+            ;; a reused connection may have been closed by the server since — retry fresh
+            (if pooled
+                (let ((s2 (open-stream-for scheme host port *read-timeout*)))
+                  (handler-case
+                      (multiple-value-bind (resp keep) (exchange s2)
+                        (release-stream scheme host port s2 keep) resp)
+                    (error (e2) (ignore-errors (close s2)) (error e2))))
+                (error e))))))))
 
 (defvar *http-transport* #'socket-transport
   "Function (method url req-headers) -> RESPONSE.  The default is a pure-CL

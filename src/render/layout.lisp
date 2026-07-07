@@ -221,6 +221,24 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
   (let ((v (cdr (assoc name (h:dnode-attrs node) :test #'string-equal))))
     (when v (ignore-errors (parse-integer (string-trim '(#\Space #\p #\x) v) :junk-allowed t)))))
 
+(defun %srcset-url (srcset)
+  "The first candidate URL in a SRCSET value (the URL up to its width/density
+   descriptor)."
+  (when srcset
+    (let* ((s (string-left-trim '(#\Space #\Tab #\Newline #\,) srcset))
+           (end (position-if (lambda (c) (member c '(#\Space #\Tab #\Newline #\,))) s))
+           (u (subseq s 0 (or end (length s)))))
+      (and (plusp (length u)) u))))
+
+(defun img-source-url (node)
+  "The image URL for an <img>: src, else the first srcset candidate, else the
+   lazy-load data-src / data-srcset — many sites defer the real URL into a data-
+   attribute until a script swaps it into src on scroll, which a static render never
+   triggers."
+  (flet ((a (name) (let ((v (cdr (assoc name (h:dnode-attrs node) :test #'string-equal))))
+                     (and v (plusp (length (string-trim '(#\Space) v))) v))))
+    (or (a "src") (%srcset-url (a "srcset")) (a "data-src") (%srcset-url (a "data-srcset")))))
+
 (defun img-box (node cs)
   "An atomic replaced box for <img>, sized to its BORDER box: the layout footprint
 is the content WxH plus its border (and padding) widths, with the decoded image (or
@@ -229,7 +247,7 @@ Modelled on OBJECT-BOX so a bordered <img> (e.g. HN's `border:1px white` logo)
 reserves the browser's real box (20x20 for an 18x18 + 1px border) instead of just
 its content.  The decoded/CSS/HTML intrinsic size is the CONTENT size; else an
 alt-text placeholder."
-  (let* ((src (cdr (assoc "src" (h:dnode-attrs node) :test #'string-equal)))
+  (let* ((src (img-source-url node))
          (decoded (cond
                     ((null src) nil)
                     ((and (>= (length src) 5) (string-equal (subseq src 0 5) "data:"))

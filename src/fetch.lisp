@@ -141,20 +141,34 @@ HOST and an HTTP/1.1 ALPN offer.  Signals on a handshake / certificate failure."
 
 ;;; ---- HTTP/1.1 over an arbitrary binary stream -------------------------
 
+(defun merge-headers (defaults extra)
+  "DEFAULTS, with any EXTRA header overriding one by case-insensitive name; EXTRA
+   names not present in DEFAULTS are appended (e.g. Cookie).  Lets a caller replace
+   Accept for image requests, which don't want the avif/webp the HTML path advertises."
+  (let ((result '()))
+    (dolist (d defaults)
+      (push (or (assoc (car d) extra :test #'string-equal) d) result))
+    (dolist (e extra)
+      (unless (assoc (car e) defaults :test #'string-equal) (push e result)))
+    (nreverse result)))
+
 (defun write-request (stream method host path req-headers)
-  "Write an HTTP/1.1 request line + headers to STREAM and flush it.  Sends
-Connection: close (one exchange per stream) and advertises our decoders."
-  (let ((out (with-output-to-string (s)
-               (format s "~a ~a HTTP/1.1~c~c" method path #\Return #\Linefeed)
-               (format s "Host: ~a~c~c" host #\Return #\Linefeed)
-               (format s "User-Agent: ~a~c~c" *user-agent* #\Return #\Linefeed)
-               (format s "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8~c~c" #\Return #\Linefeed)
-               (format s "Accept-Language: en-US,en;q=0.9~c~c" #\Return #\Linefeed)
-               (format s "Accept-Encoding: gzip, deflate, br, zstd~c~c" #\Return #\Linefeed)
-               (format s "Connection: keep-alive~c~c" #\Return #\Linefeed)
-               (loop for (k . v) in req-headers
-                     do (format s "~a: ~a~c~c" k v #\Return #\Linefeed))
-               (format s "~c~c" #\Return #\Linefeed))))
+  "Write an HTTP/1.1 request line + headers to STREAM and flush it.  Keeps the
+connection alive and advertises our decoders; REQ-HEADERS override the defaults."
+  (let* ((defaults `(("Host" . ,host)
+                     ("User-Agent" . ,*user-agent*)
+                     ;; advertise only what we can actually decode — claiming avif/webp is
+                     ;; why content-negotiating servers (Next.js /_next/image, CDNs) hand us
+                     ;; images we can't render.
+                     ("Accept" . "text/html,application/xhtml+xml,application/xml;q=0.9,image/svg+xml,image/png,image/jpeg,image/gif,*/*;q=0.8")
+                     ("Accept-Language" . "en-US,en;q=0.9")
+                     ("Accept-Encoding" . "gzip, deflate, br, zstd")
+                     ("Connection" . "keep-alive")))
+         (out (with-output-to-string (s)
+                (format s "~a ~a HTTP/1.1~c~c" method path #\Return #\Linefeed)
+                (loop for (k . v) in (merge-headers defaults req-headers)
+                      do (format s "~a: ~a~c~c" k v #\Return #\Linefeed))
+                (format s "~c~c" #\Return #\Linefeed))))
     (write-sequence (%ascii-octets out) stream)
     (finish-output stream)))
 

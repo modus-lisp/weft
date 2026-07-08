@@ -503,8 +503,12 @@ Ignores the system-font keywords (caption/icon/...)."
                 (row (or (string= prop "grid-row-start") (string= prop "grid-row-end")))
                 (end (or (string= prop "grid-column-end") (string= prop "grid-row-end")))
                 (cur (or (if row (cstyle-grid-row cs) (cstyle-grid-column cs)) "auto / auto"))
-                (parts (split-ws cur))
-                (a (or (first parts) "auto")) (b (or (third parts) "auto"))
+                ;; split on the '/' (which may have no surrounding spaces — Tailwind
+                ;; emits `grid-column:1/-1`), so an existing end line survives folding
+                ;; in a start (e.g. col-span-full's -1 kept when col-start-5 sets start 5).
+                (slash (position #\/ cur))
+                (a (string-trim " " (if slash (subseq cur 0 slash) cur)))
+                (b (if slash (string-trim " " (subseq cur (1+ slash))) "auto"))
                 (new (if end (format nil "~a / ~a" a v) (format nil "~a / ~a" v b))))
            (if row (setf (cstyle-grid-row cs) new) (setf (cstyle-grid-column cs) new))))
         ((string= prop "grid-auto-flow")

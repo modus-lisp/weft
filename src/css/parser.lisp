@@ -227,9 +227,21 @@ prelude matches (a bare @media)."
                           (cond
                             ((and (< j end) (eq (ctok-type (aref toks j)) :lbrace))
                              (let ((close (match-brace toks j)))
-                               (when (and (string= kw "media")
-                                          (media-matches-p (toks-text toks (1+ i) j)))
-                                 (collect-rules (1+ j) close))
+                               (cond
+                                 ;; @media: recurse only when the query matches this viewport.
+                                 ((string= kw "media")
+                                  (when (media-matches-p (toks-text toks (1+ i) j))
+                                    (collect-rules (1+ j) close)))
+                                 ;; @layer / @supports wrap ordinary rules — flatten them in.
+                                 ;; Tailwind v4 puts EVERY utility inside `@layer utilities`
+                                 ;; (with the responsive variants in a nested @media), so
+                                 ;; skipping @layer dropped the whole framework.  @supports
+                                 ;; conditions are assumed met (progressive enhancement).
+                                 ((member kw '("layer" "supports") :test #'string=)
+                                  (collect-rules (1+ j) close))
+                                 ;; @font-face / @keyframes / @page hold descriptors, not
+                                 ;; qualified rules — skip their blocks.
+                                 (t nil))
                                (setf i (1+ close))))
                             (t (setf i (if (< j end) (1+ j) end))))))
                        (t

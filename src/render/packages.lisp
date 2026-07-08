@@ -4,7 +4,7 @@
   (:local-nicknames (#:h #:weft.html) (#:css #:weft.css)
                     (#:g #:gesso) (#:st #:stencil) (#:sc #:scribe))
   (:export #:canvas #:make-canvas #:canvas-width #:canvas-height
-           #:fill-rect #:draw-text #:write-png
+           #:fill-rect #:draw-text #:write-png #:canvas->png
            #:layout-tree #:render-to-png #:render-to-canvas #:canvas-ink #:canvas-pixels
            #:element-canvas #:*element-canvas*
            ;; network image loading + cache (bind *IMAGE-LOADER* to a fetcher)

@@ -157,8 +157,8 @@ respects *CLIP*.  Used for mitered border trapezoids/triangles."
     (loop for b across payload do (vector-push-extend b out))
     (loop for b across (u32be (crc32 payload)) do (vector-push-extend b out))))
 
-(defun write-png (cv path)
-  "Write CANVAS CV to PATH as a truecolor PNG."
+(defun canvas->png (cv)
+  "Encode CANVAS CV to a truecolor PNG as an in-memory octet vector."
   (let* ((w (canvas-width cv)) (hh (canvas-height cv)) (px (canvas-pixels cv))
          ;; scanlines: filter byte 0 + RGB row
          (raw (make-array (* hh (1+ (* w 3))) :element-type '(unsigned-byte 8)))
@@ -173,6 +173,10 @@ respects *CLIP*.  Used for mitered border trapezoids/triangles."
                                          (u32be w) (u32be hh) (vector 8 2 0 0 0)))
       (png-chunk out "IDAT" (coerce (zlib-store raw) '(vector (unsigned-byte 8))))
       (png-chunk out "IEND" (make-array 0 :element-type '(unsigned-byte 8)))
-      (with-open-file (s path :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
-        (write-sequence out s)))
-    path))
+      out)))
+
+(defun write-png (cv path)
+  "Write CANVAS CV to PATH as a truecolor PNG."
+  (with-open-file (s path :direction :output :element-type '(unsigned-byte 8) :if-exists :supersede)
+    (write-sequence (canvas->png cv) s))
+  path)

@@ -35,6 +35,7 @@
   (bg-image nil)      ; raw url() string of a background image (data: URI), decoded at paint
   (bg-repeat "repeat") ; repeat | repeat-x | repeat-y | no-repeat
   (bg-position nil)   ; ((xval xunit) (yval yunit)) or NIL = 0,0
+  (bg-size nil)       ; NIL(auto) | :contain | :cover | (w-spec h-spec); spec = px | (:percent N) | :auto
   (bg-attachment "scroll") ; scroll | fixed (fixed images are not painted; see paint)
   (min-height 0.0) (max-height :none)
   (cursor "auto")     ; CSS cursor keyword (inherited)
@@ -188,6 +189,25 @@ IS the multiplier; `normal` -> :NORMAL; a <percentage> -> its fraction; a <lengt
       ((and (plusp (length tt)) (char= (char tt (1- (length tt))) #\%))
        (let ((n (ignore-errors (read-from-string (subseq tt 0 (1- (length tt))))))) (when (numberp n) (list :percent (float n)))))
       (t (resolve-len tt font-size)))))
+
+(defun bg-size-comp (tok fs)
+  "One background-size component -> :auto | px number | (:percent N)."
+  (cond ((string= tok "auto") :auto)
+        ((and (plusp (length tok)) (char= (char tok (1- (length tok))) #\%))
+         (let ((n (ignore-errors (read-from-string (subseq tok 0 (1- (length tok)))))))
+           (when (numberp n) (list :percent (float n)))))
+        (t (resolve-len tok fs))))
+
+(defun parse-bg-size (value fs)
+  "Parse background-size -> :contain | :cover | (w-spec h-spec) | NIL (auto)."
+  (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline) value))))
+    (cond ((string= v "contain") :contain)
+          ((string= v "cover") :cover)
+          ((or (string= v "auto") (string= v "")) nil)
+          (t (let* ((parts (remove "" (split-ws v) :test #'string=))
+                    (w (and parts (bg-size-comp (first parts) fs)))
+                    (h (if (second parts) (bg-size-comp (second parts) fs) :auto)))
+               (and w (list w h)))))))
 
 (defun resolve-size (spec avail)
   "Resolve a parse-size result against AVAIL (containing-block px).  :auto/NIL -> NIL."
@@ -373,6 +393,7 @@ Ignores the system-font keywords (caption/icon/...)."
          (let ((v (parse-value "background-repeat" value))) (when (stringp v) (setf (cstyle-bg-repeat cs) v))))
         ((string= prop "background-position")
          (let ((v (parse-value "background-position" value))) (when (and (consp v) (not (eq v :invalid))) (setf (cstyle-bg-position cs) v))))
+        ((string= prop "background-size") (setf (cstyle-bg-size cs) (parse-bg-size value fs)))
         ((string= prop "background-attachment")
          (setf (cstyle-bg-attachment cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "font-size")

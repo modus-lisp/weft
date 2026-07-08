@@ -1663,15 +1663,38 @@ within AVAIL (= box-dim - image-dim).  Honors px and % (and 0); other units 0."
               (t 0)))
       0))
 
+(defun bg-tile-size (bs iw ih bw bh)
+  "Effective background tile (width height) in px for background-size BS given the
+   image's intrinsic IW/IH and the box's content BW/BH.  BS is NIL(auto), :contain,
+   :cover, or (w-spec h-spec); an :auto component preserves the intrinsic aspect ratio."
+  (labels ((r (x) (max 1 (round x)))
+           (comp (spec avail) (cond ((numberp spec) spec)
+                                    ((and (consp spec) (eq (first spec) :percent))
+                                     (* avail (/ (second spec) 100.0)))
+                                    (t nil))))            ; :auto
+    (cond ((or (null bs) (<= iw 0) (<= ih 0)) (values (r iw) (r ih)))
+          ((eq bs :contain) (let ((s (min (/ bw iw) (/ bh ih)))) (values (r (* iw s)) (r (* ih s)))))
+          ((eq bs :cover)   (let ((s (max (/ bw iw) (/ bh ih)))) (values (r (* iw s)) (r (* ih s)))))
+          ((consp bs)
+           (let ((w (comp (first bs) bw)) (h (comp (second bs) bh)))
+             (cond ((and w h) (values (r w) (r h)))
+                   (w (values (r w) (r (* ih (/ w iw)))))
+                   (h (values (r (* iw (/ h ih))) (r h)))
+                   (t (values (r iw) (r ih))))))
+          (t (values (r iw) (r ih))))))
+
 (defun paint-bg-image (cv lb cs url)
-  "Decode the data: URI URL and tile it across LB's padding box honoring
-background-repeat and a simple background-position.  Best-effort: an undecodable
-image paints nothing (the bg color shows through)."
+  "Decode URL (data: URI or network image) and tile it across LB's padding box,
+honoring background-repeat, -position and -size.  Best-effort: an undecodable image
+paints nothing (the bg color shows through)."
   (let* ((duri (if (find #\% url) (percent-decode url) url))
-         (img (and (>= (length duri) 5) (string-equal (subseq duri 0 5) "data:")
-                   (ignore-errors (decode-image duri)))))
+         (img (if (and (>= (length duri) 5) (string-equal (subseq duri 0 5) "data:"))
+                  (ignore-errors (decode-image duri))
+                  ;; a network background image (icon/sprite, e.g. HN's votearrow
+                  ;; triangle.svg) — fetched + decoded + cached through *IMAGE-LOADER*.
+                  (ignore-errors (fetch-image url)))))
     (when (and img (plusp (img-w img)) (plusp (img-h img)))
-      (let* ((iw (img-w img)) (ih (img-h img))
+      (let* ((iw0 (img-w img)) (ih0 (img-h img))
              (rep (css:cstyle-bg-repeat cs))
              (repx (member rep '("repeat" "repeat-x") :test #'string=))
              (repy (member rep '("repeat" "repeat-y") :test #'string=))
@@ -1679,28 +1702,30 @@ image paints nothing (the bg color shows through)."
              (px0 (round (+ (lbox-x lb) (used-border cs :l))))
              (py0 (round (+ (lbox-y lb) (used-border cs :t))))
              (px1 (round (- (+ (lbox-x lb) (lbox-w lb)) (used-border cs :r))))
-             (py1 (round (- (+ (lbox-y lb) (lbox-h lb)) (used-border cs :b))))
-             (pos (css:cstyle-bg-position cs))
-             (offx (if pos (bg-pos-offset (first pos) (- (- px1 px0) iw)) 0))
-             (offy (if pos (bg-pos-offset (second pos) (- (- py1 py0) ih)) 0))
-             (ox (+ px0 offx)) (oy (+ py0 offy)))
-        (when (and (> px1 px0) (> py1 py0))
-          ;; clip tiles to the padding box so they never bleed out
-          (let ((*clip* (clip-intersect px0 py0 px1 py1)))
-            ;; common case: a 1x1 image filling the box — paint a solid rect.
-            (if (and (= iw 1) (= ih 1) (>= (aref (img-rgba img) 3) 255))
-                (let ((r (aref (img-rgba img) 0)) (g (aref (img-rgba img) 1)) (b (aref (img-rgba img) 2)))
-                  (fill-rect cv (if repx px0 ox) (if repy py0 oy)
-                             (if repx (- px1 px0) 1) (if repy (- py1 py0) 1) (list r g b)))
-                ;; general tiling
-                (let ((startx (if repx (- ox (* iw (ceiling (- ox px0) iw))) ox))
-                      (starty (if repy (- oy (* ih (ceiling (- oy py0) ih))) oy)))
-                  (loop for ty = starty then (+ ty ih)
-                        while (and (< ty py1) (or repy (= ty starty))) do
-                    (loop for tx = startx then (+ tx iw)
-                          while (and (< tx px1) (or repx (= tx startx))) do
-                      (when (and (> (+ tx iw) px0) (> (+ ty ih) py0))
-                        (blit-img cv img tx ty))))))))))))
+             (py1 (round (- (+ (lbox-y lb) (lbox-h lb)) (used-border cs :b)))))
+        (multiple-value-bind (iw ih)   ; effective tile size after background-size
+            (bg-tile-size (css:cstyle-bg-size cs) iw0 ih0 (- px1 px0) (- py1 py0))
+          (let* ((pos (css:cstyle-bg-position cs))
+                 (offx (if pos (bg-pos-offset (first pos) (- (- px1 px0) iw)) 0))
+                 (offy (if pos (bg-pos-offset (second pos) (- (- py1 py0) ih)) 0))
+                 (ox (+ px0 offx)) (oy (+ py0 offy)))
+            (when (and (> px1 px0) (> py1 py0))
+              ;; clip tiles to the padding box so they never bleed out
+              (let ((*clip* (clip-intersect px0 py0 px1 py1)))
+                ;; common case: an intrinsic 1x1 image filling the box — solid rect.
+                (if (and (= iw0 1) (= ih0 1) (null (css:cstyle-bg-size cs)) (>= (aref (img-rgba img) 3) 255))
+                    (let ((r (aref (img-rgba img) 0)) (g (aref (img-rgba img) 1)) (b (aref (img-rgba img) 2)))
+                      (fill-rect cv (if repx px0 ox) (if repy py0 oy)
+                                 (if repx (- px1 px0) 1) (if repy (- py1 py0) 1) (list r g b)))
+                    ;; general tiling, each tile scaled to the effective (IW IH)
+                    (let ((startx (if repx (- ox (* iw (ceiling (- ox px0) iw))) ox))
+                          (starty (if repy (- oy (* ih (ceiling (- oy py0) ih))) oy)))
+                      (loop for ty = starty then (+ ty ih)
+                            while (and (< ty py1) (or repy (= ty starty))) do
+                        (loop for tx = startx then (+ tx iw)
+                              while (and (< tx px1) (or repx (= tx startx))) do
+                          (when (and (> (+ tx iw) px0) (> (+ ty ih) py0))
+                            (blit-img cv img tx ty iw ih))))))))))))))
 
 (defun paint-bg-image-fixed (cv lb cs url)
   "Tile URL's image as a background-attachment:fixed background: the tile grid is
@@ -1709,8 +1734,11 @@ NOT to LB's box — so overlapping fixed-bg elements share one continuous tiling
 (this is what fuses Acid2's two offset 2x2 images into a solid yellow fill).  The
 painting is clipped to LB's border box (default background-clip)."
   (let* ((duri (if (find #\% url) (percent-decode url) url))
-         (img (and (>= (length duri) 5) (string-equal (subseq duri 0 5) "data:")
-                   (ignore-errors (decode-image duri)))))
+         (img (if (and (>= (length duri) 5) (string-equal (subseq duri 0 5) "data:"))
+                  (ignore-errors (decode-image duri))
+                  ;; a network background image (icon/sprite, e.g. HN's votearrow
+                  ;; triangle.svg) — fetched + decoded + cached through *IMAGE-LOADER*.
+                  (ignore-errors (fetch-image url)))))
     (when (and img (plusp (img-w img)) (plusp (img-h img)))
       (let* ((iw (img-w img)) (ih (img-h img))
              (rep (css:cstyle-bg-repeat cs))
@@ -1800,6 +1828,16 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
    descendants (visibility:visible) still paint (visibility is inherited)."
   (not (and cs (member (css:cstyle-visibility cs) '("hidden" "collapse") :test #'string=))))
 
+(defun gradient-visible-p (grad)
+  "NIL when both stops of GRAD (dir from-rgba to-rgba) are fully transparent — such
+   a gradient (e.g. HN's `linear-gradient(transparent,transparent)` fallback layered
+   under url(triangle.svg)) must paint nothing, not opaque black (FILL-GRADIENT drops
+   the stop alpha).  A stop with no alpha component is treated as opaque."
+  (destructuring-bind (dir from to) grad
+    (declare (ignore dir))
+    (flet ((opaque-ish (c) (or (< (length c) 4) (plusp (fourth c)))))
+      (or (opaque-ish from) (opaque-ish to)))))
+
 (defun paint-box (cv lb)
   (handler-case (%paint-box cv lb) (error () nil)))
 (defun %paint-box (cv lb)
@@ -1808,19 +1846,24 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
       (:block
        (let ((cs (lbox-style lb)))
         (when (box-visible-p cs)
-         (cond ((css:cstyle-bg-gradient cs)
-                (destructuring-bind (dir from to) (css:cstyle-bg-gradient cs)
-                  (fill-gradient cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) dir (rgb from) (rgb to))))
-               ((css:cstyle-background cs)
-                (fill-rect cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) (rgb (css:cstyle-background cs)))))
-         ;; CSS background image: over the bg color, under the borders, tiled and
-         ;; clipped to this box's padding box.  Fixed-attachment images are not
-         ;; painted (out of scope) — for Acid2 that is the correct result (their
-         ;; images are positioned to the viewport, off this element).
-         (when (css:cstyle-bg-image cs)
-           (if (string-equal (css:cstyle-bg-attachment cs) "fixed")
-               (paint-bg-image-fixed cv lb cs (css:cstyle-bg-image cs))
-               (paint-bg-image cv lb cs (css:cstyle-bg-image cs))))
+         ;; An anonymous box (e.g. the wrapper generated for a block nested inside
+         ;; an inline — HN's <a><div class=votearrow>) can carry a NIL style: it
+         ;; paints no background/border of its own, but its children MUST still
+         ;; paint, so every style-dependent step is guarded by (when cs ...).
+         (when cs
+           (cond ((and (css:cstyle-bg-gradient cs) (gradient-visible-p (css:cstyle-bg-gradient cs)))
+                  (destructuring-bind (dir from to) (css:cstyle-bg-gradient cs)
+                    (fill-gradient cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) dir (rgb from) (rgb to))))
+                 ((css:cstyle-background cs)
+                  (fill-rect cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) (rgb (css:cstyle-background cs)))))
+           ;; CSS background image: over the bg color, under the borders, tiled and
+           ;; clipped to this box's padding box.  Fixed-attachment images are not
+           ;; painted (out of scope) — for Acid2 that is the correct result (their
+           ;; images are positioned to the viewport, off this element).
+           (when (css:cstyle-bg-image cs)
+             (if (string-equal (css:cstyle-bg-attachment cs) "fixed")
+                 (paint-bg-image-fixed cv lb cs (css:cstyle-bg-image cs))
+                 (paint-bg-image cv lb cs (css:cstyle-bg-image cs)))))
          (when (lbox-img lb)
            (blit-img cv (lbox-img lb) (round (lbox-x lb)) (round (lbox-y lb))
                      (round (lbox-w lb)) (round (lbox-h lb))))
@@ -1829,26 +1872,27 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
          (when (lbox-vpaint lb)
            (funcall (lbox-vpaint lb) cv (round (lbox-x lb)) (round (lbox-y lb))
                     (round (lbox-w lb)) (round (lbox-h lb))))
-         (paint-borders cv lb cs)
-         (when (and (lbox-marker lb) (plusp (length (marker-glyph (lbox-marker lb)))))
-           ;; the list marker (•, disc/circle/square) is painted via scribe so the
-           ;; real bullet glyph renders (the 7x13 bitmap has none); it sits ~1.3em
-           ;; left of the content, in the list's padding.
-           (let ((fs (css:cstyle-font-size cs)))
-             (draw-text-scribe cv (marker-glyph (lbox-marker lb))
-                               (round (- (+ (lbox-x lb) (css:cstyle-padding-left cs)) (* 1.3 fs)))
-                               (round (+ (lbox-y lb) (css:cstyle-padding-top cs)))
-                               (round (used-line-height cs))
-                               (rgb (css:cstyle-color cs)) fs))))
+         (when cs
+           (paint-borders cv lb cs)
+           (when (and (lbox-marker lb) (plusp (length (marker-glyph (lbox-marker lb)))))
+             ;; the list marker (•, disc/circle/square) is painted via scribe so the
+             ;; real bullet glyph renders (the 7x13 bitmap has none); it sits ~1.3em
+             ;; left of the content, in the list's padding.
+             (let ((fs (css:cstyle-font-size cs)))
+               (draw-text-scribe cv (marker-glyph (lbox-marker lb))
+                                 (round (- (+ (lbox-x lb) (css:cstyle-padding-left cs)) (* 1.3 fs)))
+                                 (round (+ (lbox-y lb) (css:cstyle-padding-top cs)))
+                                 (round (used-line-height cs))
+                                 (rgb (css:cstyle-color cs)) fs))))
          ;; overflow:hidden/clip/scroll clips descendants to this box's padding box.
-         (if (member (css:cstyle-overflow cs) '("hidden" "clip" "scroll") :test #'string=)
+         (if (and cs (member (css:cstyle-overflow cs) '("hidden" "clip" "scroll") :test #'string=))
              (let ((*clip* (clip-intersect
                             (round (+ (lbox-x lb) (used-border cs :l)))
                             (round (+ (lbox-y lb) (used-border cs :t)))
                             (round (- (+ (lbox-x lb) (lbox-w lb)) (used-border cs :r)))
                             (round (- (+ (lbox-y lb) (lbox-h lb)) (used-border cs :b))))))
                (paint-children cv (lbox-children lb)))
-             (paint-children cv (lbox-children lb)))))
+             (paint-children cv (lbox-children lb))))))
       (:line
        (loop for cell on (lbox-children lb)
              for it = (car cell)

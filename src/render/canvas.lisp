@@ -132,6 +132,100 @@ respects *CLIP*.  Used for mitered border trapezoids/triangles."
 ;;; ---- PNG ----------------------------------------------------------------
 (defun u32be (v) (vector (ldb (byte 8 24) v) (ldb (byte 8 16) v) (ldb (byte 8 8) v) (ldb (byte 8 0) v)))
 
+;;; ---- DEFLATE (fixed-Huffman + greedy LZ77) -------------------------------
+;;; A real compressor so the raster PNG is small at the source (a text page's IDAT
+;;; goes from ~raw-RGB to a fraction), rather than shipping tens of MB and leaning on
+;;; HTTP zstd — which a non-zstd client never gets, leaving an empty image.
+
+(defparameter *len-base*
+  #(3 4 5 6 7 8 9 10 11 13 15 17 19 23 27 31 35 43 51 59 67 83 99 115 131 163 195 227 258))
+(defparameter *len-extra*
+  #(0 0 0 0 0 0 0 0 1 1 1 1 2 2 2 2 3 3 3 3 4 4 4 4 5 5 5 5 0))
+(defparameter *dist-base*
+  #(1 2 3 4 5 7 9 13 17 25 33 49 65 97 129 193 257 385 513 769 1025 1537 2049 3073 4097 6145 8193 12289 16385 24577))
+(defparameter *dist-extra*
+  #(0 0 0 0 1 1 2 2 3 3 4 4 5 5 6 6 7 7 8 8 9 9 10 10 11 11 12 12 13 13))
+
+(defstruct (bitw (:constructor make-bitw ()))
+  (buf (make-array 4096 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
+  (acc 0 :type (unsigned-byte 32)) (nbits 0 :type fixnum))
+
+(declaim (inline bw-bits bw-code))
+(defun bw-bits (bw val n)
+  "Write the low N bits of VAL to BW, least-significant bit first (DEFLATE stream order)."
+  (setf (bitw-acc bw) (logior (bitw-acc bw) (ash (logand val (1- (ash 1 n))) (bitw-nbits bw))))
+  (incf (bitw-nbits bw) n)
+  (loop while (>= (bitw-nbits bw) 8) do
+    (vector-push-extend (logand (bitw-acc bw) #xff) (bitw-buf bw))
+    (setf (bitw-acc bw) (ash (bitw-acc bw) -8))
+    (decf (bitw-nbits bw) 8)))
+
+(defun bw-code (bw code len)
+  "Write a Huffman CODE of LEN bits, most-significant bit first (Huffman packing order)."
+  (let ((r 0)) (dotimes (i len) (setf r (logior (ash r 1) (logand (ash code (- i)) 1))))
+    (bw-bits bw r len)))
+
+(defun bw-flush (bw)
+  (when (plusp (bitw-nbits bw))
+    (vector-push-extend (logand (bitw-acc bw) #xff) (bitw-buf bw))
+    (setf (bitw-acc bw) 0 (bitw-nbits bw) 0)))
+
+(defun fixed-lit (bw sym)
+  "Emit literal/length symbol SYM (0-287) with the fixed Huffman table (RFC 1951 3.2.6)."
+  (cond ((<= sym 143) (bw-code bw (+ #x30 sym) 8))
+        ((<= sym 255) (bw-code bw (+ #x190 (- sym 144)) 9))
+        ((<= sym 279) (bw-code bw (- sym 256) 7))
+        (t (bw-code bw (+ #xc0 (- sym 280)) 8))))
+
+(defun emit-match (bw len dist)
+  (let ((li (loop for i from 28 downto 0 when (>= len (aref *len-base* i)) return i)))
+    (fixed-lit bw (+ 257 li))
+    (when (plusp (aref *len-extra* li)) (bw-bits bw (- len (aref *len-base* li)) (aref *len-extra* li))))
+  (let ((di (loop for i from 29 downto 0 when (>= dist (aref *dist-base* i)) return i)))
+    (bw-code bw di 5)
+    (when (plusp (aref *dist-extra* di)) (bw-bits bw (- dist (aref *dist-base* di)) (aref *dist-extra* di)))))
+
+(defun deflate-fixed (raw)
+  "Deflate RAW into a single fixed-Huffman block with greedy LZ77 (hash-chain matcher)."
+  (declare (type (simple-array (unsigned-byte 8) (*)) raw))
+  (let* ((n (length raw)) (bw (make-bitw))
+         (hbits 15) (hsize (ash 1 hbits)) (hmask (1- hsize))
+         (head (make-array hsize :element-type 'fixnum :initial-element -1))
+         (prev (make-array (max 1 n) :element-type 'fixnum :initial-element -1)))
+    (bw-bits bw 1 1) (bw-bits bw 1 2)   ; BFINAL=1, BTYPE=01 (fixed Huffman)
+    (labels ((h3 (i) (logand (logxor (ash (aref raw i) 5) (ash (aref raw (+ i 1)) 2) (aref raw (+ i 2))) hmask))
+             (mlen (a b) (let ((l 0) (mx (min 258 (- n b))))
+                           (loop while (and (< l mx) (= (aref raw (+ a l)) (aref raw (+ b l)))) do (incf l))
+                           l))
+             (insert (i) (when (< (+ i 2) n) (let ((h (h3 i))) (setf (aref prev i) (aref head h) (aref head h) i)))))
+      (let ((i 0))
+        (loop while (< i n) do
+          (let ((best 0) (bdist 0))
+            (when (< (+ i 2) n)
+              (let ((cand (aref head (h3 i))) (chain 0))
+                (loop while (and (>= cand 0) (< chain 32) (<= (- i cand) 32768)) do
+                  (when (and (< best 258) (< (+ i best) n)                    ; cheap reject:
+                             (= (aref raw (+ cand best)) (aref raw (+ i best)))) ; extend only if it could beat BEST
+                    (let ((l (mlen cand i))) (when (> l best) (setf best l bdist (- i cand)))))
+                  (setf cand (aref prev cand)) (incf chain))))
+            (cond ((>= best 3)
+                   (emit-match bw best bdist)
+                   (loop for k from i below (min n (+ i best)) do (insert k))
+                   (incf i best))
+                  (t (insert i) (fixed-lit bw (aref raw i)) (incf i)))))))
+    (fixed-lit bw 256)   ; end of block
+    (bw-flush bw)
+    (bitw-buf bw)))
+
+(defun zlib-compress (raw)
+  "Wrap RAW in a zlib stream, DEFLATE-compressed (fixed Huffman)."
+  (let ((out (make-array 4096 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
+        (rr (coerce raw '(simple-array (unsigned-byte 8) (*)))))
+    (vector-push-extend #x78 out) (vector-push-extend #x9c out)   ; zlib: deflate, default window
+    (loop for b across (deflate-fixed rr) do (vector-push-extend b out))
+    (let ((ad (adler32 rr))) (loop for s in '(24 16 8 0) do (vector-push-extend (ldb (byte 8 s) ad) out)))
+    out))
+
 (defun zlib-store (raw)
   "Wrap RAW bytes in a zlib stream using deflate stored blocks."
   (let ((out (make-array 0 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
@@ -171,7 +265,7 @@ respects *CLIP*.  Used for mitered border trapezoids/triangles."
       (loop for b in '(137 80 78 71 13 10 26 10) do (vector-push-extend b out))   ; signature
       (png-chunk out "IHDR" (concatenate '(vector (unsigned-byte 8))
                                          (u32be w) (u32be hh) (vector 8 2 0 0 0)))
-      (png-chunk out "IDAT" (coerce (zlib-store raw) '(vector (unsigned-byte 8))))
+      (png-chunk out "IDAT" (coerce (zlib-compress raw) '(vector (unsigned-byte 8))))
       (png-chunk out "IEND" (make-array 0 :element-type '(unsigned-byte 8)))
       out)))
 

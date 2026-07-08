@@ -1187,43 +1187,52 @@ cell bottom; a cell with block children (HN's votearrow div) is left top-aligned
   (let ((kids (lbox-children lb)))
     (and kids (every (lambda (c) (eq (lbox-kind c) :line)) kids))))
 
+(defun cell-line-count (lb)
+  "Number of text-bearing line boxes anywhere under cell box LB.  Recurses through
+block wrappers — HN's nav cell nests its lines inside a block <span>/<b>, not directly
+under the cell — so a wrapped cell counts >1 and a single-line cell counts exactly 1."
+  (labels ((scan (box)
+             (loop for c in (and (typep box 'lbox) (lbox-children box))
+                   sum (cond ((and (typep c 'lbox) (eq (lbox-kind c) :line) (some #'frag-p (lbox-children c))) 1)
+                             ((typep c 'lbox) (scan c))
+                             (t 0)))))
+    (scan lb)))
+
 (defun cell-has-text-p (lb)
-  "True when cell box LB actually contains a text fragment — a real baseline.  A
-cell whose only content is a block/replaced element wrapped in an anonymous line box
-(HN's display:block top-bar logo, the votearrow div) has a line box but NO frag, so
-it must not join the baseline group (else its bitmap height would set the baseline)."
-  (loop for c in (lbox-children lb)
-        thereis (and (eq (lbox-kind c) :line) (some #'frag-p (lbox-children c)))))
+  "True when cell box LB contains a text fragment anywhere — a real baseline.  A cell
+whose only content is a block/replaced element (HN's display:block top-bar logo, the
+votearrow div) has no frag, so it must not join the baseline group."
+  (plusp (cell-line-count lb)))
 
 (defun cell-inline-content-height (lb)
   "Height of LB's inline content — its line boxes' extent measured from the cell top."
   (- (loop for c in (lbox-children lb) maximize (+ (lbox-y c) (lbox-h c))) (lbox-y lb)))
 
-(defun baseline-sink-cell (lb rowh baseline-max)
-  "Vertically place a baseline-aligned cell's inline content within the row.  A table
-cell defaults to vertical-align:baseline, so its single line drops toward the row
-bottom (HN's title beside the votearrow) — the browser puts it at the cell baseline
-near the bottom, not the middle.  So align the line to the baseline group's bottom
-(BASELINE-MAX, the tallest inline cell's content).
+(defun cell-single-line-text-p (lb)
+  "True when cell LB holds exactly one text-bearing line box — one clean baseline.  A
+cell that wrapped to several lines (HN's nav at a narrow width) has no single baseline
+the other cells align to."
+  (= 1 (cell-line-count lb)))
 
-BUT when the row is taller than that whole baseline group because a NON-baseline cell
-set the height — a block/replaced element such as HN's display:block top-bar logo,
-which contributes no text baseline — browsers center the baseline group in that extra
-space rather than dropping it onto the block's bottom edge.  So add half the surplus.
+(defun place-cell-content (lb rowh baseline-ref center-mode)
+  "Vertically place a table cell's content within its row.
 
-The heights are the cells' actual CONTENT extents, not LBOX-H: a cell with an explicit
-height below its content (HN's nav <td style=\"height:10px\"> holding a 15px line) has
-LBOX-H clamped to that minimum, and CSS treats the height as a minimum anyway."
-  (when (and (not (cell-lbox-valign-top-p lb))
-             (cell-inline-only-p lb)
-             (cell-has-text-p lb))
+Default vertical-align is baseline, so a single line of text drops to the row baseline
+near the bottom (HN's story title beside the votearrow): a text cell shifts down to
+align its baseline with BASELINE-REF, the tallest single-line text cell.
+
+CENTER-MODE holds when the row is taller than that single-line baseline group because a
+NON-baseline cell set the height — a block/replaced element (HN's display:block top-bar
+logo) OR a cell that wrapped to several lines (the nav at mobile width).  With no single
+baseline to drop onto, the browser centers every cell's content in the row.  A block
+cell (no text baseline of its own) is likewise centered."
+  (when (and (not (cell-lbox-valign-top-p lb)) (lbox-children lb))
     (let* ((content-h (cell-inline-content-height lb))
-           (bmax (or baseline-max rowh))
-           (base (max 0 (- bmax content-h)))                 ; baseline-align within the group
-           (center (if (> rowh bmax) (/ (- rowh bmax) 2.0) 0)) ; block cell taller: center group
-           (sink (+ base center)))
-      (when (> sink 0)
-        (dolist (c (lbox-children lb)) (shift-box c 0 sink))))))
+           (shift (cond (center-mode (/ (- rowh content-h) 2.0))            ; center everything
+                        ((cell-has-text-p lb) (max 0 (- (or baseline-ref rowh) content-h)))
+                        (t (/ (- rowh content-h) 2.0)))))                   ; block cell: center
+      (when (> shift 0)
+        (dolist (c (lbox-children lb)) (shift-box c 0 shift))))))
 
 (defun min-inline-width (node styles cs content-w)
   "Min-content width of NODE's inline content: the widest single unbreakable
@@ -1426,14 +1435,15 @@ specified width), rows stacked, cells stretched to row height.  Returns
               (when rcs
                 (let ((rh (css::resolve-height (css:cstyle-height rcs) nil)))
                   (when (and (numberp rh) (> rh rowh)) (setf rowh (round rh))))))
-            ;; the baseline group = the inline (baseline-aligned) cells; its max content
-            ;; height is the reference the shorter inline cells align down to, and any
-            ;; row height beyond it (from a taller block cell) centers the group.
-            (let ((bmax (loop for lb in rowboxes
-                              when (and (not (cell-lbox-valign-top-p lb)) (cell-inline-only-p lb) (cell-has-text-p lb))
-                              maximize (cell-inline-content-height lb))))
+            ;; the baseline group = the single-line text cells; shorter cells align to
+            ;; its tallest.  A row taller than that group (a block or wrapped cell set
+            ;; the height) has no single baseline, so every cell centers instead.
+            (let* ((bref (loop for lb in rowboxes
+                               when (and (not (cell-lbox-valign-top-p lb)) (cell-single-line-text-p lb))
+                               maximize (cell-inline-content-height lb)))
+                   (center-mode (> rowh (+ bref 1))))
               (dolist (lb rowboxes)
-                (baseline-sink-cell lb rowh (and (plusp bmax) bmax))  ; place baseline cells
+                (place-cell-content lb rowh (and (plusp bref) bref) center-mode)
                 (setf (lbox-h lb) rowh)))                             ; stretch box to row height
             ;; A row with no cell boxes but a positive height (an empty spacer row)
             ;; still occupies its band; give it a box so it advances the flow and is

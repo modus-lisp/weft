@@ -81,6 +81,10 @@
           ((string= tag "tr") (setf (cstyle-display cs) "table-row"))
           ((member tag '("td" "th") :test #'string=) (setf (cstyle-display cs) "table-cell"))
           ((member tag '("thead" "tbody" "tfoot") :test #'string=) (setf (cstyle-display cs) "table-row-group"))
+          ;; <center> is a block whose block-level children are horizontally centered
+          ;; (applied as margin:auto in the cascade).  It does NOT set text-align:center
+          ;; here — that inherits and would wrongly centre all descendant text.
+          ((string= tag "center") (setf (cstyle-display cs) "block"))
           ((member tag *block-tags* :test #'string=) (setf (cstyle-display cs) "block"))
           (t (setf (cstyle-display cs) "inline")))
     (when (string= tag "th") (setf (cstyle-font-weight cs) 700 (cstyle-text-align cs) "center"))
@@ -822,6 +826,14 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                        (dolist (pv inline-pvs)
                          (unless (custom-prop-p (car pv))
                            (apply-decl cs (car pv) (resolve-vars (cdr pv) vars) parent-cs)))
+                       ;; legacy <center>: horizontally center its block-level children
+                       ;; (the -webkit-center behavior) unless the author set a margin.
+                       (let ((p (weft.html:dnode-parent n)))
+                         (when (and p (eq (weft.html:dnode-kind p) :element)
+                                    (string-equal (weft.html:dnode-name p) "center")
+                                    (member (cstyle-display cs) '("block" "table" "list-item" "flex" "grid")
+                                            :test #'string=))
+                           (setf (cstyle-margin-left-auto cs) t (cstyle-margin-right-auto cs) t)))
                        (setf (gethash n styles) cs)
                        ;; generated content (computed after the element's own style is known)
                        (let ((bs (pseudo-style cs m-before vars)) (as (pseudo-style cs m-after vars)))

@@ -697,7 +697,10 @@ Returns (values lbox advance-height)."
     ;; block-level or out-of-flow box — are their own content; render and return.
     (let ((rb (replaced-box node cs avail-w)))
       (when rb
-        (setf (lbox-x rb) x (lbox-y rb) y)
+        ;; REPLACED-BOX builds the box at (0,0) with the bitmap on an inner content
+        ;; child at coords relative to it; SHIFT-BOX moves the whole subtree so the
+        ;; child ends up at absolute coords too (else the image blits at the origin).
+        (shift-box rb x y)
         (return-from %layout-core (values rb (lbox-h rb) 0 0 0))))
     (let* ((mt (css:cstyle-margin-top cs)) (mb (css:cstyle-margin-bottom cs))
            (ml (css:cstyle-margin-left cs)) (mr (css:cstyle-margin-right cs))

@@ -263,12 +263,21 @@ alt-text placeholder."
          ;; When only one of width/height is given, derive the other from the intrinsic
          ;; aspect ratio (CSS 2.1 10.3.2 replaced-element sizing) rather than taking the
          ;; raw intrinsic value — so width:100% on a 3824x2640 image stays wide, not tall.
-         (w (cond (cw cw)
-                  ((and chh iw ih (plusp ih)) (* chh (/ iw ih)))
-                  (iw iw) (t 120)))
-         (hh (cond (chh chh)
-                   ((and cw iw ih (plusp iw)) (* cw (/ ih iw)))
-                   (ih ih) (t 90)))
+         (w0 (cond (cw cw)
+                   ((and chh iw ih (plusp ih)) (* chh (/ iw ih)))
+                   (iw iw) (t 120)))
+         (hh0 (cond (chh chh)
+                    ((and cw iw ih (plusp iw)) (* cw (/ ih iw)))
+                    (ih ih) (t 90)))
+         ;; max-width clamps the used width — `max-width:100%` is the near-universal
+         ;; responsive-image rule, without which a large intrinsic image overflows its
+         ;; container (a 1999px photo in a 760px column).  Scale the height with it so
+         ;; the aspect ratio is preserved.
+         (maxw (let ((mw (css:cstyle-max-width cs)))
+                 (unless (eq mw :none) (css::resolve-size mw (or avail-w 300)))))
+         (clamp (and (numberp maxw) (plusp w0) (> w0 maxw)))
+         (w (if clamp maxw w0))
+         (hh (if clamp (* hh0 (/ maxw w0)) hh0))
          (alt (cdr (assoc "alt" (h:dnode-attrs node) :test #'string-equal)))
          (has-alt (and alt (plusp (length alt))))
          ;; An unfetchable image with NO alt text (HN's SVG logo, a 14x1 spacer

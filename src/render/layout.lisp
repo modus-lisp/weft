@@ -1016,45 +1016,79 @@ column distributes grow/shrink into; NIL means auto (size to content)."
          (items (if (member dir '("row-reverse" "column-reverse") :test #'string=) (reverse items) items))
          (nitems (length items)))
     (when (zerop nitems) (return-from layout-flex (values nil 0)))
-    (let* ((main-avail (if row content-w content-w))   ; column main size is intrinsic; treat width as cross
-           (bases (mapcar (lambda (it) (if row (item-base it styles content-w) (item-base it styles content-w))) items))
+    (let* ((bases (mapcar (lambda (it) (item-base it styles content-w)) items))
            (total-gap (* gap (1- nitems)))
-           (sum-base (+ (reduce #'+ bases) total-gap))
-           (free (- main-avail sum-base))
            (grows (mapcar (lambda (it) (css:cstyle-flex-grow (st styles it))) items))
            (sum-grow (reduce #'+ grows))
            ;; flex-shrink is weighted by shrink-factor * base-size (CSS 9.7): an item
            ;; with a larger base gives up proportionally more of the negative free space.
-           (shrinks (mapcar (lambda (it) (css:cstyle-flex-shrink (st styles it))) items))
-           (scaled (mapcar #'* shrinks bases))
-           (sum-scaled (reduce #'+ scaled))
-           (sizes (cond ((and row (> free 0) (> sum-grow 0))
-                         (mapcar (lambda (b g) (+ b (* free (/ g sum-grow)))) bases grows))
-                        ((and row (< free 0) (> sum-scaled 0))
-                         (mapcar (lambda (b sc) (max 0 (+ b (* free (/ sc sum-scaled)))))
-                                 bases scaled))
-                        (t bases))))
+           (shrinks (mapcar (lambda (it) (css:cstyle-flex-shrink (st styles it))) items)))
       (if row
           ;; ---- ROW ----
-          (let* ((used (+ (reduce #'+ sizes) total-gap))
-                 (extra (max 0 (- content-w used)))
-                 (start (cond ((string= justify "center") (+ cx (/ extra 2)))
-                              ((string= justify "flex-end") (+ cx extra)) (t cx)))
-                 (between (cond ((and (string= justify "space-between") (> nitems 1)) (/ extra (1- nitems)))
-                                ((string= justify "space-around") (/ extra nitems)) (t 0)))
-                 (x (if (string= justify "space-around") (+ start (/ between 2)) start))
-                 (boxes '()) (max-h 0))
-            (loop for it in items for w in sizes do
-              (multiple-value-bind (lb adv) (layout-node it styles (round x) cy (round w))
-                (declare (ignore adv))
-                (when lb (push lb boxes) (setf max-h (max max-h (lbox-h lb))))
-                (incf x (+ w gap between))))
-            (let ((boxes (nreverse boxes)))
-              (dolist (lb boxes)                          ; cross-axis align
-                (cond ((string= align "stretch") (setf (lbox-h lb) (max (lbox-h lb) max-h)))
-                      ((string= align "center") (shift-box lb 0 (round (/ (- max-h (lbox-h lb)) 2))))
-                      ((string= align "flex-end") (shift-box lb 0 (round (- max-h (lbox-h lb)))))))
-              (values boxes max-h)))
+          ;; Lay out one flex line of items (LITEMS with parallel base/grow/shrink
+          ;; lists) at cross-offset LY: distribute the line's free space by grow (if
+          ;; positive) or shrink*base (if negative, CSS 9.7), position left-to-right
+          ;; per justify-content, then cross-align to the line's own max height.
+          ;; Returns (values line-boxes line-height).
+          (flet ((layout-line (litems lbases lgrows lshrinks ly)
+                   (let* ((n (length litems))
+                          (lgap (* gap (max 0 (1- n))))
+                          (lfree (- content-w (+ (reduce #'+ lbases) lgap)))
+                          (lsum-grow (reduce #'+ lgrows))
+                          (scaled (mapcar #'* lshrinks lbases))
+                          (sum-scaled (reduce #'+ scaled))
+                          (sizes (cond ((and (> lfree 0) (> lsum-grow 0))
+                                        (mapcar (lambda (b g) (+ b (* lfree (/ g lsum-grow)))) lbases lgrows))
+                                       ((and (< lfree 0) (> sum-scaled 0))
+                                        (mapcar (lambda (b sc) (max 0 (+ b (* lfree (/ sc sum-scaled))))) lbases scaled))
+                                       (t lbases)))
+                          (used (+ (reduce #'+ sizes) lgap))
+                          (extra (max 0 (- content-w used)))
+                          (start (cond ((string= justify "center") (+ cx (/ extra 2)))
+                                       ((string= justify "flex-end") (+ cx extra)) (t cx)))
+                          (between (cond ((and (string= justify "space-between") (> n 1)) (/ extra (1- n)))
+                                         ((string= justify "space-around") (/ extra n)) (t 0)))
+                          (x (if (string= justify "space-around") (+ start (/ between 2)) start))
+                          (boxes '()) (max-h 0))
+                     (loop for it in litems for w in sizes do
+                       (multiple-value-bind (lb adv) (layout-node it styles (round x) ly (round w))
+                         (declare (ignore adv))
+                         (when lb (push lb boxes) (setf max-h (max max-h (lbox-h lb))))
+                         (incf x (+ w gap between))))
+                     (let ((boxes (nreverse boxes)))
+                       (dolist (lb boxes)                 ; cross-axis align within the line
+                         (cond ((string= align "stretch") (setf (lbox-h lb) (max (lbox-h lb) max-h)))
+                               ((string= align "center") (shift-box lb 0 (round (/ (- max-h (lbox-h lb)) 2))))
+                               ((string= align "flex-end") (shift-box lb 0 (round (- max-h (lbox-h lb)))))))
+                       (values boxes max-h)))))
+            (let ((wrap (css:cstyle-flex-wrap base-cs)))
+              (if (and (stringp wrap) (member wrap '("wrap" "wrap-reverse") :test #'string=))
+                  ;; ---- multi-line row (flex-wrap, CSS 9.3) ----
+                  ;; Break items into lines greedily: keep adding while the running
+                  ;; base+gaps fit CONTENT-W; an item that overflows starts a new line
+                  ;; (a lone item wider than the container gets its own line).  Each
+                  ;; line is then laid out and sized independently, and lines stack
+                  ;; along the cross axis separated by the cross (row) gap.
+                  ;; wrap-reverse is treated as wrap here (lines not reversed).
+                  (let ((cross-gap (css:cstyle-row-gap base-cs))
+                        (lines '()) (ci '()) (cb '()) (cg '()) (cs '()) (cw 0))
+                    (loop for it in items for b in bases for g in grows for s in shrinks do
+                      (let ((add (if ci (+ cw gap b) b)))
+                        (when (and ci (> add content-w))
+                          (push (list (nreverse ci) (nreverse cb) (nreverse cg) (nreverse cs)) lines)
+                          (setf ci nil cb nil cg nil cs nil add b))
+                        (push it ci) (push b cb) (push g cg) (push s cs) (setf cw add)))
+                    (when ci (push (list (nreverse ci) (nreverse cb) (nreverse cg) (nreverse cs)) lines))
+                    (setf lines (nreverse lines))
+                    (let ((all '()) (y cy))
+                      (dolist (line lines)
+                        (destructuring-bind (litems lbases lgrows lshrinks) line
+                          (multiple-value-bind (boxes line-h) (layout-line litems lbases lgrows lshrinks (round y))
+                            (setf all (nconc all boxes))
+                            (incf y (+ line-h cross-gap)))))
+                      (values all (max 0 (- y cy cross-gap)))))
+                  ;; ---- single-line row (nowrap) ----
+                  (layout-line items bases grows shrinks cy))))
           ;; ---- COLUMN ----
           ;; Lay each item out at its natural size to get its main-axis (height) base;
           ;; then, if the container has a definite height, distribute the free space by

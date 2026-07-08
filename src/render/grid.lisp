@@ -141,25 +141,29 @@ is shared among fr tracks in proportion to their flex factor (CSS Grid §11)."
 
 ;;; ---- placement ----------------------------------------------------------
 
-(defun grid-placement (str)
+(defun grid-placement (str &optional ntracks)
   "Parse a grid-column/grid-row value into (values line-start span): LINE-START is
-a 1-based grid line or NIL (auto placement), SPAN is a positive track count."
+a 1-based grid line or NIL (auto placement), SPAN is a positive track count.  When
+NTRACKS (the axis's track count) is given, a negative line number counts back from
+the end — line -1 is the last line NTRACKS+1 (CSS Grid §8.3), so `1 / -1` spans the
+whole axis (Tailwind's col-span-full) and `5 / -1` spans column 5 to the end."
   (if (or (null str) (string= str "") (string= str "auto"))
       (values nil 1)
       (let* ((slash (position #\/ str))
              (left (string-trim '(#\Space) (if slash (subseq str 0 slash) str)))
              (right (and slash (string-trim '(#\Space) (subseq str (1+ slash))))))
         (labels ((num (s) (and s (ignore-errors (parse-integer s :junk-allowed t))))
+                 (line (s) (let ((v (num s))) (if (and v ntracks (< v 0)) (+ ntracks 2 v) v)))
                  (spanp (s) (and s (search "span" s)))
                  (spanval (s) (let ((v (num (subseq s (+ 4 (search "span" s)))))) (if (and v (> v 0)) v 1))))
           (cond
             ((and right (not (spanp left)) (not (spanp right)) (num left) (num right))
-             (let ((a (num left)) (b (num right))) (values (min a b) (max 1 (abs (- b a))))))
-            ((and right (num left) (spanp right)) (values (num left) (spanval right)))
+             (let ((a (line left)) (b (line right))) (values (min a b) (max 1 (abs (- b a))))))
+            ((and right (num left) (spanp right)) (values (line left) (spanval right)))
             ((and right (spanp left) (num right))
-             (let ((b (num right)) (sp (spanval left))) (values (max 1 (- b sp)) sp)))
+             (let ((b (line right)) (sp (spanval left))) (values (max 1 (- b sp)) sp)))
             ((spanp left) (values nil (spanval left)))
-            ((num left) (values (num left) 1))
+            ((num left) (values (line left) 1))
             (t (values nil 1)))))))
 
 (defun grid-place-items (items styles ncols)
@@ -175,7 +179,7 @@ a 1-based grid line or NIL (auto placement), SPAN is a positive track count."
                  (loop for cc from c below (+ c cs) do (setf (gethash (cons rr cc) occ) t)))))
       (dolist (it items)
         (let ((cs (st styles it)))
-          (multiple-value-bind (cline cspan) (grid-placement (and cs (css:cstyle-grid-column cs)))
+          (multiple-value-bind (cline cspan) (grid-placement (and cs (css:cstyle-grid-column cs)) ncols)
             (multiple-value-bind (rline rspan) (grid-placement (and cs (css:cstyle-grid-row cs)))
               (setf cspan (max 1 (min cspan ncols)))
               (let* ((col-def (and cline (>= cline 1)))

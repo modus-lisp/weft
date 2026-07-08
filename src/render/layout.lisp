@@ -1228,9 +1228,12 @@ baseline to drop onto, the browser centers every cell's content in the row.  A b
 cell (no text baseline of its own) is likewise centered."
   (when (and (not (cell-lbox-valign-top-p lb)) (lbox-children lb))
     (let* ((content-h (cell-inline-content-height lb))
-           (shift (cond (center-mode (/ (- rowh content-h) 2.0))            ; center everything
-                        ((cell-has-text-p lb) (max 0 (- (or baseline-ref rowh) content-h)))
-                        (t (/ (- rowh content-h) 2.0)))))                   ; block cell: center
+           ;; round the shift to a whole pixel: a fractional centering offset lands the
+           ;; cell content on a half-pixel and its 1px borders round unevenly (HN's
+           ;; logo showed 2 white pixels above, 1 below).
+           (shift (cond (center-mode (round (- rowh content-h) 2))          ; center everything
+                        ((cell-has-text-p lb) (max 0 (round (- (or baseline-ref rowh) content-h))))
+                        (t (round (- rowh content-h) 2)))))                 ; block cell: center
       (when (> shift 0)
         (dolist (c (lbox-children lb)) (shift-box c 0 shift))))))
 

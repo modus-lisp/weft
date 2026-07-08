@@ -959,7 +959,14 @@ Returns (values lbox advance-height)."
       ;; smile: strong margin-bottom:-1em inside em's top+bottom borders) drives
       ;; CONTENT-H below zero — clamp so the border-bottom sits at the content top,
       ;; not pulled up through it (gives em its 24px yellow-over-black mouth).
-      (let* ((content-final (cond ((numberp exp-h) (if border-box (- exp-h pad-bord) exp-h)) (t (max 0 content-h))))
+      (let* ((content-final (cond ((numberp exp-h)
+                                   (let ((eh (if border-box (- exp-h pad-bord) exp-h)))
+                                     ;; a table cell's `height` is only a MINIMUM (CSS 2.1
+                                     ;; 17.5.3): it always grows to fit its content, so a
+                                     ;; short height:10px cell (HN's top-bar nav) still
+                                     ;; expands when its links wrap to two lines.
+                                     (if (string= (cdisplay cs) "table-cell") (max eh content-h) eh)))
+                                  (t (max 0 content-h))))
              (box-h0 (+ content-final pt pb bt bb))
              ;; min/max-height as box-height floor/ceiling (CSS 2.1 10.7): a
              ;; percentage resolves against the CB height AVAIL-H when definite,

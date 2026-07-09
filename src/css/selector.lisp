@@ -217,6 +217,60 @@ else (values NIL CX).  first-line/first-letter are treated as NIL (no box)."
                (:sibling (loop for s = (prev-element n) then (prev-element s)
                                while s thereis (match-complex compounds combs (1- k) s))))))))
 
+;;; ---- rule index (bucket rules by rightmost key) ------------------------
+;;; Matching every rule against every element is O(elements x rules) and
+;;; dominates rule-heavy pages.  Bucket each rule by the most-specific simple
+;;; selector in its rightmost compound (id > class > type > universal); an
+;;; element then only tests rules keyed on its own id, classes, tag, or the
+;;; universal bucket.  match-complex still runs in full on each candidate, so
+;;; correctness is unchanged — the buckets only skip rules that provably cannot
+;;; match the element's rightmost compound.
+
+(defstruct rindex by-id by-class by-tag universal)
+
+(defun rule-key (cx)
+  "For CX's rightmost compound, return (values kind value): the most-specific
+keyable simple selector.  kind = :id | :class | :tag | :universal."
+  (let* ((comps (cx-compounds cx)) (n (length comps)))
+    (if (zerop n) (values :universal nil)
+        (let ((last (aref comps (1- n))) (id nil) (class nil) (tag nil))
+          (dolist (s last)
+            (case (first s)
+              (:id    (unless id (setf id (second s))))
+              (:class (unless class (setf class (second s))))
+              (:type  (unless tag (setf tag (string-downcase (second s)))))))
+          (cond (id (values :id id))
+                (class (values :class class))
+                (tag (values :tag tag))
+                (t (values :universal nil)))))))
+
+(defun build-rindex (rules)
+  "RULES is a list of (match-cx pe spec order decls); bucket each by RULE-KEY of
+its match-cx.  Bucket order reverses the input, but callers re-sort by (spec,
+order), so collection order does not matter."
+  (let ((idx (make-rindex :by-id (make-hash-table :test 'equal)
+                          :by-class (make-hash-table :test 'equal)
+                          :by-tag (make-hash-table :test 'equal)
+                          :universal '())))
+    (dolist (ru rules idx)
+      (multiple-value-bind (kind val) (rule-key (first ru))
+        (ecase kind
+          (:id        (push ru (gethash val (rindex-by-id idx))))
+          (:class     (push ru (gethash val (rindex-by-class idx))))
+          (:tag       (push ru (gethash val (rindex-by-tag idx))))
+          (:universal (push ru (rindex-universal idx))))))))
+
+(defun map-candidate-rules (fn idx n tag)
+  "Call FN on each rule in IDX that could match element N (TAG = its downcased
+name): the universal bucket plus rules keyed on N's id, classes, and tag.  No
+list is built — each rule is keyed to exactly one bucket, so no duplicates."
+  (dolist (ru (rindex-universal idx)) (funcall fn ru))
+  (let ((id (el-attr n "id")))
+    (when id (dolist (ru (gethash id (rindex-by-id idx))) (funcall fn ru))))
+  (dolist (c (el-classes n))
+    (dolist (ru (gethash c (rindex-by-class idx))) (funcall fn ru)))
+  (dolist (ru (gethash tag (rindex-by-tag idx))) (funcall fn ru)))
+
 ;;; ---- selector parsing --------------------------------------------------
 (defun parse-compound (s i end)
   "Parse one compound selector from S[i:end]; return (values compound new-i)."

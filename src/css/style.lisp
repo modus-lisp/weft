@@ -791,10 +791,11 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
         (*el-classes-cache* (make-hash-table :test 'eq))   ; split each element's classes once this pass
         ;; pre-parse selectors once, tagging rules with (match-cx pseudo spec order decls).
         ;; pseudo = NIL | :before | :after; match-cx is the cx to match (pseudo-element stripped).
-        (rules (loop for r in stylesheet for order from 0
-                     append (loop for cx in (parse-selector-list (css-rule-selector r))
-                                  collect (multiple-value-bind (pe mcx) (cx-pseudo-element cx)
-                                            (list mcx pe (specificity cx) order (css-rule-decls r)))))))
+        (rindex (build-rindex
+                 (loop for r in stylesheet for order from 0
+                       append (loop for cx in (parse-selector-list (css-rule-selector r))
+                                    collect (multiple-value-bind (pe mcx) (cx-pseudo-element cx)
+                                              (list mcx pe (specificity cx) order (css-rule-decls r))))))))
     (labels ((sort-matched (matched)
                (stable-sort (nreverse matched)
                             (lambda (x y) (or (spec< (first x) (first y))
@@ -818,13 +819,15 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                    (apply-presentational-hints cs n)
                    ;; collect matching author rules, splitting element vs pseudo-element
                    (let ((matched '()) (m-before '()) (m-after '()))
-                     (dolist (ru rules)
-                       (destructuring-bind (cx pe spec order decls) ru
-                         (when (match-complex (cx-compounds cx) (cx-combs cx) (1- (length (cx-compounds cx))) n)
-                           (case pe
-                             (:before (push (list spec order decls) m-before))
-                             (:after  (push (list spec order decls) m-after))
-                             (t       (push (list spec order decls) matched))))))
+                     (map-candidate-rules
+                      (lambda (ru)
+                        (destructuring-bind (cx pe spec order decls) ru
+                          (when (match-complex (cx-compounds cx) (cx-combs cx) (1- (length (cx-compounds cx))) n)
+                            (case pe
+                              (:before (push (list spec order decls) m-before))
+                              (:after  (push (list spec order decls) m-after))
+                              (t       (push (list spec order decls) matched))))))
+                      rindex n tag)
                      (let* ((sorted (sort-matched matched))
                             (inline (el-attr n "style"))
                             (inline-pvs (and inline (parse-inline inline)))

@@ -35,11 +35,30 @@ Bound by paint when entering an overflow:hidden/clip/scroll box.")
       (list x0 y0 x1 y1)))
 
 (defun fill-rect (cv x y w h color)
+  ;; Clip once up front and write the buffer directly, rather than a per-pixel
+  ;; PUT (whose bounds + clip checks and index math dominate large background
+  ;; and border fills on a tall page).
   (let ((r (first color)) (g (second color)) (b (third color))
+        (cw (canvas-width cv)) (ch (canvas-height cv))
         (x0 (max 0 (round x))) (y0 (max 0 (round y)))
         (x1 (min (canvas-width cv) (round (+ x w)))) (y1 (min (canvas-height cv) (round (+ y h)))))
-    (loop for yy from y0 below y1 do
-      (loop for xx from x0 below x1 do (put cv xx yy r g b)))))
+    (declare (ignore ch))
+    (when *clip*
+      (setf x0 (max x0 (the fixnum (first *clip*)))
+            y0 (max y0 (the fixnum (second *clip*)))
+            x1 (min x1 (the fixnum (third *clip*)))
+            y1 (min y1 (the fixnum (fourth *clip*)))))
+    (when (and (< x0 x1) (< y0 y1))
+      (let ((px (canvas-pixels cv)))
+        (declare (type (simple-array (unsigned-byte 8) (*)) px)
+                 (type fixnum x0 y0 x1 y1 cw r g b)
+                 (optimize (speed 3) (safety 0)))
+        (loop for yy fixnum from y0 below y1 do
+          (let ((i (the fixnum (* 3 (+ (the fixnum (* yy cw)) x0)))))
+            (declare (type fixnum i))
+            (loop for xx fixnum from x0 below x1 do
+              (setf (aref px i) r (aref px (the fixnum (+ i 1)) ) g (aref px (the fixnum (+ i 2))) b)
+              (incf i 3))))))))
 
 (defun fill-poly (cv points color)
   "Scanline-fill the polygon POINTS (a list of (x . y) float conses) with COLOR

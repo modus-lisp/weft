@@ -26,9 +26,15 @@
   (lambda (ctx url) (declare (ignore ctx))
     (handler-case
         (let* ((clean (strip-query url))
-               (path (if (and (plusp (length clean)) (char= (char clean 0) #\/))
-                         (merge-pathnames (subseq clean 1) wpt-root)
-                         (merge-pathnames clean test-dir)))
+               ;; weft resolves a relative href against the file:// base into a full
+               ;; file:// URL — strip the scheme back to an absolute filesystem path.
+               (clean (if (and (>= (length clean) 7) (string-equal (subseq clean 0 7) "file://"))
+                          (subseq clean 7) clean))
+               (path (cond ((and (plusp (length clean)) (char= (char clean 0) #\/) (probe-file clean))
+                            clean)                                        ; absolute path (relative-resolved)
+                           ((and (plusp (length clean)) (char= (char clean 0) #\/))
+                            (merge-pathnames (subseq clean 1) wpt-root))  ; root-relative -> WPT root
+                           (t (merge-pathnames clean test-dir))))
                (content (and (probe-file path) (read-file-string path))))
           (if content
               (values (if (search ".css" clean :test #'char-equal) :css :text) content)

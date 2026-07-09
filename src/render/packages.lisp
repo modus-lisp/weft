@@ -10,6 +10,8 @@
            ;; network image loading + cache (bind *IMAGE-LOADER* to a fetcher)
            #:*image-loader* #:*image-store* #:clear-image-cache
            #:fetch-image #:decode-image-bytes
+           ;; live progress hook (:cascade :layout :painting) — NIL disables it
+           #:*progress*
            ;; font registration (@font-face web fonts / the Ahem test font)
            #:register-font
            ;; interactive-shell support (hit-testing, box tree, viewport scroll)

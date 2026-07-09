@@ -14,6 +14,7 @@
   (:export #:response #:make-response #:response-status #:response-headers
            #:response-body #:response-url
            #:*http-transport* #:*read-timeout* #:*max-redirects* #:*user-agent*
+           #:*progress*
            #:fetch #:fetch-text
            #:get-header #:content-type-charset #:decompress-body #:body-text))
 (in-package #:weft.fetch)
@@ -103,6 +104,15 @@ Returns (values string charset-used)."
 identifies as a browser — many sites serve a bot interstitial (\"enable JS and cookies\")
 to any non-browser UA.")
 
+(defvar *progress* nil
+  "When bound to a function of (PHASE &optional DETAIL), the transport reports
+   fetch sub-phases — :resolving :connecting :downloading :decoding :redirecting
+   — so a host can surface fine-grained progress.  NIL (the default) disables it.")
+
+(defun note-progress (phase &optional detail)
+  "Call the progress hook if one is bound; never signals."
+  (when *progress* (ignore-errors (funcall *progress* phase detail))))
+
 (defun %ascii-octets (string)
   "Encode an ASCII/Latin-1 request STRING to octets."
   (map '(simple-array (unsigned-byte 8) (*)) #'char-code string))
@@ -119,9 +129,11 @@ to any non-browser UA.")
 (defun open-tcp-stream (host port timeout)
   "Open a bidirectional binary stream to HOST:PORT over TCP (raw, no TLS)."
   (let* ((socket (make-instance 'sb-bsd-sockets:inet-socket :type :stream :protocol :tcp))
-         (addr (sb-bsd-sockets:host-ent-address (sb-bsd-sockets:get-host-by-name host))))
+         (addr (progn (note-progress :resolving host)
+                      (sb-bsd-sockets:host-ent-address (sb-bsd-sockets:get-host-by-name host)))))
     (handler-case
         (progn
+          (note-progress :connecting host)
           (sb-bsd-sockets:socket-connect socket addr port)
           (sb-bsd-sockets:socket-make-stream socket :element-type '(unsigned-byte 8)
                                                      :input t :output t :buffering :full
@@ -208,6 +220,19 @@ Returns NIL at end of stream with no bytes read."
     (let ((got (read-sequence buf stream)))
       (if (= got n) buf (subseq buf 0 got)))))
 
+(defun read-n-bytes-reporting (stream n)
+  "Like READ-N-BYTES, but read in 64 KB blocks and report :downloading progress
+   (got/total) between them — used when a progress hook is set and the body length
+   is known, so a large document shows a live byte counter."
+  (let ((buf (make-array n :element-type '(unsigned-byte 8))) (pos 0)
+        (total-kb (round n 1024)))
+    (loop while (< pos n)
+          for got = (read-sequence buf stream :start pos :end (min n (+ pos 65536)))
+          do (when (= got pos) (return))       ; EOF before Content-Length
+             (setf pos got)
+             (note-progress :downloading (format nil "~d/~d KB" (round pos 1024) total-kb)))
+    (if (= pos n) buf (subseq buf 0 pos))))
+
 (defun read-to-eof (stream)
   (let ((out (make-array 4096 :element-type '(unsigned-byte 8) :adjustable t :fill-pointer 0))
         (chunk (make-array 4096 :element-type '(unsigned-byte 8))))
@@ -219,7 +244,7 @@ Returns NIL at end of stream with no bytes read."
 
 (defun read-chunked-body (stream)
   "Decode a Transfer-Encoding: chunked body from STREAM into one octet vector."
-  (let ((parts '()))
+  (let ((parts '()) (total 0))
     (loop
       (let* ((line (read-header-line stream))
              (semi (and line (position #\; line)))
@@ -228,6 +253,8 @@ Returns NIL at end of stream with no bytes read."
         (when (or (null size) (not (integerp size)) (zerop size))
           (return))
         (push (read-n-bytes stream size) parts)
+        (incf total size)
+        (when *progress* (note-progress :downloading (format nil "~d KB" (round total 1024))))
         (read-header-line stream)))            ; trailing CRLF after each chunk
     ;; consume any trailer headers up to the final blank line
     (loop for line = (read-header-line stream)
@@ -242,12 +269,15 @@ Returns NIL at end of stream with no bytes read."
      (%octets #()))
     ((let ((te (get-header headers "transfer-encoding")))
        (and te (search "chunked" te :test #'char-equal)))
+     (note-progress :downloading)
      (read-chunked-body stream))
     ((get-header headers "content-length")
      (let ((n (ignore-errors (parse-integer (get-header headers "content-length")
                                             :junk-allowed t))))
-       (if (and n (plusp n)) (read-n-bytes stream n) (%octets #()))))
-    (t (read-to-eof stream))))
+       (cond ((not (and n (plusp n))) (%octets #()))
+             (*progress* (read-n-bytes-reporting stream n))
+             (t (read-n-bytes stream n)))))
+    (t (note-progress :downloading) (read-to-eof stream))))
 
 ;;; ---- cookie jar -------------------------------------------------------
 ;;; A process-wide session jar: Set-Cookie is parsed and stored; matching cookies
@@ -428,11 +458,13 @@ encoded bytes.  A network/TLS/cert failure signals a clean CL condition."
                 ;; 303 (and, conventionally, 301/302) become GET; 307/308 preserve.
                 (when (member (response-status r) '(301 302 303))
                   (setf m "GET"))
+                (note-progress :redirecting (url:hostname next))
                 (setf current (url:href next)))
               (return r)))))))
 
 (defun fetch-text (url-string &rest args)
   "Fetch and fully decode to text.  Returns (values string charset response)."
   (let ((r (apply #'fetch url-string args)))
+    (note-progress :decoding)
     (multiple-value-bind (text cs) (body-text (response-headers r) (response-body r))
       (values text cs r))))

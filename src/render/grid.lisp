@@ -166,9 +166,11 @@ whole axis (Tailwind's col-span-full) and `5 / -1` spans column 5 to the end."
             ((num left) (values (line left) 1))
             (t (values nil 1)))))))
 
-(defun grid-place-items (items styles ncols)
+(defun grid-place-items (items styles ncols &optional areas)
   "Assign each item a cell region.  Returns a list of (item row col rspan cspan),
-0-based, using row-major auto-placement (CSS Grid §8, grid-auto-flow:row)."
+0-based, using row-major auto-placement (CSS Grid §8, grid-auto-flow:row).  AREAS,
+when given, is the container's grid-template-areas map NAME->(r0 c0 rspan cspan)
+used to place items that name an area with `grid-area`."
   (let ((occ (make-hash-table :test 'equal))
         (out '()) (cur-r 0) (cur-c 0))
     (labels ((freep (r c cs rs)
@@ -178,9 +180,15 @@ whole axis (Tailwind's col-span-full) and `5 / -1` spans column 5 to the end."
                (loop for rr from r below (+ r rs) do
                  (loop for cc from c below (+ c cs) do (setf (gethash (cons rr cc) occ) t)))))
       (dolist (it items)
-        (let ((cs (st styles it)))
-          (multiple-value-bind (cline cspan) (grid-placement (and cs (css:cstyle-grid-column cs)) ncols)
-            (multiple-value-bind (rline rspan) (grid-placement (and cs (css:cstyle-grid-row cs)))
+        (let* ((cs (st styles it))
+               ;; a named grid-area resolves to explicit line placement
+               (area (and cs areas (css:cstyle-grid-area cs) (gethash (css:cstyle-grid-area cs) areas))))
+          (multiple-value-bind (cline cspan)
+              (if area (values (1+ (second area)) (fourth area))
+                  (grid-placement (and cs (css:cstyle-grid-column cs)) ncols))
+            (multiple-value-bind (rline rspan)
+                (if area (values (1+ (first area)) (third area))
+                    (grid-placement (and cs (css:cstyle-grid-row cs))))
               (setf cspan (max 1 (min cspan ncols)))
               (let* ((col-def (and cline (>= cline 1)))
                      (row-def (and rline (>= rline 1)))
@@ -240,7 +248,7 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
                  (lambda (k) (let ((c (st styles k))) (and c (not (string= (css:cstyle-display c) "none")))))
                  (child-elements node))))
     (when (null items) (return-from layout-grid (values nil 0)))
-    (let* ((placed (grid-place-items items styles ncols))
+    (let* ((placed (grid-place-items items styles ncols (css:cstyle-grid-template-areas base-cs)))
            ;; single-column items feed content-track sizing
            (items-by-col (make-array ncols :initial-element nil)))
       (dolist (p placed)

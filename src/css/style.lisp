@@ -28,6 +28,7 @@
   ;; CSS Grid (raw template/placement strings, parsed at layout time; see grid.lisp)
   (grid-template-columns nil) (grid-template-rows nil) (grid-auto-rows nil)
   (grid-auto-flow "row") (grid-column nil) (grid-row nil)
+  (grid-area nil) (grid-template-areas nil)   ; item area name; container NAME->(r0 c0 rspan cspan) map
   (row-gap 0.0) (column-gap 0.0)          ; distinct gaps (the `gap` slot mirrors row-gap for flex)
   (justify-items "stretch") (justify-self "auto") (align-self "auto")
   (top :auto) (left :auto) (right :auto) (bottom :auto) (z-index 0)
@@ -349,6 +350,39 @@ Ignores the system-font keywords (caption/icon/...)."
     (when start (push (subseq s start n) out))
     (nreverse out)))
 
+(defun split-slash (s)
+  "Split S on '/' into substrings."
+  (loop with start = 0 for i from 0 to (length s)
+        when (or (= i (length s)) (char= (char s i) #\/))
+          collect (prog1 (subseq s start i) (setf start (1+ i)))))
+
+(defun parse-grid-areas (value)
+  "Parse a `grid-template-areas` value ('gutter code' ...) into a hash NAME ->
+(r0 c0 rspan cspan), 0-based (`.` cells are skipped), or NIL if it names nothing."
+  (let ((rows '()) (i 0) (n (length value)))
+    (loop while (< i n) do
+      (let ((q (or (position #\' value :start i) (position #\" value :start i))))
+        (if (null q) (return)
+            (let ((end (position (char value q) value :start (1+ q))))
+              (if (null end) (return)
+                  (progn (push (split-ws (subseq value (1+ q) end)) rows) (setf i (1+ end))))))))
+    (setf rows (nreverse rows))
+    (let ((box (make-hash-table :test 'equal)))
+      (loop for row in rows for r from 0 do
+        (loop for name in row for c from 0 do
+          (unless (string= name ".")
+            (let ((b (gethash name box)))
+              (setf (gethash name box)
+                    (if b (list (min (first b) r) (min (second b) c) (max (third b) r) (max (fourth b) c))
+                        (list r c r c)))))))
+      (when (plusp (hash-table-count box))
+        (let ((map (make-hash-table :test 'equal)))
+          (maphash (lambda (k b)
+                     (setf (gethash k map) (list (first b) (second b)
+                                                 (1+ (- (third b) (first b))) (1+ (- (fourth b) (second b))))))
+                   box)
+          map)))))
+
 (defun apply-decl (cs prop value parent-cs)
   "Apply one declaration to CSTYLE CS (best-effort)."
   (let ((fs (cstyle-font-size cs)))
@@ -501,6 +535,21 @@ Ignores the system-font keywords (caption/icon/...)."
              (cond ((string= prop "grid-template-columns") (setf (cstyle-grid-template-columns cs) v))
                    ((string= prop "grid-template-rows") (setf (cstyle-grid-template-rows cs) v))
                    (t (setf (cstyle-grid-auto-rows cs) v))))))
+        ((string= prop "grid-template-areas")
+         (let ((m (parse-grid-areas value)))
+           (when m (setf (cstyle-grid-template-areas cs) m))))
+        ((string= prop "grid-area")
+         ;; `grid-area: <name>` (an ident referencing grid-template-areas) sets the
+         ;; area name; the line-based form (`r / c / r2 / c2`) folds into row/column.
+         (let ((v (string-trim '(#\Space #\Tab #\Newline #\Return) value)))
+           (if (find #\/ v)
+               (let* ((p (split-slash v))
+                      (rc (mapcar (lambda (s) (string-trim '(#\Space) s)) p)))
+                 (when (>= (length rc) 2)
+                   (setf (cstyle-grid-row cs) (format nil "~a / ~a" (first rc) (or (third rc) "auto"))
+                         (cstyle-grid-column cs) (format nil "~a / ~a" (second rc) (or (fourth rc) "auto")))))
+               (unless (member (string-downcase v) '("auto" "none" "") :test #'string=)
+                 (setf (cstyle-grid-area cs) v)))))
         ((member prop '("grid-column" "grid-row") :test #'string=)
          (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
            (if (string= prop "grid-column") (setf (cstyle-grid-column cs) v) (setf (cstyle-grid-row cs) v))))

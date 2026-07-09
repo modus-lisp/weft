@@ -1470,6 +1470,15 @@ is taken proportionally from auto columns' shrink room (fixed columns kept)."
                      do (setf (aref w i) (* (aref w i) (/ target sum)))))))))
     (loop for i below ncols collect (max 1.0 (aref w i)))))
 
+(defun rel-offset (cs)
+  "Visual (dx dy) shift for a position:relative CS (CSS 2.1 9.4.3), else (0 0)."
+  (if (and cs (string= (css:cstyle-position cs) "relative"))
+      (values (round (cond ((numberp (css:cstyle-left cs)) (css:cstyle-left cs))
+                           ((numberp (css:cstyle-right cs)) (- (css:cstyle-right cs))) (t 0)))
+              (round (cond ((numberp (css:cstyle-top cs)) (css:cstyle-top cs))
+                           ((numberp (css:cstyle-bottom cs)) (- (css:cstyle-bottom cs))) (t 0))))
+      (values 0 0)))
+
 (defun layout-table (node styles cx cy content-w base-cs)
   "Automatic table layout (CSS 2.1 17.5.2): columns sized to their content (or a
 specified width), rows stacked, cells stretched to row height.  Returns
@@ -1514,6 +1523,17 @@ specified width), rows stacked, cells stretched to row height.  Returns
               (dolist (lb rowboxes)
                 (place-cell-content lb rowh (and (plusp bref) bref) center-mode)
                 (setf (lbox-h lb) rowh)))                             ; stretch box to row height
+            ;; position:relative on the row, its row-group, or a cell shifts the box(es)
+            ;; visually (the table box model doesn't otherwise honor relative offsets on
+            ;; table parts).  Row + group offset moves the whole row; a cell adds its own.
+            (multiple-value-bind (rdx rdy) (rel-offset (unless (eq row node) (st styles row)))
+              (let ((grp (h:dnode-parent row)))
+                (when (and grp (eq (h:dnode-kind grp) :element)
+                           (member (string-downcase (h:dnode-name grp)) '("tbody" "thead" "tfoot") :test #'string=))
+                  (multiple-value-bind (gdx gdy) (rel-offset (st styles grp)) (incf rdx gdx) (incf rdy gdy))))
+              (dolist (lb rowboxes)
+                (multiple-value-bind (cdx cdy) (rel-offset (lbox-style lb))
+                  (shift-box lb (+ rdx cdx) (+ rdy cdy)))))
             ;; A row with no cell boxes but a positive height (an empty spacer row)
             ;; still occupies its band; give it a box so it advances the flow and is
             ;; recorded/painted like the browser's tr box.

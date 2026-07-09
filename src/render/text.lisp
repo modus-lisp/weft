@@ -130,6 +130,28 @@ outline but keeps sub-pixel horizontal positioning, so spacing stays smooth."
 without limit across a long browsing session.  When exceeded the cache is dropped
 (entries are pure memoization: cheaply recomputed on next use).")
 
+(defvar *glyph-cache* (make-hash-table :test 'equal)
+  "Memo of (font gid ppem subpixel) -> (cov w h left top): the rasterized glyph
+coverage.  Rasterizing outlines is the hottest paint cost on a text page, where
+the same glyph recurs thousands of times at one size; cache the bitmap.")
+(defparameter *glyph-cache-limit* 30000
+  "Bound on *GLYPH-CACHE*.  Dropped wholesale when exceeded (pure memoization).")
+
+(defun glyph-raster (font gid ppem sub)
+  "Rasterize GID at PPEM (cached).  SUB, the sub-pixel x offset in [0,1), is
+quantized to 4 levels so the cache hits across a line's many fractional pen
+positions; the resulting <=0.25px change in anti-aliasing is imperceptible.
+Returns (cov w h left top)."
+  (let* ((subq (* (ffloor (* sub 4d0)) 0.25d0))
+         (key (list font gid ppem subq)))
+    (or (gethash key *glyph-cache*)
+        (progn
+          (when (> (hash-table-count *glyph-cache*) *glyph-cache-limit*) (clrhash *glyph-cache*))
+          (multiple-value-bind (cov w h left top adv)
+              (scribe:rasterize-glyph font gid ppem :subpixel subq)
+            (declare (ignore adv))
+            (setf (gethash key *glyph-cache*) (list cov w h left top)))))))
+
 (defun shape-px (font text ppem upem)
   "Shape TEXT with scribe (GPOS kerning + GSUB ligatures) into a list of
 (GID XADV XOFF YOFF), metrics in px (memoized).  Shared by MEASURE-TEXT-WIDTH and
@@ -235,9 +257,8 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                   ;; x-advance so painting matches MEASURE-TEXT-WIDTH to the pixel.
                   (if (zerop gid)
                       (incf penx (+ xadv letter-spacing))
-                      (multiple-value-bind (cov w h left top adv)
-                          (scribe:rasterize-glyph font gid ppem :subpixel sub)
-                        (declare (ignore adv))
+                      (destructuring-bind (cov w h left top)
+                          (glyph-raster font gid ppem sub)
                         (when cov
                           (let ((ox (+ (floor (+ penx xoff)) left)) (oy (+ baseline top (- (round yoff)))))
                             (dotimes (yy h)

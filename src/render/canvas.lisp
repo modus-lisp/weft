@@ -10,9 +10,16 @@
   width height pixels)   ; pixels: (unsigned-byte 8) vector, w*h*3, row-major RGB
 
 (defun make-canvas (w h &optional (bg '(255 255 255)))
-  (let* ((px (make-array (* w h 3) :element-type '(unsigned-byte 8))))
-    (loop for i from 0 below (length px) by 3 do
-      (setf (aref px i) (first bg) (aref px (+ i 1)) (second bg) (aref px (+ i 2)) (third bg)))
+  (let* ((n (* w h 3))
+         (px (make-array n :element-type '(unsigned-byte 8)))
+         (r (first bg)) (g (second bg)) (b (third bg)))
+    (if (and (= r g) (= g b))
+        (fill px r)                     ; uniform background (e.g. white) — one bulk fill
+        (locally (declare (type (simple-array (unsigned-byte 8) (*)) px)
+                          (type fixnum n) (type (unsigned-byte 8) r g b)
+                          (optimize (speed 3) (safety 0)))
+          (do ((i 0 (+ i 3))) ((>= i n))
+            (setf (aref px i) r (aref px (+ i 1)) g (aref px (+ i 2)) b))))
     (%make-canvas :width w :height h :pixels px)))
 
 (defvar *clip* nil

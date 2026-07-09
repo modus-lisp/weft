@@ -26,7 +26,7 @@
            #:cstyle-text-decoration #:cstyle-list-style
            #:cstyle-max-width #:cstyle-min-width #:cstyle-margin-left-auto #:cstyle-margin-right-auto
            #:cstyle-float #:cstyle-clear #:cstyle-position #:cstyle-box-sizing #:cstyle-overflow
-           #:cstyle-flex-direction #:cstyle-justify-content #:cstyle-align-items
+           #:cstyle-flex-direction #:cstyle-justify-content #:cstyle-align-items #:cstyle-align-content
            #:cstyle-flex-wrap #:cstyle-flex-grow #:cstyle-flex-shrink #:cstyle-flex-basis #:cstyle-order #:cstyle-gap
            #:cstyle-grid-template-columns #:cstyle-grid-template-rows #:cstyle-grid-auto-rows
            #:cstyle-grid-auto-flow #:cstyle-grid-column #:cstyle-grid-row

@@ -1130,13 +1130,38 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                         (push it ci) (push b cb) (push g cg) (push s cs) (setf cw add)))
                     (when ci (push (list (nreverse ci) (nreverse cb) (nreverse cg) (nreverse cs)) lines))
                     (setf lines (nreverse lines))
-                    (let ((all '()) (y cy))
+                    ;; lay each line out at CY, then position the lines along the cross
+                    ;; axis per align-content: when the container is taller than the lines
+                    ;; the surplus is distributed as leading/between per the keyword.
+                    (let ((laid '()))
                       (dolist (line lines)
                         (destructuring-bind (litems lbases lgrows lshrinks) line
-                          (multiple-value-bind (boxes line-h) (layout-line litems lbases lgrows lshrinks (round y))
+                          (multiple-value-bind (boxes line-h) (layout-line litems lbases lgrows lshrinks (round cy))
+                            (push (cons boxes line-h) laid))))
+                      (setf laid (nreverse laid))
+                      (let* ((nlines (length laid))
+                             (total (+ (reduce #'+ (mapcar #'cdr laid)) (* cross-gap (max 0 (1- nlines)))))
+                             (ac (css:cstyle-align-content base-cs))
+                             (extra (if (numberp avail-h) (max 0 (- avail-h total)) 0))
+                             (lead (cond ((<= extra 0) 0)
+                                         ((member ac '("flex-end" "end") :test #'string=) extra)
+                                         ((string= ac "center") (/ extra 2))
+                                         ((string= ac "space-around") (/ extra (* 2 nlines)))
+                                         ((string= ac "space-evenly") (/ extra (1+ nlines)))
+                                         (t 0)))
+                             (between (cond ((<= extra 0) 0)
+                                            ((and (string= ac "space-between") (> nlines 1)) (/ extra (1- nlines)))
+                                            ((string= ac "space-around") (/ extra nlines))
+                                            ((string= ac "space-evenly") (/ extra (1+ nlines)))
+                                            (t 0)))
+                             (all '()) (y (+ cy lead)))
+                        (dolist (pair laid)
+                          (destructuring-bind (boxes . line-h) pair
+                            (let ((dy (round (- y cy))))
+                              (unless (zerop dy) (dolist (b boxes) (shift-box b 0 dy))))
                             (setf all (nconc all boxes))
-                            (incf y (+ line-h cross-gap)))))
-                      (values all (max 0 (- y cy cross-gap)))))
+                            (incf y (+ line-h cross-gap between))))
+                        (values all (max total (if (numberp avail-h) avail-h 0))))))
                   ;; ---- single-line row (nowrap) ----
                   ;; pass AVAIL-H so a definite-height container stretches its items to fill it
                   (layout-line items bases grows shrinks cy avail-h))))

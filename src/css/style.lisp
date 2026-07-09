@@ -23,7 +23,7 @@
   (text-decoration nil) (list-style "disc")
   (max-width :none) (min-width 0.0) (margin-left-auto nil) (margin-right-auto nil)
   (float "none") (clear "none") (position "static") (box-sizing "content-box") (overflow "visible")
-  (flex-direction "row") (justify-content "flex-start") (align-items "stretch")
+  (flex-direction "row") (justify-content "flex-start") (align-items "stretch") (align-content "stretch")
   (flex-wrap "nowrap") (flex-grow 0.0) (flex-shrink 1.0) (flex-basis "auto") (order 0) (gap 0.0)
   ;; CSS Grid (raw template/placement strings, parsed at layout time; see grid.lisp)
   (grid-template-columns nil) (grid-template-rows nil) (grid-auto-rows nil)
@@ -479,6 +479,7 @@ Ignores the system-font keywords (caption/icon/...)."
                   (setf (cstyle-flex-wrap cs) tok)))))
         ((string= prop "justify-content") (setf (cstyle-justify-content cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "align-items") (setf (cstyle-align-items cs) (string-downcase (string-trim '(#\Space) value))))
+        ((string= prop "align-content") (setf (cstyle-align-content cs) (string-downcase (string-trim (list #\Space) value))))
         ((member prop '("justify-items" "justify-self" "align-self") :test #'string=)
          ;; grid box-alignment keywords; `normal` maps to stretch (the grid default).
          (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))))

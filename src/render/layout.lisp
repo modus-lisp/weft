@@ -586,6 +586,10 @@ pathological or hostile document (thousands of nested boxes) from exhausting the
 control stack — the outer levels render and the runaway interior is dropped, rather
 than the whole render crashing.")
 (defvar *layout-depth* 0)
+(defvar *flex-main-size* nil
+  "When laying out a flex item, its flex-resolved main size (px).  The item's own
+`width` is overridden by this assigned size (CSS 9.9), like a table-cell in its column.
+Reset to NIL inside the item so its descendants are laid out normally.")
 (defun layout-node (node styles x y avail-w &optional avail-h)
   "Resilient wrapper: a failing subtree degrades to an empty box, not a crash.
 AVAIL-H is the containing-block height in px when definite, else NIL (CSS 2.1
@@ -700,7 +704,8 @@ most-negative margin.  {20,30}->30  {20,-10}->10  {-5,-8}->-8  {-20,30}->10."
   "Lay out block-level NODE at (X,Y); AVAIL-W is the containing content width and
 AVAIL-H the containing-block height (px when definite, else NIL).
 Returns (values lbox advance-height)."
-  (let ((cs (st styles node)))
+  (let ((flex-item *flex-main-size*) (*flex-main-size* nil))   ; this box is a flex item iff set; its children are not
+   (let ((cs (st styles node)))
     (when (or (null cs) (string= (cdisplay cs) "none")) (return-from %layout-core (values nil 0 0 0)))
     ;; replaced elements (img/svg/canvas/object-image) reaching block layout — as a
     ;; block-level or out-of-flow box — are their own content; render and return.
@@ -735,7 +740,12 @@ Returns (values lbox advance-height)."
                                        (- exp-h (+ (css:cstyle-padding-top cs) (css:cstyle-padding-bottom cs)
                                                    (used-border cs :t) (used-border cs :b)))
                                        exp-h))))
-           (spec-w (unless table-cell (css::resolve-size (css:cstyle-width cs) avail-w))) ; px or nil
+           ;; a flex item takes the main size its parent assigned (AVAIL-W = the
+           ;; flex-resolved width), ignoring its own `width` — set it explicitly so an
+           ;; inline-block item fills that width instead of shrinking to content.
+           (spec-w (cond (flex-item avail-w)
+                         (table-cell nil)
+                         (t (css::resolve-size (css:cstyle-width cs) avail-w)))) ; px or nil
            (max-w (css::resolve-size (css:cstyle-max-width cs) avail-w))
            (min-w (css::resolve-size (css:cstyle-min-width cs) avail-w))
            ;; a box with width:auto that is shrink-to-fit (CSS 10.3.7 / 10.3.9):
@@ -990,7 +1000,7 @@ Returns (values lbox advance-height)."
              (lb (make-lbox :x box-x :y box-y :w width :h box-h
                             :style cs :node node :kind :block :children (nreverse children)
                             :marker (when list-item (css:cstyle-list-style cs)))))
-        (values lb (+ mt (lbox-h lb) mb) mt-eff mb-eff box-mneg)))))
+        (values lb (+ mt (lbox-h lb) mb) mt-eff mb-eff box-mneg))))))
 
 (defun shift-box (lb dx dy)
   "Recursively offset LB and its descendants by (DX,DY)."
@@ -1049,7 +1059,7 @@ column distributes grow/shrink into; NIL means auto (size to content)."
           ;; positive) or shrink*base (if negative, CSS 9.7), position left-to-right
           ;; per justify-content, then cross-align to the line's own max height.
           ;; Returns (values line-boxes line-height).
-          (flet ((layout-line (litems lbases lgrows lshrinks ly)
+          (flet ((layout-line (litems lbases lgrows lshrinks ly &optional forced-cross)
                    (let* ((n (length litems))
                           (lgap (* gap (max 0 (1- n))))
                           (lfree (- content-w (+ (reduce #'+ lbases) lgap)))
@@ -1070,16 +1080,34 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                           (x (if (string= justify "space-around") (+ start (/ between 2)) start))
                           (boxes '()) (max-h 0))
                      (loop for it in litems for w in sizes do
-                       (multiple-value-bind (lb adv) (layout-node it styles (round x) ly (round w))
+                       (multiple-value-bind (lb adv)
+                           (let ((*flex-main-size* (round w)))   ; the item uses this width, not its own
+                             (layout-node it styles (round x) ly (round w)))
                          (declare (ignore adv))
                          (when lb (push lb boxes) (setf max-h (max max-h (lbox-h lb))))
                          (incf x (+ w gap between))))
-                     (let ((boxes (nreverse boxes)))
+                     (let ((boxes (nreverse boxes))
+                           ;; the line's cross size: a single-line container with a
+                           ;; definite height fills it (items stretch to the container,
+                           ;; not just to the tallest item); a wrapped line uses its own
+                           ;; content height (FORCED-CROSS nil).  Per-item ALIGN-SELF
+                           ;; overrides the container's ALIGN-ITEMS.
+                           (cross (if (numberp forced-cross) (max max-h forced-cross) max-h)))
                        (dolist (lb boxes)                 ; cross-axis align within the line
-                         (cond ((string= align "stretch") (setf (lbox-h lb) (max (lbox-h lb) max-h)))
-                               ((string= align "center") (shift-box lb 0 (round (/ (- max-h (lbox-h lb)) 2))))
-                               ((string= align "flex-end") (shift-box lb 0 (round (- max-h (lbox-h lb)))))))
-                       (values boxes max-h)))))
+                         ;; The item box already sits MARGIN-TOP below the line top (block
+                         ;; flow applied it), so align/stretch within CROSS minus the item's
+                         ;; own cross margins (CSS 9.4/9.6): a stretched item fills the line
+                         ;; less its margins rather than overflowing by them.
+                         (let* ((s (lbox-style lb))
+                                (a (let ((as (css:cstyle-align-self s)))
+                                     (if (and as (not (string= as "auto"))) as align)))
+                                (mt (max 0 (css:cstyle-margin-top s)))
+                                (mb (max 0 (css:cstyle-margin-bottom s)))
+                                (space (- cross mt mb)))
+                           (cond ((string= a "stretch") (setf (lbox-h lb) (max (lbox-h lb) space)))
+                                 ((string= a "center") (shift-box lb 0 (round (/ (- space (lbox-h lb)) 2))))
+                                 ((member a '("flex-end" "end") :test #'string=) (shift-box lb 0 (round (- space (lbox-h lb))))))))
+                       (values boxes cross)))))
             (let ((wrap (css:cstyle-flex-wrap base-cs)))
               (if (and (stringp wrap) (member wrap '("wrap" "wrap-reverse") :test #'string=))
                   ;; ---- multi-line row (flex-wrap, CSS 9.3) ----
@@ -1107,7 +1135,8 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                             (incf y (+ line-h cross-gap)))))
                       (values all (max 0 (- y cy cross-gap)))))
                   ;; ---- single-line row (nowrap) ----
-                  (layout-line items bases grows shrinks cy))))
+                  ;; pass AVAIL-H so a definite-height container stretches its items to fill it
+                  (layout-line items bases grows shrinks cy avail-h))))
           ;; ---- COLUMN ----
           ;; Lay each item out at its natural size to get its main-axis (height) base;
           ;; then, if the container has a definite height, distribute the free space by

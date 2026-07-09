@@ -66,13 +66,23 @@
   "Tokenize INPUT.  STATE may be :data :rcdata :rawtext :script-data :plaintext;
 LAST-START-TAG sets the appropriate-end-tag name for the content-model states."
   (let* ((s (preprocess input)) (n (length s)) (i 0) (tokens '())
+         ;; Coalesce consecutive character tokens: one struct + string per
+         ;; character turns a 600KB text body into ~600k allocations and conses.
+         ;; Accumulate a run of characters in CRUN and flush it as a single
+         ;; :char token before any other token is emitted (the tree builder
+         ;; processes multi-character :char tokens as one run).
+         (crun (make-string-output-stream)) (crun-p nil)
          (mk (lambda () (make-array 0 :element-type 'character :adjustable t :fill-pointer 0)))
          (tname nil) (tattrs nil) (aname nil) (aval nil) (end-tag nil) (self-close nil)
          (comment nil) (dname nil) (dpublic nil) (dsystem nil) (fquirks nil)
          (temp nil) (return-state :data) (tagstart 0)
          (last-tag (and last-start-tag (string last-start-tag))))
-    (labels ((emit (tk) (push tk tokens))
-             (emit-char (c) (push (make-tok :type :char :data (string c)) tokens))
+    (labels ((flush-chars ()
+               (when crun-p
+                 (push (make-tok :type :char :data (get-output-stream-string crun)) tokens)
+                 (setf crun-p nil)))
+             (emit (tk) (flush-chars) (push tk tokens))
+             (emit-char (c) (write-char c crun) (setf crun-p t))
              (emit-str (str) (loop for c across str do (emit-char c)))
              (pushc (c buf) (vector-push-extend (if (eql c #\Nul) #\Replacement_Character c) buf))
              (new-tag (endp) (setf tname (funcall mk) tattrs nil aname nil aval nil

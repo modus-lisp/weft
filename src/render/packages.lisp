@@ -15,6 +15,6 @@
            ;; font registration (@font-face web fonts / the Ahem test font)
            #:register-font
            ;; interactive-shell support (hit-testing, box tree, viewport scroll)
-           #:render-document #:box-at #:node-at #:point-in-box-p
+           #:render-document #:box-at #:node-at #:point-in-box-p #:img-source-url
            #:lbox #:lbox-p #:lbox-x #:lbox-y #:lbox-w #:lbox-h
            #:lbox-node #:lbox-kind #:lbox-children #:lbox-style))

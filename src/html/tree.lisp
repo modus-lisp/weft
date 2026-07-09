@@ -47,8 +47,10 @@
   '("caption" "col" "colgroup" "frame" "head" "tbody" "td" "tfoot" "th" "thead" "tr"))
 
 (defun ws-char-tok-p (tk)
-  (and (eq (tok-type tk) :char) (= 1 (length (tok-data tk)))
-       (member (char (tok-data tk) 0) *ws*)))
+  ;; A character token whose data is entirely whitespace.  Character tokens now
+  ;; carry a coalesced run, so test every character (an empty run counts as ws).
+  (and (eq (tok-type tk) :char)
+       (every (lambda (c) (member c *ws*)) (tok-data tk))))
 
 (defparameter *rawtext-els* '("style" "xmp" "iframe" "noembed" "noframes" "script"))
 (defparameter *rcdata-els* '("title" "textarea"))
@@ -586,7 +588,10 @@ Limited-quirks counts as NON-quirks here — only full quirks suppresses e.g.
              (cond
                ((eq ty :char)
                 (let ((data (tok-data tk)))
-                  (when (and drop-nl (string= data (string #\Newline))) (setf data ""))
+                  ;; <pre>/<listing>/<textarea> drop a single leading newline; the
+                  ;; following text is now one coalesced run, so strip its first char.
+                  (when (and drop-nl (plusp (length data)) (char= (char data 0) #\Newline))
+                    (setf data (subseq data 1)))
                   (setf drop-nl nil)
                   (when (and (plusp (length data)) (notevery (lambda (c) (member c *ws*)) data))
                     (setf frameset-ok nil))

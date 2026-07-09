@@ -927,6 +927,18 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                          (dolist (pv inline-pvs)
                            (when (custom-prop-p (car pv))
                              (setf (gethash (car pv) vars) (resolve-vars (cdr pv) vars)))))
+                       ;; pass 2a: resolve font-size first, so em/ch on other
+                       ;; properties use the element's FINAL font-size regardless of
+                       ;; declaration order (a rule may set max-width:65ch before
+                       ;; font-size).  Re-applying it in pass 2 is idempotent.
+                       (flet ((font-decl-p (p) (or (string= p "font-size") (string= p "font"))))
+                         (dolist (m sorted)
+                           (dolist (d (third m))
+                             (when (font-decl-p (css-decl-prop d))
+                               (apply-decl cs (css-decl-prop d) (resolve-vars (css-decl-value d) vars) parent-cs))))
+                         (dolist (pv inline-pvs)
+                           (when (font-decl-p (car pv))
+                             (apply-decl cs (car pv) (resolve-vars (cdr pv) vars) parent-cs))))
                        ;; pass 2: author rules (var()-resolved), then inline style (wins)
                        (dolist (m sorted)
                          (dolist (d (third m))

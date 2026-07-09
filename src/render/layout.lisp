@@ -1041,6 +1041,9 @@ column distributes grow/shrink into; NIL means auto (size to content)."
          (align (css:cstyle-align-items base-cs))
          (gap (css:cstyle-gap base-cs))
          (items (remove-if-not (lambda (k) (let ((c (st styles k))) (and c (not (string= (css:cstyle-display c) "none"))))) (child-elements node)))
+         ;; `order` reorders items (CSS 5.4); a stable sort keeps DOM order among ties.
+         (items (stable-sort (copy-list items) #'<
+                             :key (lambda (it) (let ((c (st styles it))) (if c (css:cstyle-order c) 0)))))
          ;; *-reverse lays the items out in reverse order along the main axis.
          (items (if (member dir '("row-reverse" "column-reverse") :test #'string=) (reverse items) items))
          (nitems (length items)))

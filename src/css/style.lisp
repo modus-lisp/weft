@@ -788,6 +788,7 @@ this is applied before author rules."
   "Compute a CSTYLE for every element under DOCUMENT, applying STYLESHEET (a list
 of CSS-RULEs).  Returns a hash-table element->CSTYLE."
   (let ((styles (make-hash-table :test 'equal))
+        (*el-classes-cache* (make-hash-table :test 'eq))   ; split each element's classes once this pass
         ;; pre-parse selectors once, tagging rules with (match-cx pseudo spec order decls).
         ;; pseudo = NIL | :before | :after; match-cx is the cx to match (pseudo-element stripped).
         (rules (loop for r in stylesheet for order from 0

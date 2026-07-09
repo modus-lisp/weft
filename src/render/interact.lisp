@@ -8,6 +8,15 @@
 ;;;; pointer input into the DOM and to scroll the painted page.
 (in-package #:weft.render)
 
+(defvar *progress* nil
+  "When bound to a function of (PHASE &optional DETAIL), RENDER-DOCUMENT reports
+   its sub-phases — :cascade :layout :painting — so a host can surface live
+   progress.  NIL (the default) disables reporting.")
+
+(defun note-progress (phase &optional detail)
+  "Call the progress hook if one is bound; never signals."
+  (when *progress* (ignore-errors (funcall *progress* phase detail))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Hit-testing — document point (x,y) -> box -> DOM node
 ;;; ---------------------------------------------------------------------------
@@ -80,8 +89,9 @@
          (sheet (css:parse-stylesheet
                  (concatenate 'string (or css "") (string #\Newline)
                               (collect-stylesheets doc))))
-         (styles (css:compute-styles doc sheet))
+         (styles (progn (note-progress :cascade) (css:compute-styles doc sheet)))
          (vph (and viewport-height (round viewport-height))))
+    (note-progress :layout)
     (multiple-value-bind (root adv) (layout-tree doc styles width vph)
       (declare (ignore adv))
       (let* ((content-h (if root (round (+ (lbox-y root) (lbox-h root) 8)) min-height))
@@ -93,6 +103,7 @@
                    (and cs (css:cstyle-background cs))))
              (cv (make-canvas width height (if bg (rgb bg) '(255 255 255)))))
         (when (and root (plusp sy)) (shift-box root 0 (- sy)))
+        (note-progress :painting)
         (if vph
             (let ((*clip* (clip-intersect 0 0 width vph))) (paint-box cv root))
             (paint-box cv root))

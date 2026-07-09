@@ -14,7 +14,16 @@
 (defun el-attr (n a) (cdr (assoc a (weft.html:dnode-attrs n) :test #'string-equal)))
 (defun el-parent (n) (weft.html:dnode-parent n))
 (defun el-children (n) (weft.html:dnode-children n))
-(defun el-classes (n) (let ((c (el-attr n "class"))) (when c (split-ws c))))
+(defvar *el-classes-cache* nil
+  "Bound to a fresh EQ hash for one COMPUTE-STYLES pass: an element's class list is
+tested against every class selector, so splitting its class attribute once per pass
+instead of once per rule removes an O(elements x rules) cost on rule-heavy pages.")
+(defun %el-classes (n) (let ((c (el-attr n "class"))) (when c (split-ws c))))
+(defun el-classes (n)
+  (if *el-classes-cache*
+      (multiple-value-bind (v found) (gethash n *el-classes-cache*)
+        (if found v (setf (gethash n *el-classes-cache*) (%el-classes n))))
+      (%el-classes n)))
 (defun split-ws (s)
   (let ((out '()) (b (make-string-output-stream)) (any nil))
     (loop for c across s do

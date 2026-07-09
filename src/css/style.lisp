@@ -789,6 +789,7 @@ this is applied before author rules."
 of CSS-RULEs).  Returns a hash-table element->CSTYLE."
   (let ((styles (make-hash-table :test 'equal))
         (*el-classes-cache* (make-hash-table :test 'eq))   ; split each element's classes once this pass
+        (*ancestor-bloom* (make-hash-table :test 'eq))     ; ancestor identifiers per element, for descendant/child skipping
         ;; pre-parse selectors once, tagging rules with (match-cx pseudo spec order decls).
         ;; pseudo = NIL | :before | :after; match-cx is the cx to match (pseudo-element stripped).
         (rindex (build-rindex
@@ -811,8 +812,9 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                        (unless (custom-prop-p (css-decl-prop d))
                          (apply-decl cs (css-decl-prop d) (resolve-vars (css-decl-value d) vars) parent-cs))))
                    (and (cstyle-content cs) cs))))
-             (walk (n parent-cs parent-vars)
+             (walk (n parent-cs parent-vars anc-bloom)
                (when (eq (weft.html:dnode-kind n) :element)
+                 (setf (gethash n *ancestor-bloom*) anc-bloom)
                  (let* ((tag (string-downcase (weft.html:dnode-name n)))
                         (cs (ua-style tag parent-cs)))
                    ;; legacy presentational attributes (bgcolor, width, ...) — below author CSS
@@ -822,7 +824,7 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                      (map-candidate-rules
                       (lambda (ru)
                         (destructuring-bind (cx pe spec order decls) ru
-                          (when (match-complex (cx-compounds cx) (cx-combs cx) (1- (length (cx-compounds cx))) n)
+                          (when (match-cx cx n)
                             (case pe
                               (:before (push (list spec order decls) m-before))
                               (:after  (push (list spec order decls) m-after))
@@ -870,8 +872,9 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                        (let ((bs (pseudo-style cs m-before vars)) (as (pseudo-style cs m-after vars)))
                          (when bs (setf (gethash (cons n :before) styles) bs))
                          (when as (setf (gethash (cons n :after) styles) as)))
-                       (loop for c across (weft.html:dnode-children n) do (walk c cs vars))))))))
-      (loop for c across (weft.html:dnode-children document) do (walk c nil nil)))
+                       (let ((child-bloom (logior anc-bloom (el-own-bloom n))))
+                         (loop for c across (weft.html:dnode-children n) do (walk c cs vars child-bloom)))))))))
+      (loop for c across (weft.html:dnode-children document) do (walk c nil nil 0)))
     styles))
 
 (defun spec< (a b)

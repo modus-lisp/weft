@@ -156,13 +156,9 @@ instead of once per rule removes an O(elements x rules) cost on rule-heavy pages
        (multiple-value-bind (a b) (parse-nth arg) (and a (nth-match-p (el-index-of-type-from-end n) a b))))
       ((string= nm "only-of-type") (= (el-count-of-type n) 1))
       ((string= nm "not")
-       (notany (lambda (cx) (match-complex (cx-compounds cx) (cx-combs cx)
-                                           (1- (length (cx-compounds cx))) n))
-               arg))   ; arg = parsed selector list
+       (notany (lambda (cx) (match-cx cx n)) arg))   ; arg = parsed selector list
       ((member nm '("is" "where" "matches" "any") :test #'string=)
-       (some (lambda (cx) (match-complex (cx-compounds cx) (cx-combs cx)
-                                         (1- (length (cx-compounds cx))) n))
-             arg))
+       (some (lambda (cx) (match-cx cx n)) arg))
       ;; :link matches any hyperlink (a/area/link with href). We have no history,
       ;; so every link is unvisited: :link matches, :visited never does.  (Sites
       ;; routinely colour links via a:link — without this they keep the UA blue.)
@@ -186,7 +182,7 @@ instead of once per rule removes an O(elements x rules) cost on rule-heavy pages
   (and (el-p n) (every (lambda (s) (match-simple n s)) compound)))
 
 ;;; ---- complex selector (compounds + combinators), matched right-to-left -
-(defstruct cx compounds combs)   ; compounds: vector; combs: vector len-1 (combinator BEFORE each compound)
+(defstruct cx compounds combs keybits)   ; compounds: vector; combs: vector len-1 (combinator BEFORE each compound); keybits: lazily-cached ancestor-filter key bits per compound
 
 (defun cx-pseudo-element (cx)
   "If CX's final compound names a ::before/::after pseudo-element, return
@@ -204,18 +200,107 @@ else (values NIL CX).  first-line/first-letter are treated as NIL (no box)."
                 (values (if (string-equal (second pe) "before") :before :after)
                         (make-cx :compounds new :combs (cx-combs cx)))))))))
 
-(defun match-complex (compounds combs k n)
+;;; ---- ancestor Bloom filter ---------------------------------------------
+;;; Descendant/child combinators walk an element's ancestor chain, which on a
+;;; deeply nested DOM costs O(depth) per candidate rule.  Summarize every
+;;; element's ancestors' identifiers (downcased tag, each class, id) in a Bloom
+;;; filter — an integer whose set bits are two hashes of each identifier.  Before
+;;; walking at a :descendant/:child step, take the most-keyable simple of the
+;;; target compound (id > class > tag); if either of its two bits is clear in the
+;;; filter, no ancestor carries that identifier, so the walk cannot match and is
+;;; skipped.  Bloom filters yield false positives but never false negatives, so a
+;;; "maybe" still runs the full walk and the set of matched elements is unchanged.
+;;; The filter must be wide enough to stay sparse over a deep DOM: a page nesting
+;;; ~25 levels with several classes each sets a few hundred bits, which would
+;;; saturate a fixnum (turning every query into a false positive) and disable the
+;;; skip.  +BLOOM-BITS+ keeps the load factor — and thus the false-positive rate —
+;;; low.  The target compound's two bit positions are the same for every element,
+;;; so they are precomputed once per selector (CX-KEYBITS) rather than re-hashed.
+
+(defconstant +bloom-bits+ 512
+  "Filter width in bits.  Wide enough that a deep ancestor chain leaves the filter
+sparse, keeping the false-positive rate low; the filter is an ordinary integer.")
+
+(defun bloom-positions (string)
+  "Two independent bit positions in [0,+BLOOM-BITS+) from two hashes of STRING
+(FNV-1a and djb2).  Tags must be downcased by the caller so build and check agree;
+classes and ids are hashed verbatim (case-sensitive)."
+  (let ((h1 2166136261) (h2 5381))
+    (loop for c across string
+          for code = (char-code c) do
+            (setf h1 (logand (* (logxor h1 code) 16777619) #xffffffff))
+            (setf h2 (logand (+ (* h2 33) code) #xffffffff)))
+    (values (mod h1 +bloom-bits+) (mod h2 +bloom-bits+))))
+
+(defun bloom-add (bits string)
+  "Return BITS with STRING's two hash bits set."
+  (multiple-value-bind (p1 p2) (bloom-positions string)
+    (logior bits (ash 1 p1) (ash 1 p2))))
+
+(defun el-own-bloom (n)
+  "Filter bits for N's own identifiers: downcased tag, each class, and id."
+  (let ((bits (bloom-add 0 (string-downcase (el-name n)))))
+    (dolist (c (el-classes n)) (setf bits (bloom-add bits c)))
+    (let ((id (el-attr n "id"))) (when id (setf bits (bloom-add bits id))))
+    bits))
+
+(defun compound-key-bits (compound)
+  "For COMPOUND's most-keyable simple (id > class > tag), the two bit positions to
+test, as a cons (P1 . P2); NIL when COMPOUND has no id/class/type simple (only
+:universal/:attr/:pseudo) and so cannot be filtered."
+  (let ((id nil) (class nil) (tag nil))
+    (dolist (s compound)
+      (case (first s)
+        (:id (unless id (setf id (second s))))
+        (:class (unless class (setf class (second s))))
+        (:type (unless tag (setf tag (second s))))))
+    (let ((key (cond (id id) (class class) (tag (string-downcase tag)) (t nil))))
+      (when key
+        (multiple-value-bind (p1 p2) (bloom-positions key) (cons p1 p2))))))
+
+(defun cx-key-bits (cx)
+  "Vector parallel to CX's compounds: each slot holds that compound's ancestor
+key bits (a (P1 . P2) cons) or NIL if unkeyable, computed once and cached."
+  (or (cx-keybits cx)
+      (setf (cx-keybits cx) (map 'vector #'compound-key-bits (cx-compounds cx)))))
+
+(defvar *ancestor-bloom* nil
+  "Bound to an EQ hash element->integer for one COMPUTE-STYLES pass: each value is
+a Bloom filter of that element's ancestors' identifiers, used to skip descendant
+/child walks that provably cannot match.  NIL for callers that don't build it
+(e.g. query-select), which then always take the full walk.")
+
+(declaim (inline ancestors-lack-bits-p))
+(defun ancestors-lack-bits-p (n need)
+  "T only when N's ancestor filter proves the identifier keyed by NEED (a (P1 . P2)
+cons of bit positions) is absent from every ancestor of N — the sole case where
+the ancestor walk may be skipped.  An ancestor's own bits are a subset of N's
+ancestor filter, so the same test is also sound for the :child parent (parent's
+bits ⊆ N's filter).  NEED NIL (an unkeyable compound) never skips."
+  (and *ancestor-bloom* need
+       (let ((f (gethash n *ancestor-bloom*)))
+         (and f (not (and (logbitp (car need) f) (logbitp (cdr need) f)))))))
+
+(defun match-complex (compounds combs keybits k n)
   (and (match-compound (aref compounds k) n)
        (or (zerop k)
            (let ((comb (aref combs (1- k))))
              (ecase comb
-               (:descendant (loop for a = (el-parent n) then (el-parent a)
-                                  while (and a (el-p a))
-                                  thereis (match-complex compounds combs (1- k) a)))
-               (:child (let ((p (el-parent n))) (and p (el-p p) (match-complex compounds combs (1- k) p))))
-               (:adjacent (let ((s (prev-element n))) (and s (match-complex compounds combs (1- k) s))))
+               (:descendant (unless (ancestors-lack-bits-p n (and keybits (aref keybits (1- k))))
+                              (loop for a = (el-parent n) then (el-parent a)
+                                    while (and a (el-p a))
+                                    thereis (match-complex compounds combs keybits (1- k) a))))
+               (:child (unless (ancestors-lack-bits-p n (and keybits (aref keybits (1- k))))
+                         (let ((p (el-parent n))) (and p (el-p p) (match-complex compounds combs keybits (1- k) p)))))
+               (:adjacent (let ((s (prev-element n))) (and s (match-complex compounds combs keybits (1- k) s))))
                (:sibling (loop for s = (prev-element n) then (prev-element s)
-                               while s thereis (match-complex compounds combs (1- k) s))))))))
+                               while s thereis (match-complex compounds combs keybits (1- k) s))))))))
+
+(defun match-cx (cx n)
+  "Does element N match complex selector CX (right-to-left)?"
+  (let ((comps (cx-compounds cx)))
+    (and (plusp (length comps))
+         (match-complex comps (cx-combs cx) (cx-key-bits cx) (1- (length comps)) n))))
 
 ;;; ---- rule index (bucket rules by rightmost key) ------------------------
 ;;; Matching every rule against every element is O(elements x rules) and
@@ -406,10 +491,7 @@ list is built — each rule is keyed to exactly one bucket, so no duplicates."
 ;;; ---- public API --------------------------------------------------------
 (defun selector-matches-p (selector-list n)
   "Does element N match any complex selector in SELECTOR-LIST?"
-  (some (lambda (cx) (and (plusp (length (cx-compounds cx)))
-                          (match-complex (cx-compounds cx) (cx-combs cx)
-                                         (1- (length (cx-compounds cx))) n)))
-        selector-list))
+  (some (lambda (cx) (match-cx cx n)) selector-list))
 
 (defun specificity (cx)
   "(a b c): id count, class/attr/pseudo-class count, type count."

@@ -58,7 +58,12 @@ and the selector parser sees it as a literal (type) identifier."
       (when (>= i end) (return))
       ;; property name (ident)
       (if (eq (ctok-type (aref toks i)) :ident)
-          (let ((prop (string-downcase (ctok-value (aref toks i)))) (j (1+ i)))
+          (let* ((raw (ctok-value (aref toks i)))
+                 ;; custom properties (--*) are case-sensitive per CSS Variables;
+                 ;; normal property names are ASCII case-insensitive.
+                 (prop (if (and (>= (length raw) 2) (char= (char raw 0) #\-) (char= (char raw 1) #\-))
+                           raw (string-downcase raw)))
+                 (j (1+ i)))
             (loop while (and (< j end) (eq (ctok-type (aref toks j)) :ws)) do (incf j))
             (if (and (< j end) (eq (ctok-type (aref toks j)) :colon))
                 (let ((vstart (1+ j)) (vend (1+ j)))

@@ -913,7 +913,10 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
   "Parse an inline style attribute 'a:b; c:d' into ((a . b) ...)."
   (loop for chunk in (split-semi s)
         for cp = (position #\: chunk)
-        when cp collect (cons (string-downcase (string-trim '(#\Space) (subseq chunk 0 cp)))
+        for name = (and cp (string-trim '(#\Space) (subseq chunk 0 cp)))
+        ;; custom properties (--*) are case-sensitive; normal names are not
+        when cp collect (cons (if (and (>= (length name) 2) (char= (char name 0) #\-) (char= (char name 1) #\-))
+                                  name (string-downcase name))
                               (string-trim '(#\Space) (subseq chunk (1+ cp))))))
 (defun split-semi (s)
   (loop with start = 0 for i from 0 to (length s)

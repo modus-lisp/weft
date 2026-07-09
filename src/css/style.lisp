@@ -160,6 +160,12 @@
                        ((and (string= unit "vh") *viewport-h*) (* num (/ *viewport-h* 100.0)))
                        ((and (string= unit "vmin") *viewport-w* *viewport-h*) (* num (/ (min *viewport-w* *viewport-h*) 100.0)))
                        ((and (string= unit "vmax") *viewport-w* *viewport-h*) (* num (/ (max *viewport-w* *viewport-h*) 100.0)))
+                       ;; font-relative units: ch is the "0" advance, ex the x-height —
+                       ;; both ~0.5em for typical fonts (we approximate rather than
+                       ;; measure the face at cascade time).  `65ch` (a common prose
+                       ;; max-width) would otherwise be read as 65px and wrap every word.
+                       ((string= unit "ch") (* num font-size 0.5))
+                       ((string= unit "ex") (* num font-size 0.5))
                        ((member unit '("" ) :test #'string=) num)
                        (t num)))   ; treat unknown abs units as px-ish
                nil))))))
@@ -539,10 +545,31 @@ Ignores the system-font keywords (caption/icon/...)."
         ((string= prop "z-index") (let ((v (parse-value "z-index" value)))
                                     (when (and (listp v) (integerp (first v))) (setf (cstyle-z-index cs) (first v)))))
         ((string= prop "flex")
-         (let ((v (parse-value "flex" value)))
-           (when (and (listp v) (= 3 (length v)))
-             (setf (cstyle-flex-grow cs) (float (first v)) (cstyle-flex-shrink cs) (float (second v))
-                   (cstyle-flex-basis cs) (string-downcase (string (third v)))))))
+         ;; The `flex` shorthand (CSS Flexbox §7.2): one, two or three values, plus
+         ;; the `none`/`auto`/`initial` keywords.  A bare number is flex-grow with
+         ;; basis 0% (so Tailwind's `.flex-1{flex:1}` means 1 1 0%); a lone length
+         ;; is the basis with grow 1.
+         (let* ((val (string-downcase (string-trim '(#\Space) value))))
+           (flet ((plain-num (s) (and (plusp (length s))
+                                      (every (lambda (c) (or (digit-char-p c) (member c '(#\. #\-)))) s)
+                                      (ignore-errors (float (read-from-string s))))))
+             (cond
+               ((string= val "none") (setf (cstyle-flex-grow cs) 0.0 (cstyle-flex-shrink cs) 0.0
+                                           (cstyle-flex-basis cs) "auto"))
+               ((string= val "initial") (setf (cstyle-flex-grow cs) 0.0 (cstyle-flex-shrink cs) 1.0
+                                              (cstyle-flex-basis cs) "auto"))
+               ((string= val "auto") (setf (cstyle-flex-grow cs) 1.0 (cstyle-flex-shrink cs) 1.0
+                                           (cstyle-flex-basis cs) "auto"))
+               (t (let ((grow nil) (shrink nil) (basis nil))
+                    (dolist (tk (split-tokens val))
+                      (let ((n (plain-num tk)))
+                        (cond ((and n (null grow)) (setf grow n))
+                              ((and n (null shrink)) (setf shrink n))
+                              (t (setf basis tk)))))
+                    (when grow (setf (cstyle-flex-grow cs) grow))
+                    (setf (cstyle-flex-shrink cs) (or shrink 1.0))
+                    (setf (cstyle-flex-basis cs) (or basis "0%"))   ; bare number -> basis 0%
+                    (unless grow (setf (cstyle-flex-grow cs) 1.0))))))))   ; lone basis -> grow 1
         ((string= prop "margin")
          (let ((parts (split-tokens (string-trim '(#\Space) value))))
            ;; horizontal auto -> centering flags (e.g. "0 auto")

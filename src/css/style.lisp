@@ -165,7 +165,9 @@
                        ;; both ~0.5em for typical fonts (we approximate rather than
                        ;; measure the face at cascade time).  `65ch` (a common prose
                        ;; max-width) would otherwise be read as 65px and wrap every word.
-                       ((string= unit "ch") (* num font-size 0.5))
+                       ;; ch = advance of "0" (~0.55em for weft's Liberation faces),
+                       ;; ex = x-height (~0.5em); approximated rather than measured.
+                       ((string= unit "ch") (* num font-size 0.55))
                        ((string= unit "ex") (* num font-size 0.5))
                        ((member unit '("" ) :test #'string=) num)
                        (t num)))   ; treat unknown abs units as px-ish

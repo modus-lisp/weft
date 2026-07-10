@@ -171,6 +171,50 @@ DRAW-TEXT-SCRIBE so the kerned advances are identical (measure = paint).  A .not
                                     (* (scribe::glyph-pos-x-offset g) s)
                                     (* (scribe::glyph-pos-y-offset g) s)))))))))
 
+;;; ---- script itemization (font fallback) -----------------------------------
+;;; The primary face (Liberation) covers Latin/Greek/Cyrillic; a page with other
+;;; scripts (Arabic, CJK, emoji, ...) is split into runs, each shaped and painted
+;;; with the bundled Noto face that covers it — resolved per codepoint through
+;;; scribe.  An all-primary string (the common case) is a single run: no change.
+
+(defun %font-upem (font)
+  "units-per-em of a scribe FONT as a double (default 1000)."
+  (let ((u (ignore-errors (float (scribe:font-units-per-em font) 1d0))))
+    (if (and u (plusp u)) u 1000d0)))
+
+(defun %codepoint-font (primary cp)
+  "Font to render codepoint CP: PRIMARY when it has the glyph, else a scribe
+script-fallback face, else PRIMARY (renders .notdef, so the run still advances)."
+  (cond ((scribe:font-covers-p primary cp) primary)
+        ((scribe:fallback-font-for-codepoint cp))
+        (t primary)))
+
+(defvar *segment-cache* (make-hash-table :test 'equal)
+  "Memo of (primary-font . text) -> list of (font upem string) script runs.")
+(defparameter *segment-cache-limit* 50000)
+
+(defun text-segments (primary text)
+  "Split TEXT into maximal (font upem string) runs, each covered by a single face:
+PRIMARY where it can, a bundled Noto fallback face elsewhere.  Memoized; an
+all-primary string returns one run (font=PRIMARY) so the Latin fast path is a
+single cache hit and shapes exactly as before."
+  (let ((key (cons primary text)))
+    (or (gethash key *segment-cache*)
+        (progn
+          (when (> (hash-table-count *segment-cache*) *segment-cache-limit*) (clrhash *segment-cache*))
+          (setf (gethash key *segment-cache*)
+                (let ((n (length text)))
+                  (if (zerop n) '()
+                      (let* ((runs '()) (start 0)
+                             (cur (%codepoint-font primary (char-code (char text 0)))))
+                        (loop for i from 1 below n
+                              for f = (%codepoint-font primary (char-code (char text i)))
+                              unless (eq f cur) do
+                                (push (list cur (%font-upem cur) (subseq text start i)) runs)
+                                (setf start i cur f))
+                        (push (list cur (%font-upem cur) (subseq text start n)) runs)
+                        (nreverse runs)))))))))
+
 (defun measure-text-width (text size &optional face (letter-spacing 0))
   "Width of the shaped (kerned) TEXT at px SIZE in FACE — the width scribe will
 actually paint.  FACE defaults to the generic sans-serif face.  LETTER-SPACING px
@@ -183,9 +227,13 @@ font succeeding."
         (handler-case
             (let* ((font (face-font face))
                    (ppem (float (min 2000 (max 1 size)) 1d0))   ; cap ppem: no real glyph exceeds this, and it bounds rasterization memory
-                   (upem (face-upem face))
                    (w 0d0))
-              (dolist (g (shape-px font text ppem upem)) (incf w (+ (second g) letter-spacing)))
+              ;; itemize into script runs; each run shapes with its own face/upem
+              ;; (fallback faces have their own em size) so advances stay correct.
+              (dolist (seg (text-segments font text))
+                (destructuring-bind (segfont segupem segstr) seg
+                  (dolist (g (shape-px segfont segstr ppem segupem))
+                    (incf w (+ (second g) letter-spacing)))))
               w)
           (error () (+ (* (length text) *font-w*) (* (length text) letter-spacing)))))))
 
@@ -224,7 +272,6 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                    (ppem (float (min 2000 (max 1 size)) 1d0))   ; cap ppem: no real glyph exceeds this, and it bounds rasterization memory
                    (asc-ratio (face-ascent-ratio face))
                    (desc-ratio (face-descent-ratio face))
-                   (upem (face-upem face))
                    ;; center the font's em-box (ascent+descent) in the line box,
                    ;; then the baseline sits ascent px below the box's top.
                    (text-h (* (+ asc-ratio desc-ratio) ppem))
@@ -250,27 +297,32 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                    (cx1 (if *clip* (the fixnum (third *clip*)) (canvas-width cv)))
                    (cy1 (if *clip* (the fixnum (fourth *clip*)) (canvas-height cv)))
                    (penx (float x 1d0)))
-              (loop for (gid xadv xoff yoff) in (shape-px font text ppem upem) do
-                (let ((sub (- (+ penx xoff) (ffloor (+ penx xoff)))))
-                  ;; gid 0 = .notdef: don't draw a tofu box, but still advance so the
-                  ;; run keeps its layout position.  Advance by the SHAPED (kerned)
-                  ;; x-advance so painting matches MEASURE-TEXT-WIDTH to the pixel.
-                  (if (zerop gid)
-                      (incf penx (+ xadv letter-spacing))
-                      (destructuring-bind (cov w h left top)
-                          (glyph-raster font gid ppem sub)
-                        (when cov
-                          (let ((ox (+ (floor (+ penx xoff)) left)) (oy (+ baseline top (- (round yoff)))))
-                            (dotimes (yy h)
-                              (let ((py (+ oy yy)))
-                                (when (and (>= py cy0) (< py cy1))
-                                  (dotimes (xx w)
-                                    (let ((px (+ ox xx)))
-                                      (when (and (>= px cx0) (< px cx1))
-                                        (let ((c (aref cov (+ (* yy w) xx))))
-                                          (when (> c 0d0)
-                                            (scribe:blend-coverage scv px py c color)))))))))))
-                        (incf penx (+ xadv letter-spacing))))))
+              ;; itemize into script runs; paint each with the face that covers it
+              ;; (fallback faces for non-Latin scripts / emoji), all on the primary
+              ;; face's baseline so mixed-script text sits on one line.
+              (dolist (seg (text-segments font text))
+               (destructuring-bind (segfont segupem segstr) seg
+                (loop for (gid xadv xoff yoff) in (shape-px segfont segstr ppem segupem) do
+                  (let ((sub (- (+ penx xoff) (ffloor (+ penx xoff)))))
+                    ;; gid 0 = .notdef: don't draw a tofu box, but still advance so the
+                    ;; run keeps its layout position.  Advance by the SHAPED (kerned)
+                    ;; x-advance so painting matches MEASURE-TEXT-WIDTH to the pixel.
+                    (if (zerop gid)
+                        (incf penx (+ xadv letter-spacing))
+                        (destructuring-bind (cov w h left top)
+                            (glyph-raster segfont gid ppem sub)
+                          (when cov
+                            (let ((ox (+ (floor (+ penx xoff)) left)) (oy (+ baseline top (- (round yoff)))))
+                              (dotimes (yy h)
+                                (let ((py (+ oy yy)))
+                                  (when (and (>= py cy0) (< py cy1))
+                                    (dotimes (xx w)
+                                      (let ((px (+ ox xx)))
+                                        (when (and (>= px cx0) (< px cx1))
+                                          (let ((c (aref cov (+ (* yy w) xx))))
+                                            (when (> c 0d0)
+                                              (scribe:blend-coverage scv px py c color)))))))))))
+                          (incf penx (+ xadv letter-spacing))))))))
               (when underline
                 ;; underline to UNDERLINE-END-X when given (so a multi-word link's
                 ;; underline runs continuously across the spaces), else to the pen.

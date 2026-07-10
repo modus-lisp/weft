@@ -305,14 +305,23 @@ background-filled canvas size so layout at least gets dimensions)."
             (setf (gethash url *image-store*) (or img :failed))
             img)))))
 
-(defun blit-img (cv img x y &optional dw dh)
+(defun blit-img (cv img x y &optional dw dh src)
   "Paint IMG onto CV at (X,Y), straight-alpha over existing pixels, optionally
-scaled to (DW,DH).  Downscaling area-averages each output pixel's source
+scaled to (DW,DH).  SRC=(sx sy sw sh) is a source crop rectangle in image pixels
+(default the whole image) — the CSS object-fit:cover/none path samples only that
+sub-rectangle, scaled to fill (DW,DH), so a wide relief image crops to a portrait
+hero box without distortion.  Downscaling area-averages each output pixel's source
 footprint (a box filter, alpha-weighted) so a high-resolution image resolves
 smoothly instead of aliasing to noise; upscaling / 1:1 is nearest-neighbour."
   (let* ((iw (img-w img)) (ih (img-h img)) (rgba (img-rgba img))
-         (ow (or dw iw)) (oh (or dh ih))
-         (down (or (< ow iw) (< oh ih))))
+         ;; source rectangle: whole image unless a crop is given.  IW stays the row
+         ;; stride into RGBA; SX0/SY0 offset into it, SW/SH bound the sampled region.
+         (sx0 (if src (max 0 (first src)) 0)) (sy0 (if src (max 0 (second src)) 0))
+         (sw (if src (min (third src) (- iw sx0)) iw))
+         (sh (if src (min (fourth src) (- ih sy0)) ih))
+         (ow (or dw sw)) (oh (or dh sh))
+         (down (or (< ow sw) (< oh sh))))
+    (when (or (<= sw 0) (<= sh 0) (<= ow 0) (<= oh 0)) (return-from blit-img))
     (flet ((blend (ox oy r g b a)
              (when (plusp a)
                (let ((px (+ x ox)) (py (+ y oy)))
@@ -326,16 +335,16 @@ smoothly instead of aliasing to noise; upscaling / 1:1 is nearest-neighbour."
       (if (not down)
           (dotimes (oy oh)                       ; nearest-neighbour (no shrink)
             (dotimes (ox ow)
-              (let* ((sx (min (1- iw) (floor (* ox iw) ow))) (sy (min (1- ih) (floor (* oy ih) oh)))
+              (let* ((sx (min (1- iw) (+ sx0 (floor (* ox sw) ow)))) (sy (min (1- ih) (+ sy0 (floor (* oy sh) oh))))
                      (si (* 4 (+ (* sy iw) sx))))
                 (blend ox oy (aref rgba si) (aref rgba (+ si 1)) (aref rgba (+ si 2)) (aref rgba (+ si 3))))))
           (dotimes (oy oh)                       ; box filter: average the source footprint
-            (let* ((sy0 (floor (* oy ih) oh)) (sy1 (max (1+ sy0) (floor (* (1+ oy) ih) oh))))
+            (let* ((ry0 (+ sy0 (floor (* oy sh) oh))) (ry1 (+ sy0 (max (1+ (floor (* oy sh) oh)) (floor (* (1+ oy) sh) oh)))))
               (dotimes (ox ow)
-                (let* ((sx0 (floor (* ox iw) ow)) (sx1 (max (1+ sx0) (floor (* (1+ ox) iw) ow)))
+                (let* ((rx0 (+ sx0 (floor (* ox sw) ow))) (rx1 (+ sx0 (max (1+ (floor (* ox sw) ow)) (floor (* (1+ ox) sw) ow))))
                        (sr 0) (sg 0) (sb 0) (sa 0) (n 0))
-                  (loop for sy from sy0 below (min ih sy1) do
-                    (loop for sx from sx0 below (min iw sx1) do
+                  (loop for sy from ry0 below (min ih ry1) do
+                    (loop for sx from rx0 below (min iw rx1) do
                       (let* ((si (* 4 (+ (* sy iw) sx))) (a (aref rgba (+ si 3))))
                         (incf sr (* (aref rgba si) a)) (incf sg (* (aref rgba (+ si 1)) a))
                         (incf sb (* (aref rgba (+ si 2)) a)) (incf sa a) (incf n))))

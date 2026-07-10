@@ -89,7 +89,10 @@
          (sheet (css:parse-stylesheet
                  (concatenate 'string (or css "") (string #\Newline)
                               (collect-stylesheets doc))))
-         (styles (progn (note-progress :cascade) (css:compute-styles doc sheet)))
+         ;; download+register any @font-face web fonts before the cascade so a
+         ;; page's own font resolves over the bundled fallback (no-op offline).
+         (styles (progn (load-font-faces sheet)
+                        (note-progress :cascade) (css:compute-styles doc sheet)))
          (vph (and viewport-height (round viewport-height))))
     (note-progress :layout)
     (multiple-value-bind (root adv) (layout-tree doc styles width vph)

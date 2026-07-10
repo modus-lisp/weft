@@ -35,6 +35,23 @@ Bound by paint when entering an overflow:hidden/clip/scroll box.")
     (let ((i (* 3 (+ (* y (canvas-width cv)) x))) (px (canvas-pixels cv)))
       (setf (aref px i) r (aref px (+ i 1)) g (aref px (+ i 2)) b))))
 
+(defun blend-put (cv x y r g b a)
+  "Composite (R G B) at straight alpha A (0-255) over the existing pixel at (X Y),
+honouring *CLIP* and bounds — like PUT but translucent (A>=255 is an opaque overwrite,
+A=0 paints nothing).  Used by translucent gradients (a hero image's darkening overlay)."
+  (when (and (>= x 0) (>= y 0) (< x (canvas-width cv)) (< y (canvas-height cv))
+             (or (null *clip*)
+                 (and (>= x (the fixnum (first *clip*))) (>= y (the fixnum (second *clip*)))
+                      (< x (the fixnum (third *clip*))) (< y (the fixnum (fourth *clip*))))))
+    (let ((i (* 3 (+ (* y (canvas-width cv)) x))) (px (canvas-pixels cv)))
+      (if (>= a 255)
+          (setf (aref px i) r (aref px (+ i 1)) g (aref px (+ i 2)) b)
+          (when (plusp a)
+            (let ((ia (- 255 a)))
+              (setf (aref px i)       (floor (+ (* r a) (* (aref px i) ia)) 255)
+                    (aref px (+ i 1)) (floor (+ (* g a) (* (aref px (+ i 1)) ia)) 255)
+                    (aref px (+ i 2)) (floor (+ (* b a) (* (aref px (+ i 2)) ia)) 255))))))))
+
 (defun clip-intersect (x0 y0 x1 y1)
   "Intersect (X0 Y0 X1 Y1) with the current *CLIP*, returning a new clip rect."
   (if *clip*
@@ -106,17 +123,26 @@ respects *CLIP*.  Used for mitered border trapezoids/triangles."
 (defun lerp (a b tt) (round (+ a (* (- b a) tt))))
 
 (defun fill-gradient (cv x y w h dir from to)
-  "Fill a rect with a 2-stop linear gradient (DIR :vertical|:horizontal)."
+  "Fill a rect with a 2-stop linear gradient (DIR :vertical|:horizontal).  FROM/TO are
+color lists; an optional 4th element is that stop's alpha (0.0-1.0).  A translucent
+gradient (a hero image's `rgba(0,0,0,.15)`→`rgba(0,0,0,.45)` legibility overlay)
+composites over the pixels beneath it — interpolating alpha as well as colour — rather
+than overwriting them with opaque black.  A stop with no alpha is opaque (unchanged)."
   (let ((x0 (max 0 (round x))) (y0 (max 0 (round y)))
-        (x1 (min (canvas-width cv) (round (+ x w)))) (y1 (min (canvas-height cv) (round (+ y h)))))
+        (x1 (min (canvas-width cv) (round (+ x w)))) (y1 (min (canvas-height cv) (round (+ y h))))
+        (fa (if (fourth from) (float (fourth from)) 1.0))
+        (ta (if (fourth to)   (float (fourth to))   1.0)))
     (loop for yy from y0 below y1 do
       (loop for xx from x0 below x1 do
-        (let ((tt (if (eq dir :horizontal)
-                      (if (> w 1) (/ (- xx x) (float w)) 0)
-                      (if (> h 1) (/ (- yy y) (float h)) 0))))
-          (setf tt (max 0.0 (min 1.0 tt)))
-          (put cv xx yy (lerp (first from) (first to) tt)
-               (lerp (second from) (second to) tt) (lerp (third from) (third to) tt)))))))
+        (let* ((tt (max 0.0 (min 1.0 (if (eq dir :horizontal)
+                                         (if (> w 1) (/ (- xx x) (float w)) 0)
+                                         (if (> h 1) (/ (- yy y) (float h)) 0)))))
+               (a (+ fa (* (- ta fa) tt))))
+          (blend-put cv xx yy
+                     (lerp (first from) (first to) tt)
+                     (lerp (second from) (second to) tt)
+                     (lerp (third from) (third to) tt)
+                     (round (* 255 (max 0.0 (min 1.0 a))))))))))
 
 (defun draw-char (cv ch x y color &optional bold)
   "Draw one ASCII char at (x,y) top-left.  Returns the advance width."

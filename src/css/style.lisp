@@ -143,6 +143,8 @@
     (cond
       ((and auto-ok (string= tt "auto")) :auto)
       ((string= tt "0") 0.0)
+      ((and (> (length tt) 5) (string= (subseq tt 0 5) "calc("))
+       (eval-calc (string-trim '(#\Space) (subseq tt 5 (1- (length tt)))) font-size))
       (t (let ((v (parse-value "length" tt)))
            (if (and (listp v) (= 2 (length v)))
                (let ((num (float (first v))) (unit (second v)))
@@ -172,6 +174,57 @@
                        ((member unit '("" ) :test #'string=) num)
                        (t num)))   ; treat unknown abs units as px-ish
                nil))))))
+
+(defun calc-tokenize (s)
+  "Split a calc() expression into operand and operator (+ - * /) tokens.  Handles
+tight operators (Tailwind's `calc(var(--spacing)*8)`, its var already substituted)
+and spaced ones; a leading '-' on an operand is a negative number, a '-' after an
+operand is subtraction."
+  (let ((toks '()) (i 0) (n (length s)))
+    (flet ((operand-p (x) (and x (not (member x '("+" "-" "*" "/" "(") :test #'string=)))))
+      (loop while (< i n) do
+        (let ((c (char s i)))
+          (cond
+            ((member c '(#\Space #\Tab #\Newline)) (incf i))
+            ((member c '(#\+ #\* #\/ #\( #\))) (push (string c) toks) (incf i))
+            ((char= c #\-)
+             (if (operand-p (first toks))
+                 (progn (push "-" toks) (incf i))          ; subtraction
+                 (let ((j (1+ i)))                          ; negative number
+                   (loop while (and (< j n) (or (alphanumericp (char s j)) (member (char s j) '(#\. #\%)))) do (incf j))
+                   (push (subseq s i j) toks) (setf i j))))
+            (t (let ((j i))
+                 (loop while (and (< j n) (or (alphanumericp (char s j)) (member (char s j) '(#\. #\%)))) do (incf j))
+                 (push (subseq s i (max j (1+ i))) toks) (setf i (max j (1+ i)))))))))
+    (nreverse toks)))
+
+(defun eval-calc (inner font-size)
+  "Evaluate a (flat, unnested) calc() interior INNER to px, or NIL.  Operands are
+resolved to px (a unitless number stays a scalar for * and /); * and / bind
+tighter than + and - (CSS Values §10)."
+  (let ((seq (mapcar (lambda (tk)
+                       (cond ((member tk '("+" "-" "*" "/") :test #'string=) tk)
+                             ((and (plusp (length tk))
+                                   (every (lambda (c) (or (digit-char-p c) (member c '(#\. #\-)))) tk))
+                              (or (ignore-errors (float (read-from-string tk))) :bad))
+                             (t (let ((v (resolve-len tk font-size))) (if (numberp v) v :bad)))))
+                     (calc-tokenize inner))))
+    (when (and seq (every (lambda (x) (or (numberp x) (stringp x))) seq)
+               (notany (lambda (x) (eq x :bad)) seq))
+      (labels ((reduce-ops (s ops)
+                 (loop for pos = (position-if (lambda (x) (member x ops :test #'equal)) s)
+                       while (and pos (> pos 0) (< pos (1- (length s)))) do
+                         (let ((a (nth (1- pos) s)) (op (nth pos s)) (b (nth (1+ pos) s)))
+                           (unless (and (numberp a) (numberp b)) (return-from reduce-ops nil))
+                           (setf s (append (subseq s 0 (1- pos))
+                                           (list (cond ((string= op "*") (* a b))
+                                                       ((string= op "/") (if (zerop b) 0.0 (/ a b)))
+                                                       ((string= op "+") (+ a b))
+                                                       (t (- a b))))
+                                           (subseq s (+ pos 2))))))
+                 s))
+        (let ((s (reduce-ops (reduce-ops seq '("*" "/")) '("+" "-"))))
+          (and s (= 1 (length s)) (numberp (first s)) (float (first s))))))))
 
 (defun line-height-multiplier (value font-size)
   "Parse a line-height VALUE into a multiplier of FONT-SIZE (weft stores
@@ -392,7 +445,10 @@ Ignores the system-font keywords (caption/icon/...)."
       (cond
         ((string= prop "display") (setf (cstyle-display cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "content") (setf (cstyle-content cs) (parse-content value)))
-        ((string= prop "color") (let ((c (resolve-color value))) (when c (setf (cstyle-color cs) c))))
+        ((string= prop "color")
+         (if (string-equal (string-trim '(#\Space) value) "inherit")
+             (when parent-cs (setf (cstyle-color cs) (cstyle-color parent-cs)))   ; a{color:inherit} resets the UA link colour
+             (let ((c (resolve-color value))) (when c (setf (cstyle-color cs) c)))))
         ((member prop '("background-color" "background" "background-image") :test #'string=)
          (let ((grad (parse-linear-gradient value))
                (url (extract-css-url value))
@@ -456,7 +512,9 @@ Ignores the system-font keywords (caption/icon/...)."
         ((string= prop "line-height") (let ((m (line-height-multiplier value (cstyle-font-size cs)))) (when m (setf (cstyle-line-height cs) m))))
         ((string= prop "text-align") (setf (cstyle-text-align cs) (string-downcase (string-trim '(#\Space) value))))
         ((member prop '("text-decoration" "text-decoration-line") :test #'string=)
-         (let ((v (parse-value "text-decoration" value))) (when (listp v) (setf (cstyle-text-decoration cs) v))))
+         (if (string-equal (string-trim '(#\Space) value) "inherit")
+             (when parent-cs (setf (cstyle-text-decoration cs) (cstyle-text-decoration parent-cs)))   ; a{text-decoration:inherit} drops the UA underline
+             (let ((v (parse-value "text-decoration" value))) (when (listp v) (setf (cstyle-text-decoration cs) v)))))
         ((string= prop "list-style-type")
          (let ((v (parse-value "list-style-type" value))) (when (stringp v) (setf (cstyle-list-style cs) v))))
         ((string= prop "white-space")
@@ -859,6 +917,10 @@ this is applied before author rules."
                                 (fb (and comma (string-trim '(#\Space #\Tab) (subseq inner (1+ comma)))))
                                 (v (gethash name vars)))
                            (write-string (cond (v v) (fb (resolve-vars fb vars)) (t "")) out)
+                           ;; var() is a whole token; a following token may abut the
+                           ;; `)` with no space (minified `var(--p-margin-y)0`), so
+                           ;; separate them — extra whitespace is harmless in values.
+                           (write-char #\Space out)
                            (setf i (1+ end)))))))))))))
 
 ;;; ---- the cascade --------------------------------------------------------

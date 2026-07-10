@@ -570,6 +570,20 @@ text-align.  Returns (values line-boxes total-height)."
     (labels ((rec (n) (case (h:dnode-kind n) (:text (write-string (h:dnode-data n) o))
                         (:element (loop for c across (h:dnode-children n) do (rec c))))))
       (rec node))))
+
+(defun collect-styled (node styles default-style)
+  "Walk NODE's subtree preserving whitespace, returning a list of (TEXT STYLE NODE)
+runs — each text node tagged with its nearest element's computed style.  Lets the
+<pre> fast path keep per-token colour (syntax-highlighted <span>s) instead of
+flattening every token to the pre's own colour."
+  (let ((out '()))
+    (labels ((rec (n st onode)
+               (case (h:dnode-kind n)
+                 (:text (push (list (h:dnode-data n) st onode) out))
+                 (:element (let ((cs (or (st styles n) st)))
+                             (loop for c across (h:dnode-children n) do (rec c cs n)))))))
+      (rec node default-style node))
+    (nreverse out)))
 (defun split-newlines (s)
   (loop with start = 0 for i from 0 to (length s)
         when (or (= i (length s)) (char= (char s i) #\Newline))
@@ -800,14 +814,26 @@ Returns (values lbox advance-height)."
            (children '()) (content-h 0))
       ;; <pre>/white-space:pre — preserve newlines, no wrapping
       (when (and (string= (css:cstyle-white-space cs) "pre") (not (has-block-children styles node)))
-        (let* ((text (collect-raw node)) (yy cy)
-               (lh (max *font-h* (round (used-line-height cs)))))
-          (dolist (ln (split-newlines text))
-            (push (make-lbox :x cx :y yy :w content-w :h lh :kind :line
-                             :children (when (plusp (length ln))
-                                         (list (make-frag :x cx :w (word-w ln cs) :text ln :style cs :node node))))
-                  children)
-            (incf yy lh) (incf content-h lh)))
+        ;; Build styled line boxes: split each text run on newlines, and keep a
+        ;; frag per run so syntax-highlight colours survive (a plain <pre> has one
+        ;; run per line, identical to before).
+        (let* ((segs (collect-styled node styles cs)) (yy cy)
+               (lh (max *font-h* (round (used-line-height cs))))
+               (frags '()) (lx cx))
+          (labels ((emit-line ()
+                     (push (make-lbox :x cx :y yy :w content-w :h lh :kind :line
+                                      :children (nreverse frags))
+                           children)
+                     (setf frags '() lx cx) (incf yy lh) (incf content-h lh)))
+            (dolist (seg segs)
+              (destructuring-bind (txt st snode) seg
+                (loop for part in (split-newlines txt) for i from 0 do
+                  (when (plusp i) (emit-line))                 ; newline -> next line
+                  (when (plusp (length part))
+                    (let ((ww (word-w part st)))
+                      (push (make-frag :x lx :w ww :text part :style st :node snode) frags)
+                      (incf lx ww))))))
+            (emit-line)))
         (let* ((box-h (+ content-h pt pb bt bb))
                (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                               :kind :block :children (nreverse children))))

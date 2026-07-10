@@ -928,6 +928,71 @@ this is applied before author rules."
                            (setf i (1+ end)))))))))))))
 
 ;;; ---- the cascade --------------------------------------------------------
+(defun font-face-rule-p (rule)
+  "True when RULE is an at-rule sentinel captured by the parser (selector begins
+with `@`, e.g. the `@font-face` descriptor set) rather than a qualified style rule."
+  (let ((s (css-rule-selector rule)))
+    (and (plusp (length s)) (char= (char s 0) #\@))))
+
+(defun %font-face-src-urls (value)
+  "Ordered list of url() targets in a @font-face `src` VALUE, best format first
+(woff2 > woff > ttf/otf > unlabelled), skipping local().  E.g.
+`url(a.woff2) format('woff2'), url(b.ttf) format('truetype')` -> (\"a.woff2\" \"b.ttf\")."
+  (let ((items '()))
+    ;; walk comma-separated src entries at top level (commas inside url()/format() are none here)
+    (dolist (part (let ((parts '()) (start 0) (depth 0))
+                    (dotimes (i (length value))
+                      (case (char value i)
+                        ((#\( #\[) (incf depth))
+                        ((#\) #\]) (decf depth))
+                        (#\, (when (<= depth 0) (push (subseq value start i) parts) (setf start (1+ i))))))
+                    (push (subseq value start) parts)
+                    (nreverse parts)))
+      (let ((up (search "url(" part :test #'char-equal)))
+        (when up
+          (let* ((s (+ up 4))
+                 (e (position #\) part :start s))
+                 (url (and e (string-trim '(#\Space #\" #\' #\Tab) (subseq part s e))))
+                 (fmt (let ((fp (search "format(" part :test #'char-equal)))
+                        (when fp (string-downcase (string-trim '(#\Space #\" #\' #\))
+                                                               (subseq part (+ fp 7)
+                                                                       (or (position #\) part :start (+ fp 7))
+                                                                           (length part)))))))))
+            (when (and url (plusp (length url)))
+              (push (cons url (or fmt "")) items))))))
+    (setf items (nreverse items))
+    ;; rank by format preference; keep source order within a rank
+    (let ((rank (lambda (fmt) (cond ((search "woff2" fmt) 0) ((search "woff" fmt) 1)
+                                    ((or (search "truetype" fmt) (search "opentype" fmt)
+                                         (search "ttf" fmt) (search "otf" fmt)) 2)
+                                    ((string= fmt "") 3) (t 4)))))
+      (mapcar #'car (stable-sort items #'< :key (lambda (it) (funcall rank (cdr it))))))))
+
+(defun collect-font-faces (stylesheet)
+  "Extract @font-face descriptor sets from STYLESHEET (a list of CSS-RULEs) as a
+list of plists (:family NAME :urls (url ...) :weight N :style KW) — NAME lowercased,
+url list best-format-first, WEIGHT an integer (400 default; `bold`->700), STYLE one
+of :normal|:italic.  Rules lacking a family or any src url are dropped."
+  (loop for r in stylesheet
+        when (and (font-face-rule-p r) (string-equal (css-rule-selector r) "@font-face"))
+          nconc (let* ((decls (css-rule-decls r))
+                       (get (lambda (p) (let ((d (find p decls :key #'css-decl-prop :test #'string-equal)))
+                                          (and d (css-decl-value d)))))
+                       (fam (funcall get "font-family"))
+                       (src (funcall get "src"))
+                       (wraw (funcall get "font-weight"))
+                       (sraw (funcall get "font-style"))
+                       (urls (and src (%font-face-src-urls src))))
+                  (when (and fam urls)
+                    (list (list :family (string-downcase (string-trim '(#\Space #\" #\' #\Tab) fam))
+                                :urls urls
+                                :weight (cond ((null wraw) 400)
+                                              ((string-equal (string-trim '(#\Space) wraw) "bold") 700)
+                                              ((string-equal (string-trim '(#\Space) wraw) "normal") 400)
+                                              ((parse-integer wraw :junk-allowed t))
+                                              (t 400))
+                                :style (if (and sraw (search "italic" (string-downcase sraw))) :italic :normal)))))))
+
 (defun compute-styles (document stylesheet)
   "Compute a CSTYLE for every element under DOCUMENT, applying STYLESHEET (a list
 of CSS-RULEs).  Returns a hash-table element->CSTYLE."
@@ -938,6 +1003,7 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
         ;; pseudo = NIL | :before | :after; match-cx is the cx to match (pseudo-element stripped).
         (rindex (build-rindex
                  (loop for r in stylesheet for order from 0
+                       unless (font-face-rule-p r)   ; at-rule descriptor sets aren't selectors
                        append (loop for cx in (parse-selector-list (css-rule-selector r))
                                     collect (multiple-value-bind (pe mcx) (cx-pseudo-element cx)
                                               (list mcx pe (specificity cx) order (css-rule-decls r))))))))

@@ -122,6 +122,10 @@ NIL — the caller treats that as a non-matching query."
       ;; display matches `color` and does not match `monochrome`.
       ((and (null val) (string= name "color")) t)
       ((and (null val) (string= name "monochrome")) nil)
+      ;; the raster is a static snapshot — treat as unscripted (`scripting: none`),
+      ;; matching a JS-off render.  So JS-only chrome (`@media(scripting:none){…}`
+      ;; hides a copy button that needs JS) is handled as the no-script author meant.
+      ((string= name "scripting") (string= (or vraw "") "none"))
       ((null val) nil)
       ((string= name "min-width")  (>= vw val))
       ((string= name "max-width")  (<= vw val))

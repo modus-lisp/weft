@@ -2058,8 +2058,15 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                         ;; inherited, so a non-nil value here is the run element's own.
                         (let ((bg (css:cstyle-background cs)))
                           (when (and bg (or (< (length bg) 4) (plusp (fourth bg))))
-                            (fill-rect cv (round (frag-x it)) (lbox-y lb)
-                                       (max 1 (round (frag-w it))) (lbox-h lb) bg)))
+                            ;; extend across the inter-word gap when the next run is
+                            ;; the SAME element (a multi-word highlight), so its spaces
+                            ;; are covered too — but not into a separate adjacent chip.
+                            (let* ((nx (cadr cell))
+                                   (right (if (and (frag-p nx) (eq (frag-node nx) (frag-node it)))
+                                              (frag-x nx)
+                                              (+ (frag-x it) (frag-w it)))))
+                              (fill-rect cv (round (frag-x it)) (lbox-y lb)
+                                         (max 1 (round (- right (frag-x it)))) (lbox-h lb) bg))))
                         (let* ((ul (member "underline" (css:cstyle-text-decoration cs) :test #'string=))
                                (nxt (cadr cell))
                                ;; run the underline across the space into the next

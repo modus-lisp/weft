@@ -239,7 +239,7 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                      (and v (plusp (length (string-trim '(#\Space) v))) v))))
     (or (a "src") (%srcset-url (a "srcset")) (a "data-src") (%srcset-url (a "data-srcset")))))
 
-(defun img-box (node cs &optional avail-w)
+(defun img-box (node cs &optional avail-w avail-h)
   "An atomic replaced box for <img>, sized to its BORDER box: the layout footprint
 is the content WxH plus its border (and padding) widths, with the decoded image (or
 an alt-text placeholder) painted in the content area inset by that border/padding.
@@ -256,7 +256,14 @@ alt-text placeholder."
                     ;; *IMAGE-LOADER* (NIL when running offline: stays a placeholder).
                     (t (fetch-image src))))
          (cw (let ((sw (css::resolve-size (css:cstyle-width cs) (or avail-w 300)))) (and (numberp sw) sw)))
-         (chh (let ((sh (css::resolve-size (css:cstyle-height cs) 200))) (and (numberp sh) sh)))
+         ;; A percentage height resolves against the containing-block height AVAIL-H
+         ;; when definite (CSS 2.1 10.5) — e.g. a full-cover hero `height:100%` in a
+         ;; fixed-height positioned parent; else it computes to auto (falls to the
+         ;; intrinsic/aspect-ratio height below), NOT a fixed 200px guess.
+         (chh (let ((sh (if (numberp avail-h)
+                            (css::resolve-height (css:cstyle-height cs) avail-h)
+                            (css::resolve-size (css:cstyle-height cs) 200))))
+                (and (numberp sh) sh)))
          ;; intrinsic dimensions: the width/height attributes, else the decoded image
          (iw (or (img-attr-num node "width") (and decoded (img-w decoded))))
          (ih (or (img-attr-num node "height") (and decoded (img-h decoded))))
@@ -331,6 +338,37 @@ alt-text placeholder."
             (list (make-lbox :x 2 :y (max 0 (floor (- hh *font-h*) 2)) :w (- w 4) :h *font-h* :kind :line
                              :children (list (make-frag :x 2 :w (word-w alt cs) :text alt :style cs :node node))))))
     lb))
+
+(defun object-fit-geom (fit iw ih dx dy dw dh)
+  "Map CSS object-fit FIT for an IW×IH image into content box (DX DY DW DH):
+return (values ox oy ow oh src) — the dest rectangle to paint and a source crop
+SRC=(sx sy sw sh) in image pixels (NIL = whole image).  `cover` crops the image to
+the box's aspect ratio and fills it (a wide relief image → a portrait hero, no
+distortion); `contain` fits the whole image inside the box, centred; `none` paints
+at intrinsic size, centred and cropped to the box; `scale-down` is none-or-contain,
+whichever is smaller.  `fill` (and any unknown value) never reaches here."
+  (if (or (null iw) (null ih) (<= iw 0) (<= ih 0) (<= dw 0) (<= dh 0))
+      (values dx dy dw dh nil)
+      (flet ((contain ()
+               (let* ((s (min (/ dw iw) (/ dh ih)))
+                      (w (max 1 (round (* iw s)))) (h (max 1 (round (* ih s)))))
+                 (values (+ dx (round (- dw w) 2)) (+ dy (round (- dh h) 2)) w h nil)))
+             (cover ()
+               (let (sx sy sw sh)
+                 (if (> (* iw dh) (* ih dw))       ; image wider than box → crop its width
+                     (setf sh ih sw (max 1 (round (/ (* ih dw) dh))) sy 0 sx (round (- iw sw) 2))
+                     (setf sw iw sh (max 1 (round (/ (* iw dh) dw))) sx 0 sy (round (- ih sh) 2)))
+                 (values dx dy dw dh (list sx sy sw sh))))
+             (none ()
+               (let* ((sw (min iw dw)) (sh (min ih dh))
+                      (sx (round (- iw sw) 2)) (sy (round (- ih sh) 2)))
+                 (values (+ dx (round (- dw sw) 2)) (+ dy (round (- dh sh) 2)) sw sh
+                         (list sx sy sw sh)))))
+        (cond ((string= fit "cover") (cover))
+              ((string= fit "contain") (contain))
+              ((string= fit "none") (none))
+              ((string= fit "scale-down") (if (or (> iw dw) (> ih dh)) (contain) (none)))
+              (t (values dx dy dw dh nil))))))
 
 (defun object-data-image (node)
   "Decoded IMG for an <object> whose data attribute is a decodable image data:
@@ -657,7 +695,47 @@ CB=(px py pw ph) using top/left/right/bottom from CS.  When top (or left) is
                        (t (lbox-y lb)))))
         (shift-box lb (round (- nx (lbox-x lb))) (round (- ny (lbox-y lb))))))))
 
-(defun replaced-box (node cs &optional avail-w)
+(defun %percent-size-p (v)
+  "True when a width/height spec V is a percentage — it must resolve against the
+containing block, not the static-flow width the box was tentatively laid out in."
+  (and (consp v) (eq (first v) :percent)))
+
+(defun positioned-needs-cb-size-p (cs)
+  "True when an out-of-flow box's used width or height depends on its containing
+block: a percentage width/height (e.g. a full-cover hero `width:100%;height:100%`)."
+  (or (%percent-size-p (css:cstyle-width cs))
+      (%percent-size-p (css:cstyle-height cs))))
+
+(defun copy-lbox-into (dst src)
+  "Overwrite DST's geometry and content slots with SRC's, keeping DST's identity so
+references held elsewhere (the paint tree's child list) observe the new geometry."
+  (setf (lbox-x dst) (lbox-x src) (lbox-y dst) (lbox-y src)
+        (lbox-w dst) (lbox-w src) (lbox-h dst) (lbox-h src)
+        (lbox-style dst) (lbox-style src) (lbox-kind dst) (lbox-kind src)
+        (lbox-children dst) (lbox-children src) (lbox-marker dst) (lbox-marker src)
+        (lbox-img dst) (lbox-img src) (lbox-vpaint dst) (lbox-vpaint src))
+  dst)
+
+(defun finalize-positioned (entry cb styles)
+  "Resolve an out-of-flow box (LB NODE CS) against its true containing block
+CB=(px py pw ph).  A box tentatively laid out at the static-flow point sized its
+percentage width/height against the wrong (flow content) width; when it needs the
+containing block's dimensions (CSS 2.1 10.1/10.3.7 — e.g. `width:100%;height:100%`),
+re-lay it out with CB's width and height as the available space and copy the fresh
+geometry back into the collected box (the paint tree holds it by reference).  Then
+shift it to its final top/left."
+  (destructuring-bind (lb node cs) entry
+    (when (and lb cb)
+      (destructuring-bind (px py pw ph) cb
+        (declare (ignore px py))
+        (when (positioned-needs-cb-size-p cs)
+          (handler-case
+              (let ((nlb (layout-node node styles (lbox-x lb) (lbox-y lb) pw ph)))
+                (when nlb (copy-lbox-into lb nlb)))
+            (error () nil)))
+        (resolve-positioned lb cb cs)))))
+
+(defun replaced-box (node cs &optional avail-w avail-h)
   "The replaced-content box for a leaf replaced element (img / svg / canvas / an
    <object> that decodes to an image), or NIL when NODE is not one.  These have no
    flow children — the box IS the content — so block-level and out-of-flow (absolute,
@@ -666,7 +744,7 @@ CB=(px py pw ph) using top/left/right/bottom from CS.  When top (or left) is
    percentage-sized image."
   (when (eq (h:dnode-kind node) :element)
     (let ((name (h:dnode-name node)))
-      (cond ((string-equal name "img") (img-box node cs avail-w))
+      (cond ((string-equal name "img") (img-box node cs avail-w avail-h))
             ((string-equal name "svg") (svg-box node cs))
             ((string-equal name "canvas") (canvas-box node cs))
             ((and (string-equal name "object") (object-data-image node))
@@ -704,7 +782,7 @@ this box, if any, carries them along correctly)."
                   (setf (lbox-h lb) (- (+ mfb (used-border cs :b)) (lbox-y lb))))))
             (when (and lb *abs-pending*)
               (let ((cb (pad-box lb cs)))
-                (dolist (p *abs-pending*) (resolve-positioned (car p) cb (cdr p)))))
+                (dolist (p *abs-pending*) (finalize-positioned p cb styles))))
             (values lb adv mt-eff mb-eff mneg)))
         (%layout-core node styles x y avail-w avail-h))))
 
@@ -723,7 +801,7 @@ Returns (values lbox advance-height)."
     (when (or (null cs) (string= (cdisplay cs) "none")) (return-from %layout-core (values nil 0 0 0)))
     ;; replaced elements (img/svg/canvas/object-image) reaching block layout — as a
     ;; block-level or out-of-flow box — are their own content; render and return.
-    (let ((rb (replaced-box node cs avail-w)))
+    (let ((rb (replaced-box node cs avail-w avail-h)))
       (when rb
         ;; REPLACED-BOX builds the box at (0,0) with the bitmap on an inner content
         ;; child at coords relative to it; SHIFT-BOX moves the whole subtree so the
@@ -902,8 +980,8 @@ Returns (values lbox advance-height)."
                    (declare (ignore adv))
                    (when lb
                      (if (string= pos "fixed")
-                         (push (cons lb kcs) *fixed-pending*)
-                         (push (cons lb kcs) *abs-pending*))
+                         (push (list lb k kcs) *fixed-pending*)
+                         (push (list lb k kcs) *abs-pending*))
                      (push lb children))))
                 ((float-p styles k)                                              ; float
                  ;; A float's top margin edge sits at the position the next in-flow
@@ -1708,8 +1786,8 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
                ;; current scroll so they stay pinned to the visible rectangle).
                (icb (list 0 0 width ph))
                (vp  (list 0 scroll-y width vph)))
-          (dolist (p *abs-pending*)   (resolve-positioned (car p) icb (cdr p)))
-          (dolist (p *fixed-pending*) (resolve-positioned (car p) vp (cdr p)))
+          (dolist (p *abs-pending*)   (finalize-positioned p icb styles))
+          (dolist (p *fixed-pending*) (finalize-positioned p vp styles))
           ;; Apply the scroll: shift the whole painted tree up so the anchor
           ;; (and fixed boxes, already placed at scroll-y+offset) land in view.
           (when (and root (plusp scroll-y)) (shift-box root 0 (- scroll-y))))
@@ -2004,7 +2082,10 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
          (when cs
            (cond ((and (css:cstyle-bg-gradient cs) (gradient-visible-p (css:cstyle-bg-gradient cs)))
                   (destructuring-bind (dir from to) (css:cstyle-bg-gradient cs)
-                    (fill-gradient cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) dir (rgb from) (rgb to))))
+                    ;; pass the raw rgba stops (keep the 4th/alpha element) so a
+                    ;; translucent gradient composites over the box instead of
+                    ;; painting opaque black — RGB is just the first three elements.
+                    (fill-gradient cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) dir from to)))
                  ((css:cstyle-background cs)
                   (fill-rect cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) (rgb (css:cstyle-background cs)))))
            ;; CSS background image: over the bg color, under the borders, tiled and
@@ -2016,8 +2097,15 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                  (paint-bg-image-fixed cv lb cs (css:cstyle-bg-image cs))
                  (paint-bg-image cv lb cs (css:cstyle-bg-image cs)))))
          (when (lbox-img lb)
-           (blit-img cv (lbox-img lb) (round (lbox-x lb)) (round (lbox-y lb))
-                     (round (lbox-w lb)) (round (lbox-h lb))))
+           (let ((fit (and cs (css:cstyle-object-fit cs))))
+             (if (and fit (not (string= fit "fill")))
+                 (multiple-value-bind (ox oy ow oh src)
+                     (object-fit-geom fit (img-w (lbox-img lb)) (img-h (lbox-img lb))
+                                      (round (lbox-x lb)) (round (lbox-y lb))
+                                      (round (lbox-w lb)) (round (lbox-h lb)))
+                   (blit-img cv (lbox-img lb) ox oy ow oh src))
+                 (blit-img cv (lbox-img lb) (round (lbox-x lb)) (round (lbox-y lb))
+                           (round (lbox-w lb)) (round (lbox-h lb))))))
          ;; Replaced vector content (inline <svg>, <canvas>): composite over the
          ;; box's background, under its borders.
          (when (lbox-vpaint lb)

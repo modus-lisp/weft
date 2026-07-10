@@ -248,8 +248,16 @@ prelude matches (a bare @media)."
                                  ;; conditions are assumed met (progressive enhancement).
                                  ((member kw '("layer" "supports") :test #'string=)
                                   (collect-rules (1+ j) close))
-                                 ;; @font-face / @keyframes / @page hold descriptors, not
-                                 ;; qualified rules — skip their blocks.
+                                 ;; @font-face holds descriptors (font-family, src,
+                                 ;; font-weight/style), not a qualified rule — capture
+                                 ;; them under the sentinel selector "@font-face" so a
+                                 ;; consumer can fetch+register the web font.  Its
+                                 ;; block parses like a declaration block.
+                                 ((string= kw "font-face")
+                                  (push (make-css-rule :selector "@font-face"
+                                                       :decls (parse-declarations toks (1+ j) close))
+                                        rules))
+                                 ;; @keyframes / @page — skip their blocks.
                                  (t nil))
                                (setf i (1+ close))))
                             (t (setf i (if (< j end) (1+ j) end))))))

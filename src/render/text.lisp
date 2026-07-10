@@ -49,27 +49,75 @@ for `normal`).  ~1.15 for Liberation Sans, vs the flat 1.2 fallback for no face.
     f))
 
 (defvar *registered-faces* (make-hash-table :test 'equal)
-  "family-name (lowercase) -> FACE, from REGISTER-FONT: @font-face web fonts and the
-   Ahem test font.  Consulted before the generic Liberation substitutes.")
+  "(family-lc weight-class slant) -> FACE, from REGISTER-FONT: @font-face web fonts
+   and the Ahem test font.  weight-class is :regular|:bold, slant :roman|:italic.
+   Consulted before the generic Liberation substitutes, so a page's own web font
+   wins over the metric-compatible fallback.")
 
-(defun register-font (family bytes)
-  "Load a font from BYTES (a TTF/OTF octet vector) and register it under FAMILY, so
-   `font-family:FAMILY` resolves to it.  Returns the FACE, or NIL on failure."
+(defun %weight-class (w) (if (and (integerp w) (>= w 600)) :bold :regular))
+(defun %slant-kw (s) (if (member s '(:italic :oblique)) :italic :roman))
+
+(defun register-font (family bytes &key (weight 400) (style :normal))
+  "Load a font from BYTES (a TTF/OTF/WOFF/WOFF2 octet vector) and register it under
+   FAMILY for the given WEIGHT/STYLE, so `font-family:FAMILY` resolves to it.  Returns
+   the FACE, or NIL on failure."
   (handler-case
-      (let ((f (%face-from-font (scribe:open-font bytes))))
-        (setf (gethash (string-downcase family) *registered-faces*) f)
+      (let ((f (%face-from-font (scribe:open-font bytes)))
+            (key (list (string-downcase family) (%weight-class weight) (%slant-kw style))))
+        (setf (gethash key *registered-faces*) f)
         (clrhash *face-cache*)          ; a newly-registered family may satisfy cached misses
         f)
     (error () nil)))
+
+(defun %registered-face (family weight style-kw)
+  "The registered FACE for FAMILY nearest the requested WEIGHT/STYLE-KW: exact
+(weight-class, slant) first, then relaxing slant, then weight, then any registered
+variant of the family.  NIL if the family was never registered."
+  (let ((fam (string-downcase family)) (wc (%weight-class weight)) (sl (%slant-kw style-kw)))
+    (or (gethash (list fam wc sl) *registered-faces*)
+        (gethash (list fam wc :roman) *registered-faces*)
+        (gethash (list fam :regular sl) *registered-faces*)
+        (gethash (list fam :regular :roman) *registered-faces*)
+        (loop for k being the hash-keys of *registered-faces* using (hash-value v)
+              when (string= (first k) fam) return v))))
 
 (defun %build-face (family-list weight style-kw)
   "Resolve a FACE: a registered (@font-face / Ahem) family first, else
    scribe:match-font.  NIL on any failure."
   (or (loop for fam in family-list
-            for r = (gethash (string-downcase fam) *registered-faces*)
+            for r = (%registered-face fam weight style-kw)
             when r return r)
       (handler-case (%face-from-font (scribe:match-font family-list :weight weight :style style-kw))
         (error () nil))))
+
+;;; ---- @font-face web-font loading ------------------------------------------
+(defvar *font-loader* nil
+  "When bound by the embedder, (funcall *FONT-LOADER* url) returns the font-file
+bytes for an absolute @font-face `src` URL (or NIL).  NIL disables web-font
+downloading — text falls back to the bundled faces, as before.")
+
+(defvar *font-face-cache* (make-hash-table :test 'equal)
+  "src-url -> :loaded | :failed, so a re-render (or a repeated @font-face across
+sheets) fetches each web font at most once.")
+
+(defun load-font-faces (sheet)
+  "Fetch and register the @font-face web fonts declared in SHEET through
+*FONT-LOADER*.  A no-op when no loader is bound.  For each face the src URLs are
+tried best-format-first; the first that downloads and decodes is registered for
+that (family, weight, style) and the rest are skipped.  Every fetch is guarded and
+memoized, so a failed or absent font never breaks a render."
+  (when *font-loader*
+    (dolist (face (css:collect-font-faces sheet))
+      (let ((fam (getf face :family)) (weight (getf face :weight)) (style (getf face :style)))
+        (block one
+          (dolist (url (getf face :urls))
+            (case (gethash url *font-face-cache*)
+              (:loaded (return-from one))          ; this face already came from this url
+              (:failed nil)                        ; known-bad url: try the next
+              (t (let ((bytes (ignore-errors (funcall *font-loader* url))))
+                   (if (and bytes (register-font fam bytes :weight weight :style style))
+                       (progn (setf (gethash url *font-face-cache*) :loaded) (return-from one))
+                       (setf (gethash url *font-face-cache*) :failed)))))))))))
 
 (defun resolve-face (family-list weight style-kw)
   "Return the cached FACE for (FAMILY-LIST WEIGHT STYLE-KW), resolving+caching on

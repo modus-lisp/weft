@@ -38,4 +38,5 @@
            #:cstyle-text-transform #:cstyle-visibility
            #:cstyle-letter-spacing #:cstyle-word-spacing #:cstyle-text-indent
            #:cstyle-overflow-wrap #:cstyle-word-break
-           #:cstyle-bg-image #:cstyle-bg-repeat #:cstyle-bg-position #:cstyle-bg-size #:cstyle-bg-attachment))
+           #:cstyle-bg-image #:cstyle-bg-repeat #:cstyle-bg-position #:cstyle-bg-size #:cstyle-bg-attachment
+           #:cstyle-object-fit))

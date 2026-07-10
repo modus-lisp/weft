@@ -258,8 +258,8 @@ alt-text placeholder."
          (cw (let ((sw (css::resolve-size (css:cstyle-width cs) (or avail-w 300)))) (and (numberp sw) sw)))
          ;; A percentage height resolves against the containing-block height AVAIL-H
          ;; when definite (CSS 2.1 10.5) — e.g. a full-cover hero `height:100%` in a
-         ;; fixed-height positioned parent; else it computes to auto (falls to the
-         ;; intrinsic/aspect-ratio height below), NOT a fixed 200px guess.
+         ;; fixed-height positioned parent.  When AVAIL-H is indefinite the legacy
+         ;; 200px basis is kept (unchanged behaviour); only the definite case is new.
          (chh (let ((sh (if (numberp avail-h)
                             (css::resolve-height (css:cstyle-height cs) avail-h)
                             (css::resolve-size (css:cstyle-height cs) 200))))

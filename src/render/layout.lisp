@@ -2053,6 +2053,13 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                       ;; em-box (ascent+descent at font-size) within it.  A
                       ;; visibility:hidden run occupies its space but paints no glyphs.
                       (when (box-visible-p cs)
+                        ;; inline background (e.g. <mark>, a highlighted <span>): paint
+                        ;; the run's box behind its glyphs.  background-color is not
+                        ;; inherited, so a non-nil value here is the run element's own.
+                        (let ((bg (css:cstyle-background cs)))
+                          (when (and bg (or (< (length bg) 4) (plusp (fourth bg))))
+                            (fill-rect cv (round (frag-x it)) (lbox-y lb)
+                                       (max 1 (round (frag-w it))) (lbox-h lb) bg)))
                         (let* ((ul (member "underline" (css:cstyle-text-decoration cs) :test #'string=))
                                (nxt (cadr cell))
                                ;; run the underline across the space into the next

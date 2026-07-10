@@ -113,6 +113,7 @@
       ((string= tag "h6") (setf (cstyle-font-size cs) 11.0 (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 25.0 (cstyle-margin-bottom cs) 25.0))
       ((member tag '("b" "strong") :test #'string=) (setf (cstyle-font-weight cs) 700))
       ((member tag '("a") :test #'string=) (setf (cstyle-color cs) '(0 0 238 1.0) (cstyle-text-decoration cs) '("underline")))
+      ((string= tag "mark") (setf (cstyle-background cs) '(255 255 0 1.0) (cstyle-color cs) '(0 0 0 1.0)))   ; UA highlight
       ((string= tag "img") (setf (cstyle-display cs) "inline-block" (cstyle-background cs) '(228 228 232 1.0)
                                  (cstyle-border-top-width cs) 1.0 (cstyle-border-right-width cs) 1.0
                                  (cstyle-border-bottom-width cs) 1.0 (cstyle-border-left-width cs) 1.0

@@ -7,7 +7,12 @@
 ;;;; a (w*h*4) octet vector, straight-alpha.
 (in-package #:weft.render)
 
-(defstruct img w h rgba)
+(defstruct img w h rgba
+  ;; intrinsic sizing info for an SVG-sourced image (NIL for raster images): the
+  ;; intrinsic width/height (NIL when absent) and ratio (a number, 0, or :infinite),
+  ;; so a consumer can run the CSS default sizing algorithm instead of using the
+  ;; rasterized bitmap size.
+  (sw nil) (sh nil) (sr nil))
 
 ;;; ---- base64 ------------------------------------------------------------
 (defparameter +b64+
@@ -196,7 +201,10 @@ background-filled canvas size so layout at least gets dimensions)."
           (let* ((w (max 1 (round iw))) (h (max 1 (round ih)))
                  (cv (sc:make-rgba-canvas w h)))
             (ignore-errors (st:render-svg-to-canvas root :width w :height h :canvas cv))
-            (rgba-canvas->img cv)))))))
+            (let ((img (rgba-canvas->img cv)))
+              (multiple-value-bind (sw sh sr) (st:svg-intrinsic-dimensions root)
+                (setf (img-sw img) sw (img-sh img) sh (img-sr img) sr))
+              img)))))))
 
 (defun decode-svg-image (uri)
   "Render a data:image/svg+xml URI through stencil to a straight-alpha IMG, or NIL."

@@ -15,4 +15,6 @@
            ;; interactive-shell seam: dispatch trusted UI events into the DOM,
            ;; and pump one frame of the timer/animation clock
            #:dispatch-mouse-event #:dispatch-keyboard-event #:dispatch-simple-event
-           #:pump-timers))
+           #:pump-timers
+           ;; Web Font Loader (WebFontConfig) convention, for the shell to replay
+           #:web-font-config))

@@ -37,13 +37,20 @@ def find_reftests(root, subdir):
             out.append((path, ref, kind))
     return out
 
-def load_gray(png, box=(800, 600)):
+def load_full(png):
     from PIL import Image
-    im = Image.open(png).convert('RGB')
-    W, H = box
-    c = Image.new('RGB', (W, H), (255, 255, 255))
-    c.paste(im.crop((0, 0, min(W, im.width), min(H, im.height))), (0, 0))
-    return c
+    return Image.open(png).convert('RGB')
+
+def pad_common(a, b):
+    """Pad both images (white) to their common bounding size so the FULL rendered
+    page is compared, not just a fixed top-left window — below-fold and right-of-
+    fold divergences count.  Both are rendered by weft at the same width, so this
+    just reconciles differing heights."""
+    from PIL import Image
+    W, H = max(a.width, b.width), max(a.height, b.height)
+    ca = Image.new('RGB', (W, H), (255, 255, 255)); ca.paste(a, (0, 0))
+    cb = Image.new('RGB', (W, H), (255, 255, 255)); cb.paste(b, (0, 0))
+    return ca, cb
 
 def main():
     root = os.path.abspath(sys.argv[1])
@@ -78,7 +85,7 @@ def main():
         if not (os.path.exists(tp) and os.path.exists(rp)):
             nerr += 1; continue
         try:
-            a, b = load_gray(tp), load_gray(rp)
+            a, b = pad_common(load_full(tp), load_full(rp))
             diff = ImageChops.difference(a, b).getbbox()
             identical = diff is None
         except Exception:

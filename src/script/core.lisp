@@ -8,6 +8,14 @@
 ;;;; prototype methods read `this` and recover the live node.
 (in-package #:weft.script)
 
+(defun %split-char (ch s)
+  "Split S on character CH into a list of non-empty substrings."
+  (loop with start = 0 with out = '()
+        for i = (position ch s :start start)
+        do (let ((piece (subseq s start (or i (length s)))))
+             (when (plusp (length piece)) (push piece out)))
+           (if i (setf start (1+ i)) (return (nreverse out)))))
+
 (defstruct (context (:constructor %make-context))
   realm                     ; the shuttle realm (one per document)
   document                  ; the weft DOM document (an h:dnode of kind :document)
@@ -126,3 +134,24 @@
             do (cond ((char= c #\-) (setf up t))
                      (up (write-char (char-upcase c) o) (setf up nil))
                      (t (write-char c o)))))))
+
+;;; ---- Web Font Loader convention -------------------------------------------
+;;; Many themes (WordPress/Jetpack, Typekit) load fonts through the Web Font
+;;; Loader JS library rather than CSS @font-face: an inline script sets a
+;;; `WebFontConfig` global, an async webfont.js reads it, fetches the font CSS,
+;;; injects @font-face and flips the <html> class from `wf-loading` to
+;;; `wf-active` (which the theme's `.wf-active .title{font-family:…}` rules gate
+;;; on).  The library's font *watcher* can never observe activation in a headless
+;;; render, so it hangs at `wf-loading`; the embedder replays the load instead.
+
+(defun web-font-config (ctx)
+  "Read WebFontConfig from CTX's realm.  Returns (values API-URL FAMILIES) — FAMILIES
+a list of Google-font specs (e.g. \"Fondamento:r:latin,latin-ext\") — or NIL when the
+page declares no such config."
+  (let ((s (ignore-errors
+             (js:eval-script (context-realm ctx)
+               "(function(){try{var c=(typeof WebFontConfig!=='undefined')&&WebFontConfig;if(!c||!c.google||!c.google.families||!c.google.families.length)return '';return (c.api_url||'https://fonts.googleapis.com/css')+String.fromCharCode(1)+c.google.families.join(String.fromCharCode(2));}catch(e){return ''}})()"))))
+    (when (and (stringp s) (plusp (length s)))
+      (let ((sep (position (code-char 1) s)))
+        (when sep
+          (values (subseq s 0 sep) (%split-char (code-char 2) (subseq s (1+ sep)))))))))

@@ -1892,25 +1892,57 @@ within AVAIL (= box-dim - image-dim).  Honors px and % (and 0); other units 0."
               (t 0)))
       0))
 
-(defun bg-tile-size (bs iw ih bw bh)
-  "Effective background tile (width height) in px for background-size BS given the
-   image's intrinsic IW/IH and the box's content BW/BH.  BS is NIL(auto), :contain,
-   :cover, or (w-spec h-spec); an :auto component preserves the intrinsic aspect ratio."
-  (labels ((r (x) (max 1 (round x)))
-           (comp (spec avail) (cond ((numberp spec) spec)
-                                    ((and (consp spec) (eq (first spec) :percent))
-                                     (* avail (/ (second spec) 100.0)))
-                                    (t nil))))            ; :auto
-    (cond ((or (null bs) (<= iw 0) (<= ih 0)) (values (r iw) (r ih)))
-          ((eq bs :contain) (let ((s (min (/ bw iw) (/ bh ih)))) (values (r (* iw s)) (r (* ih s)))))
-          ((eq bs :cover)   (let ((s (max (/ bw iw) (/ bh ih)))) (values (r (* iw s)) (r (* ih s)))))
-          ((consp bs)
-           (let ((w (comp (first bs) bw)) (h (comp (second bs) bh)))
-             (cond ((and w h) (values (r w) (r h)))
-                   (w (values (r w) (r (* ih (/ w iw)))))
-                   (h (values (r (* iw (/ h ih))) (r h)))
-                   (t (values (r iw) (r ih))))))
-          (t (values (r iw) (r ih))))))
+(defun bg-tile-size (bs img bw bh)
+  "Concrete background tile (width height) in px for IMG in a BW×BH positioning area
+under background-size BS (NIL=auto | :contain | :cover | (w-spec h-spec)), via the
+CSS Images §5.3 default sizing algorithm.  An SVG carries its intrinsic width/height/
+ratio (any absent) which drives the auto cases; a raster's ratio is its pixel w/h, so
+raster backgrounds size exactly as before.  A dimension may round to 0 (an empty tile
+for a degenerate ratio, e.g. a zero-height viewBox); the painter skips those."
+  (let* ((rw (img-w img)) (rh (img-h img))
+         ;; intrinsic dimensions: an SVG's own (may be NIL); a raster's pixel size.
+         (iw (if (img-sr img) (img-sw img) (and (plusp rw) rw)))
+         (ih (if (img-sr img) (img-sh img) (and (plusp rh) rh)))
+         (ir (cond ((img-sr img))                                    ; SVG ratio: number | 0 | :infinite
+                   ((and (plusp rw) (plusp rh)) (/ (float rw 1d0) rh))
+                   (t nil)))
+         (ratio (and (numberp ir) (plusp ir) ir)))                   ; a usable numeric ratio (>0)
+    ;; a single tile is bounded: cover/contain with a degenerate ratio can compute a
+    ;; tile far larger than the paint area (only a slice of which is ever visible), so
+    ;; cap each dimension — enough to exceed any real box, small enough to blit fast.
+    (labels ((r (x) (max 0 (min 16384 (round (max 0 x)))))
+             (defc (spec avail) (cond ((numberp spec) (float spec 1d0))
+                                      ((and (consp spec) (eq (first spec) :percent))
+                                       (* avail (/ (second spec) 100.0)))
+                                      (t nil)))            ; :auto -> NIL
+             (both-auto ()
+               (cond ((and iw ih) (values iw ih))                    ; both intrinsic (rasters land here)
+                     (ratio (cond (iw (values iw (/ iw ratio)))
+                                  (ih (values (* ih ratio) ih))
+                                  (t (let ((w (min bw (* bh ratio)))) (values w (/ w ratio)))))) ; contain the ratio
+                     (iw (values iw bh))
+                     (ih (values bw ih))
+                     ((eql ir 0) (values 0 bh))            ; zero-width ratio -> empty width
+                     ((eq ir :infinite) (values bw 0))     ; zero-height ratio -> empty height
+                     (t (values bw bh)))))                 ; no intrinsic info -> the whole area
+      (multiple-value-bind (w h)
+          (cond
+            ((eq bs :contain) (if ratio (let ((w (min bw (* bh ratio)))) (values w (/ w ratio))) (both-auto)))
+            ((eq bs :cover)   (if ratio (let ((w (max bw (* bh ratio)))) (values w (/ w ratio))) (both-auto)))
+            ((consp bs)
+             (let ((sw (defc (first bs) bw)) (sh (defc (second bs) bh)))
+               (cond ((and sw sh) (values sw sh))
+                     (sw (cond (ratio (values sw (/ sw ratio)))
+                               (ih (values sw ih))
+                               ((or (eq ir :infinite) (eql ir 0)) (values sw 0)) ; degenerate ratio -> empty
+                               (t (values sw bh))))
+                     (sh (cond (ratio (values (* sh ratio) sh))
+                               (iw (values iw sh))
+                               ((or (eql ir 0) (eq ir :infinite)) (values 0 sh)) ; degenerate ratio -> empty
+                               (t (values bw sh))))
+                     (t (both-auto)))))
+            (t (both-auto)))
+        (values (r w) (r h))))))
 
 (defun paint-bg-image (cv lb cs url)
   "Decode URL (data: URI or network image) and tile it across LB's padding box,
@@ -1933,12 +1965,14 @@ paints nothing (the bg color shows through)."
              (px1 (round (- (+ (lbox-x lb) (lbox-w lb)) (used-border cs :r))))
              (py1 (round (- (+ (lbox-y lb) (lbox-h lb)) (used-border cs :b)))))
         (multiple-value-bind (iw ih)   ; effective tile size after background-size
-            (bg-tile-size (css:cstyle-bg-size cs) iw0 ih0 (- px1 px0) (- py1 py0))
+            (bg-tile-size (css:cstyle-bg-size cs) img (- px1 px0) (- py1 py0))
           (let* ((pos (css:cstyle-bg-position cs))
                  (offx (if pos (bg-pos-offset (first pos) (- (- px1 px0) iw)) 0))
                  (offy (if pos (bg-pos-offset (second pos) (- (- py1 py0) ih)) 0))
                  (ox (+ px0 offx)) (oy (+ py0 offy)))
-            (when (and (> px1 px0) (> py1 py0))
+            ;; a degenerate tile (0 wide or tall — e.g. a zero-height-ratio SVG under
+            ;; `background-size` with an auto axis) paints nothing.
+            (when (and (> px1 px0) (> py1 py0) (> iw 0) (> ih 0))
               ;; clip tiles to the padding box so they never bleed out
               (let ((*clip* (clip-intersect px0 py0 px1 py1)))
                 ;; common case: an intrinsic 1x1 image filling the box — solid rect.
@@ -1946,15 +1980,20 @@ paints nothing (the bg color shows through)."
                     (let ((r (aref (img-rgba img) 0)) (g (aref (img-rgba img) 1)) (b (aref (img-rgba img) 2)))
                       (fill-rect cv (if repx px0 ox) (if repy py0 oy)
                                  (if repx (- px1 px0) 1) (if repy (- py1 py0) 1) (list r g b)))
-                    ;; general tiling, each tile scaled to the effective (IW IH)
+                    ;; general tiling, each tile scaled to the effective (IW IH).
+                    ;; A tile-count cap bounds a pathological fine tiling (a tiny tile
+                    ;; over a large area) so a degenerate background can't stall paint.
                     (let ((startx (if repx (- ox (* iw (ceiling (- ox px0) iw))) ox))
-                          (starty (if repy (- oy (* ih (ceiling (- oy py0) ih))) oy)))
-                      (loop for ty = starty then (+ ty ih)
-                            while (and (< ty py1) (or repy (= ty starty))) do
-                        (loop for tx = startx then (+ tx iw)
-                              while (and (< tx px1) (or repx (= tx startx))) do
-                          (when (and (> (+ tx iw) px0) (> (+ ty ih) py0))
-                            (blit-img cv img tx ty iw ih))))))))))))))
+                          (starty (if repy (- oy (* ih (ceiling (- oy py0) ih))) oy))
+                          (budget 200000))
+                      (block tiles
+                        (loop for ty = starty then (+ ty ih)
+                              while (and (< ty py1) (or repy (= ty starty))) do
+                          (loop for tx = startx then (+ tx iw)
+                                while (and (< tx px1) (or repx (= tx startx))) do
+                            (when (and (> (+ tx iw) px0) (> (+ ty ih) py0))
+                              (blit-img cv img tx ty iw ih)
+                              (when (<= (decf budget) 0) (return-from tiles))))))))))))))))
 
 (defun paint-bg-image-fixed (cv lb cs url)
   "Tile URL's image as a background-attachment:fixed background: the tile grid is

@@ -20,25 +20,47 @@
 (defun strip-query (url)
   (subseq url 0 (or (position #\? url) (position #\# url) (length url))))
 
+(defun resolve-local-path (url test-dir wpt-root)
+  "Resolve a subresource URL to a local file path: strip a file:// scheme, then a
+root-relative /… resolves against WPT-ROOT, else relative to TEST-DIR."
+  (let* ((clean (strip-query url))
+         (clean (if (and (>= (length clean) 7) (string-equal (subseq clean 0 7) "file://"))
+                    (subseq clean 7) clean)))
+    (cond ((and (plusp (length clean)) (char= (char clean 0) #\/) (probe-file clean)) clean)
+          ((and (plusp (length clean)) (char= (char clean 0) #\/)) (merge-pathnames (subseq clean 1) wpt-root))
+          (t (merge-pathnames clean test-dir)))))
+
 (defun file-loader (test-dir wpt-root)
-  "A subresource loader: resolve URL to a local file (root-relative /… against
-   WPT-ROOT, else relative to TEST-DIR) and serve it as :css / :text."
+  "A subresource loader for CSS/text: resolve URL to a local file and serve it."
   (lambda (ctx url) (declare (ignore ctx))
     (handler-case
-        (let* ((clean (strip-query url))
-               ;; weft resolves a relative href against the file:// base into a full
-               ;; file:// URL — strip the scheme back to an absolute filesystem path.
-               (clean (if (and (>= (length clean) 7) (string-equal (subseq clean 0 7) "file://"))
-                          (subseq clean 7) clean))
-               (path (cond ((and (plusp (length clean)) (char= (char clean 0) #\/) (probe-file clean))
-                            clean)                                        ; absolute path (relative-resolved)
-                           ((and (plusp (length clean)) (char= (char clean 0) #\/))
-                            (merge-pathnames (subseq clean 1) wpt-root))  ; root-relative -> WPT root
-                           (t (merge-pathnames clean test-dir))))
+        (let* ((path (resolve-local-path url test-dir wpt-root))
                (content (and (probe-file path) (read-file-string path))))
           (if content
-              (values (if (search ".css" clean :test #'char-equal) :css :text) content)
+              (values (if (search ".css" url :test #'char-equal) :css :text) content)
               (values nil nil)))
+      (error () (values nil nil)))))
+
+(defun read-file-bytes (path)
+  (with-open-file (in path :element-type '(unsigned-byte 8) :if-does-not-exist nil)
+    (and in (let ((v (make-array (file-length in) :element-type '(unsigned-byte 8)))) (read-sequence v in) v))))
+
+(defun mime-for (path)
+  (let ((p (string-downcase (namestring path))))
+    (cond ((search ".png" p) "image/png") ((or (search ".jpg" p) (search ".jpeg" p)) "image/jpeg")
+          ((search ".gif" p) "image/gif") ((search ".svg" p) "image/svg+xml")
+          ((search ".webp" p) "image/webp") ((search ".bmp" p) "image/bmp")
+          (t "application/octet-stream"))))
+
+(defun file-image-loader (test-dir wpt-root)
+  "An (url) -> (values bytes mime) loader for <img>, reading the image file's raw
+bytes from disk so weft decodes it (or at least learns its intrinsic size) — the
+same content the reference sees, so image reftests compare like-for-like."
+  (lambda (url)
+    (handler-case
+        (let* ((path (resolve-local-path url test-dir wpt-root))
+               (bytes (and (probe-file path) (read-file-bytes path))))
+          (if bytes (values bytes (mime-for path)) (values nil nil)))
       (error () (values nil nil)))))
 
 (defun render-one (html-path out-png wpt-root)
@@ -46,9 +68,11 @@
          (test-dir (directory-namestring (truename html-path)))
          (base (format nil "file://~a" (namestring (truename html-path)))))
     (handler-case
-        (s:render-scripted-to-png html "" 800 out-png
-                                  :min-height 600 :max-height 2000
-                                  :base base :loader (file-loader test-dir wpt-root))
+        ;; bind the <img> loader for the whole render so images load from disk.
+        (let ((r:*image-loader* (file-image-loader test-dir wpt-root)))
+          (s:render-scripted-to-png html "" 800 out-png
+                                    :min-height 600 :max-height 2000
+                                    :base base :loader (file-loader test-dir wpt-root)))
       (error (e) (format *error-output* "~&render error ~a: ~a~%" html-path e) nil))))
 
 (defun split-tabs (line)

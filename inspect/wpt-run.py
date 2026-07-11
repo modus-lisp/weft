@@ -79,6 +79,7 @@ def main():
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=here)
 
     from PIL import ImageChops
+    rank = '--rank' in sys.argv        # sort failures by how CLOSE weft got (diff pixels)
     npass = nfail = nerr = 0
     fails = []
     for (t, r, kind, tp, rp) in meta:
@@ -86,8 +87,9 @@ def main():
             nerr += 1; continue
         try:
             a, b = pad_common(load_full(tp), load_full(rp))
-            diff = ImageChops.difference(a, b).getbbox()
-            identical = diff is None
+            dimg = ImageChops.difference(a, b)
+            bbox = dimg.getbbox()
+            identical = bbox is None
         except Exception:
             nerr += 1; continue
         ok = identical if kind == 'match' else (not identical)
@@ -95,16 +97,25 @@ def main():
             npass += 1
         else:
             nfail += 1
-            fails.append((os.path.relpath(t, root), kind))
+            # diff magnitude: count of differing pixels (0 histogram bin = matching).
+            # A near-miss (few differing pixels) is one small bug from a true pass.
+            npix = (sum(dimg.convert('L').histogram()[1:]) if kind == 'match' else -1)
+            fails.append((os.path.relpath(t, root), kind, npix, bbox))
     total = npass + nfail
     print(f"\n=== {subdir} ===")
     print(f"  PASS {npass}/{total}  ({100*npass/max(total,1):.1f}%)   FAIL {nfail}   render-err {nerr}")
     if fails:
-        print("  sample failures:")
-        for f, k in fails[:25]:
-            print(f"    [{k}] {f}")
+        if rank:
+            near = sorted((f for f in fails if f[2] >= 0), key=lambda f: f[2])
+            print("  near-misses (fewest differing pixels first):")
+            for f, k, npix, bbox in near[:40]:
+                print(f"    {npix:>8} px  bbox={bbox}  {f}")
+        else:
+            print("  sample failures:")
+            for f, k, npix, bbox in fails[:25]:
+                print(f"    [{k}] {f}")
     if save_fails:
-        open(os.path.join(here, 'wpt-fails.txt'), 'w').write('\n'.join(f for f, _ in fails))
+        open(os.path.join(here, 'wpt-fails.txt'), 'w').write('\n'.join(f[0] for f in fails))
 
 if __name__ == '__main__':
     main()

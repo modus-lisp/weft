@@ -43,6 +43,7 @@
   (min-height 0.0) (max-height :none)
   (cursor "auto")     ; CSS cursor keyword (inherited)
   (text-transform "none") ; none | capitalize | uppercase | lowercase (inherited)
+  (hyphens "manual")  ; none | manual | auto (inherited); auto = automatic hyphenation
   (visibility "visible")  ; visible | hidden | collapse (inherited); hidden keeps the box but paints nothing
   (letter-spacing 0.0)    ; extra px after each glyph (inherited)
   (word-spacing 0.0)      ; extra px at each inter-word space (inherited)
@@ -73,6 +74,7 @@
             (cstyle-white-space cs) (cstyle-white-space parent-cs)
             (cstyle-cursor cs) (cstyle-cursor parent-cs)
             (cstyle-text-transform cs) (cstyle-text-transform parent-cs)
+            (cstyle-hyphens cs) (cstyle-hyphens parent-cs)
             (cstyle-visibility cs) (cstyle-visibility parent-cs)
             (cstyle-letter-spacing cs) (cstyle-letter-spacing parent-cs)
             (cstyle-word-spacing cs) (cstyle-word-spacing parent-cs)
@@ -247,10 +249,14 @@ IS the multiplier; `normal` -> :NORMAL; a <percentage> -> its fraction; a <lengt
                      (when (and (numberp px) (plusp font-size)) (/ px font-size)))))))))
 
 (defun parse-size (text font-size auto-ok)
-  "Parse a width/height value -> px number | :auto | (:percent N) | NIL."
+  "Parse a width/height value -> px number | :auto | (:percent N) |
+:min-content | :max-content | :fit-content | NIL."
   (let ((tt (string-downcase (string-trim '(#\Space) text))))
     (cond
       ((and auto-ok (string= tt "auto")) :auto)
+      ((string= tt "min-content") :min-content)
+      ((string= tt "max-content") :max-content)
+      ((or (string= tt "fit-content") (string= tt "-webkit-fit-content")) :fit-content)
       ((and (plusp (length tt)) (char= (char tt (1- (length tt))) #\%))
        (let ((n (ignore-errors (read-from-string (subseq tt 0 (1- (length tt))))))) (when (numberp n) (list :percent (float n)))))
       (t (resolve-len tt font-size)))))
@@ -536,6 +542,8 @@ Ignores the system-font keywords (caption/icon/...)."
          (let ((v (parse-value "cursor" value))) (when (stringp v) (setf (cstyle-cursor cs) v))))
         ((string= prop "text-transform")
          (let ((v (parse-value "text-transform" value))) (when (stringp v) (setf (cstyle-text-transform cs) v))))
+        ((string= prop "hyphens")
+         (let ((v (parse-value "hyphens" value))) (when (stringp v) (setf (cstyle-hyphens cs) v))))
         ((string= prop "visibility")
          (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
            (when (member v '("visible" "hidden" "collapse") :test #'string=)

@@ -239,6 +239,24 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                      (and v (plusp (length (string-trim '(#\Space) v))) v))))
     (or (a "src") (%srcset-url (a "srcset")) (a "data-src") (%srcset-url (a "data-srcset")))))
 
+(defun replaced-ratio (cs iw ih)
+  "The width/height ratio a replaced element sizes by: its explicit CSS aspect-ratio
+if set (CSS Sizing 4), else the intrinsic ratio IW/IH, else NIL."
+  (or (css:cstyle-aspect-ratio cs)
+      (and iw ih (plusp iw) (plusp ih) (/ (float iw 1d0) ih))))
+
+(defun replaced-size (cs cw chh iw ih)
+  "Concrete (values W H) of a replaced element from its definite CSS width CW /
+height CHH (px, or NIL=auto) and intrinsic IW×IH: a definite dimension derives the
+other through the aspect-ratio (explicit, else intrinsic); both auto -> intrinsic."
+  (let ((ratio (replaced-ratio cs iw ih)))
+    (cond ((and cw chh) (values cw chh))
+          ((and cw ratio) (values cw (/ cw ratio)))
+          ((and chh ratio) (values (* chh ratio) chh))
+          (cw (values cw (or ih chh 0)))
+          (chh (values (or iw cw 0) chh))
+          (t (values (or iw 0) (or ih 0))))))
+
 (defun img-box (node cs &optional avail-w avail-h)
   "An atomic replaced box for <img>, sized to its BORDER box: the layout footprint
 is the content WxH plus its border (and padding) widths, with the decoded image (or
@@ -405,24 +423,25 @@ The subtree is rendered through stencil+gesso during paint."
   (let ((root (dnode->svg-node node)))
     (multiple-value-bind (iw ih) (st:svg-intrinsic-size root)
       (let* ((cw (let ((s (css::resolve-size (css:cstyle-width cs) 300))) (and (numberp s) s)))
-             (chh (let ((s (css::resolve-size (css:cstyle-height cs) 150))) (and (numberp s) s)))
-             (w (max 1 (round (or cw iw)))) (h (max 1 (round (or chh ih)))))
-        (make-lbox :x 0 :y 0 :w w :h h :style cs :node node :kind :block
-                   :vpaint (lambda (cv x y bw bh) (declare (ignore bw bh))
-                             (paint-svg-box cv x y w h root)))))))
+             (chh (let ((s (css::resolve-size (css:cstyle-height cs) 150))) (and (numberp s) s))))
+        (multiple-value-bind (rw rh) (replaced-size cs cw chh iw ih)
+          (let ((w (max 1 (round rw))) (h (max 1 (round rh))))
+            (make-lbox :x 0 :y 0 :w w :h h :style cs :node node :kind :block
+                       :vpaint (lambda (cv x y bw bh) (declare (ignore bw bh))
+                                 (paint-svg-box cv x y w h root)))))))))
 
 (defun canvas-box (node cs)
   "An atomic replaced box for <canvas>: sized to its width/height attrs (default
 300x150).  Its gesso-backed buffer, drawn by page script, is blitted during paint."
-  (let* ((w (max 1 (or (img-attr-num node "width")
-                       (let ((s (css::resolve-size (css:cstyle-width cs) 300))) (and (numberp s) (round s)))
-                       300)))
-         (h (max 1 (or (img-attr-num node "height")
-                       (let ((s (css::resolve-size (css:cstyle-height cs) 150))) (and (numberp s) (round s)))
-                       150))))
-    (make-lbox :x 0 :y 0 :w w :h h :style cs :node node :kind :block
-               :vpaint (lambda (cv x y bw bh) (declare (ignore bw bh))
-                         (paint-canvas-box cv x y node)))))
+  (let* ((iw (or (img-attr-num node "width") 300))
+         (ih (or (img-attr-num node "height") 150))
+         (cw (let ((s (css::resolve-size (css:cstyle-width cs) nil))) (and (numberp s) s)))
+         (chh (let ((s (css::resolve-size (css:cstyle-height cs) nil))) (and (numberp s) s))))
+    (multiple-value-bind (rw rh) (replaced-size cs cw chh iw ih)
+      (let ((w (max 1 (round rw))) (h (max 1 (round rh))))
+        (make-lbox :x 0 :y 0 :w w :h h :style cs :node node :kind :block
+                   :vpaint (lambda (cv x y bw bh) (declare (ignore bw bh))
+                             (paint-canvas-box cv x y node)))))))
 
 (defun make-pseudo-node (content)
   "A synthetic inline element carrying generated CONTENT as its only text child,
@@ -2245,6 +2264,16 @@ data: URIs are honoured (no network); base64 and percent-encoded payloads both."
     (and (string-equal (h:dnode-name n) "link") rel
          (member "stylesheet" (css::split-ws (string-downcase rel)) :test #'string=))))
 
+(defun %strip-cdata (s)
+  "Strip an XHTML `<![CDATA[ … ]]>` wrapper from <style> text: parsed as RAWTEXT
+the markers survive as literal characters and would corrupt the first selector."
+  (let ((s (or s "")))
+    (flet ((del (marker str)
+             (loop for p = (search marker str) while p do
+               (setf str (concatenate 'string (subseq str 0 p) (subseq str (+ p (length marker))))))
+             str))
+      (del "]]>" (del "<![CDATA[" s)))))
+
 (defun collect-stylesheets (doc)
   "Concatenate author CSS in document order: <style> text and the CSS of
 <link rel=stylesheet> data: URIs (so the later source order of an appendix sheet
@@ -2255,7 +2284,7 @@ wins cascade ties, as a browser would)."
                  (cond
                    ((string= (h:dnode-name n) "style")
                     (loop for c across (h:dnode-children n) when (eq (h:dnode-kind c) :text)
-                          do (write-string (h:dnode-data c) o) (terpri o)))
+                          do (write-string (%strip-cdata (h:dnode-data c)) o) (terpri o)))
                    ((link-rel-stylesheet-p n)
                     (let ((css (link-stylesheet-css
                                 (cdr (assoc "href" (h:dnode-attrs n) :test #'string-equal)))))

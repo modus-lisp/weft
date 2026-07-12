@@ -149,7 +149,13 @@
       ((and auto-ok (string= tt "auto")) :auto)
       ((string= tt "0") 0.0)
       ((and (> (length tt) 5) (string= (subseq tt 0 5) "calc("))
-       (eval-calc (string-trim '(#\Space) (subseq tt 5 (1- (length tt)))) font-size))
+       (multiple-value-bind (px pct)
+           (eval-calc (string-trim '(#\Space) (subseq tt 5 (1- (length tt)))) font-size)
+         ;; a pure length collapses to px now; a percentage-bearing calc stays a
+         ;; deferred (:calc px pct) form that RESOLVE-SIZE/-HEIGHT finish at layout.
+         (cond ((null px) nil)
+               ((zerop pct) px)
+               (t (list :calc px pct)))))
       (t (let ((v (parse-value "length" tt)))
            (if (and (listp v) (= 2 (length v)))
                (let ((num (float (first v))) (unit (second v)))
@@ -204,32 +210,45 @@ operand is subtraction."
     (nreverse toks)))
 
 (defun eval-calc (inner font-size)
-  "Evaluate a (flat, unnested) calc() interior INNER to px, or NIL.  Operands are
-resolved to px (a unitless number stays a scalar for * and /); * and / bind
-tighter than + and - (CSS Values §10)."
-  (let ((seq (mapcar (lambda (tk)
-                       (cond ((member tk '("+" "-" "*" "/") :test #'string=) tk)
-                             ((and (plusp (length tk))
-                                   (every (lambda (c) (or (digit-char-p c) (member c '(#\. #\-)))) tk))
-                              (or (ignore-errors (float (read-from-string tk))) :bad))
-                             (t (let ((v (resolve-len tk font-size))) (if (numberp v) v :bad)))))
-                     (calc-tokenize inner))))
-    (when (and seq (every (lambda (x) (or (numberp x) (stringp x))) seq)
-               (notany (lambda (x) (eq x :bad)) seq))
-      (labels ((reduce-ops (s ops)
+  "Evaluate a flat, unnested calc() interior INNER to a linear length form:
+(values PX PCT), the value being PX plus PCT% of the containing block (PCT 0 for a
+pure length).  Percentages stay symbolic so they resolve at layout against the real
+basis.  A scalar (unitless number) multiplies/divides a length; length*length or
+number+length is invalid (NIL).  * and / bind tighter than + and - (Values §10)."
+  (labels ((operand (tk)
+             ;; a scalar NUMBER, or a length form (PX . PCT), or :bad
+             (cond ((and (plusp (length tk)) (char= (char tk (1- (length tk))) #\%))
+                    (let ((n (ignore-errors (read-from-string (subseq tk 0 (1- (length tk)))))))
+                      (if (realp n) (cons 0.0 (float n)) :bad)))
+                   ((every (lambda (c) (or (digit-char-p c) (member c '(#\. #\-)))) tk)
+                    (let ((n (ignore-errors (read-from-string tk)))) (if (realp n) (float n) :bad)))
+                   (t (let ((v (resolve-len tk font-size))) (if (numberp v) (cons (float v) 0.0) :bad)))))
+           (mul (a b) (cond ((and (numberp a) (numberp b)) (* a b))
+                            ((and (consp a) (numberp b)) (cons (* (car a) b) (* (cdr a) b)))
+                            ((and (numberp a) (consp b)) (cons (* a (car b)) (* a (cdr b))))
+                            (t :bad)))
+           (dvd (a b) (cond ((and (numberp a) (numberp b)) (if (zerop b) 0.0 (/ a b)))
+                            ((and (consp a) (numberp b) (not (zerop b))) (cons (/ (car a) b) (/ (cdr a) b)))
+                            (t :bad)))
+           (pls (a b s) (cond ((and (numberp a) (numberp b)) (+ a (* s b)))
+                              ((and (consp a) (consp b)) (cons (+ (car a) (* s (car b))) (+ (cdr a) (* s (cdr b)))))
+                              (t :bad))))
+    (let ((seq (mapcar (lambda (tk) (if (member tk '("+" "-" "*" "/") :test #'string=) tk (operand tk)))
+                       (calc-tokenize inner))))
+      (when (and seq (notany (lambda (x) (eq x :bad)) seq))
+        (flet ((pass (s ops fn)
                  (loop for pos = (position-if (lambda (x) (member x ops :test #'equal)) s)
                        while (and pos (> pos 0) (< pos (1- (length s)))) do
-                         (let ((a (nth (1- pos) s)) (op (nth pos s)) (b (nth (1+ pos) s)))
-                           (unless (and (numberp a) (numberp b)) (return-from reduce-ops nil))
-                           (setf s (append (subseq s 0 (1- pos))
-                                           (list (cond ((string= op "*") (* a b))
-                                                       ((string= op "/") (if (zerop b) 0.0 (/ a b)))
-                                                       ((string= op "+") (+ a b))
-                                                       (t (- a b))))
-                                           (subseq s (+ pos 2))))))
-                 s))
-        (let ((s (reduce-ops (reduce-ops seq '("*" "/")) '("+" "-"))))
-          (and s (= 1 (length s)) (numberp (first s)) (float (first s))))))))
+                         (let ((r (funcall fn (nth (1- pos) s) (nth pos s) (nth (1+ pos) s))))
+                           (when (eq r :bad) (return-from eval-calc nil))
+                           (setf s (append (subseq s 0 (1- pos)) (list r) (subseq s (+ pos 2)))))
+                       finally (return s))))
+          (let* ((s (pass seq '("*" "/") (lambda (a op b) (if (string= op "*") (mul a b) (dvd a b)))))
+                 (s (pass s '("+" "-") (lambda (a op b) (pls a b (if (string= op "+") 1 -1))))))
+            (when (and s (= 1 (length s)))
+              (let ((v (first s)))
+                (cond ((consp v) (values (float (car v)) (float (cdr v))))
+                      ((numberp v) (values (float v) 0.0)))))))))))
 
 (defun line-height-multiplier (value font-size)
   "Parse a line-height VALUE into a multiplier of FONT-SIZE (weft stores
@@ -287,6 +306,8 @@ containing block it computes to auto (NIL), per CSS 2.1 10.2/10.5."
   (cond ((numberp spec) spec)
         ((and (consp spec) (eq (first spec) :percent) (numberp avail))
          (* avail (/ (second spec) 100.0)))
+        ((and (consp spec) (eq (first spec) :calc) (numberp avail))
+         (+ (second spec) (* avail (/ (third spec) 100.0))))
         (t nil)))
 
 (defun resolve-height (spec avail-h)
@@ -296,6 +317,8 @@ otherwise it computes to auto (NIL).  A plain px number resolves to itself."
   (cond ((numberp spec) spec)
         ((and (consp spec) (eq (first spec) :percent) (numberp avail-h))
          (* avail-h (/ (second spec) 100.0)))
+        ((and (consp spec) (eq (first spec) :calc) (numberp avail-h))
+         (+ (second spec) (* avail-h (/ (third spec) 100.0))))
         (t nil)))
 
 (defun resolve-min-height (spec avail-h)
@@ -304,6 +327,8 @@ against AVAIL-H if definite, else computes to 0."
   (cond ((numberp spec) spec)
         ((and (consp spec) (eq (first spec) :percent))
          (if (numberp avail-h) (* avail-h (/ (second spec) 100.0)) 0.0))
+        ((and (consp spec) (eq (first spec) :calc))
+         (+ (second spec) (if (numberp avail-h) (* avail-h (/ (third spec) 100.0)) 0.0)))
         (t 0.0)))
 
 (defun resolve-max-height (spec avail-h)
@@ -312,6 +337,8 @@ against AVAIL-H if definite, else computes to none (NIL = no ceiling)."
   (cond ((numberp spec) spec)
         ((and (consp spec) (eq (first spec) :percent) (numberp avail-h))
          (* avail-h (/ (second spec) 100.0)))
+        ((and (consp spec) (eq (first spec) :calc) (numberp avail-h))
+         (+ (second spec) (* avail-h (/ (third spec) 100.0))))
         (t nil)))
 
 (defun resolve-color (text)

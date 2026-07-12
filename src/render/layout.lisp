@@ -335,8 +335,8 @@ alt-text placeholder."
                     cs))
          (bl (used-border style :l)) (br (used-border style :r))
          (bt (used-border style :t)) (bb (used-border style :b))
-         (pl (max 0 (css:cstyle-padding-left style))) (pr (max 0 (css:cstyle-padding-right style)))
-         (pt (max 0 (css:cstyle-padding-top style))) (pb (max 0 (css:cstyle-padding-bottom style)))
+         (pl (max 0 (css::resolve-pad (css:cstyle-padding-left style) nil))) (pr (max 0 (css::resolve-pad (css:cstyle-padding-right style) nil)))
+         (pt (max 0 (css::resolve-pad (css:cstyle-padding-top style) nil))) (pb (max 0 (css::resolve-pad (css:cstyle-padding-bottom style) nil)))
          ;; Inner content box holds the decoded pixels (or alt text); the outer
          ;; box paints the background + border around it, so strip both here.
          (inner (let ((c (css::copy-cstyle style)))
@@ -403,8 +403,8 @@ and borders paint behind/around the image."
   (let* ((iw (img-w decoded)) (ih (img-h decoded))
          (bl (used-border cs :l)) (br (used-border cs :r))
          (bt (used-border cs :t)) (bb (used-border cs :b))
-         (pl (max 0 (css:cstyle-padding-left cs))) (pr (max 0 (css:cstyle-padding-right cs)))
-         (pt (max 0 (css:cstyle-padding-top cs))) (pb (max 0 (css:cstyle-padding-bottom cs)))
+         (pl (max 0 (css::resolve-pad (css:cstyle-padding-left cs) nil))) (pr (max 0 (css::resolve-pad (css:cstyle-padding-right cs) nil)))
+         (pt (max 0 (css::resolve-pad (css:cstyle-padding-top cs) nil))) (pb (max 0 (css::resolve-pad (css:cstyle-padding-bottom cs) nil)))
          (inner (let ((c (css::copy-cstyle cs)))
                   (setf (css:cstyle-background c) nil (css:cstyle-bg-image c) nil
                         (css:cstyle-bg-gradient c) nil
@@ -940,8 +940,8 @@ Returns (values lbox advance-height)."
         (return-from %layout-core (values rb (lbox-h rb) 0 0 0))))
     (let* ((mt (css:cstyle-margin-top cs)) (mb (css:cstyle-margin-bottom cs))
            (ml (css:cstyle-margin-left cs)) (mr (css:cstyle-margin-right cs))
-           (pt (css:cstyle-padding-top cs)) (pb (css:cstyle-padding-bottom cs))
-           (pl (css:cstyle-padding-left cs)) (pr (css:cstyle-padding-right cs))
+           (pt (css::resolve-pad (css:cstyle-padding-top cs) avail-w)) (pb (css::resolve-pad (css:cstyle-padding-bottom cs) avail-w))
+           (pl (css::resolve-pad (css:cstyle-padding-left cs) avail-w)) (pr (css::resolve-pad (css:cstyle-padding-right cs) avail-w))
            (bt (used-border cs :t)) (bb (used-border cs :b))
            (bl (used-border cs :l)) (br (used-border cs :r))
            (border-box (string= (css:cstyle-box-sizing cs) "border-box"))
@@ -966,8 +966,7 @@ Returns (values lbox advance-height)."
            ;; (auto height is indefinite, so child percentage heights -> auto).
            (child-avail-h (when (numberp exp-h)
                             (max 0 (if (string= (css:cstyle-box-sizing cs) "border-box")
-                                       (- exp-h (+ (css:cstyle-padding-top cs) (css:cstyle-padding-bottom cs)
-                                                   (used-border cs :t) (used-border cs :b)))
+                                       (- exp-h (+ pt pb (used-border cs :t) (used-border cs :b)))
                                        exp-h))))
            ;; explicit aspect-ratio (CSS Sizing 4) for a non-replaced box: a positive
            ;; ratio derives the auto axis from the definite one (width<->height).
@@ -1397,7 +1396,7 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                                               (null (css:cstyle-height is)))
                                      (max 0 (- forced-cross
                                                (max 0 (css:cstyle-margin-top is)) (max 0 (css:cstyle-margin-bottom is))
-                                               (css:cstyle-padding-top is) (css:cstyle-padding-bottom is)
+                                               (css::resolve-pad (css:cstyle-padding-top is) nil) (css::resolve-pad (css:cstyle-padding-bottom is) nil)
                                                (used-border is :t) (used-border is :b)))))
                                   (*flex-main-size* (round w)))   ; the item uses this width, not its own
                              (layout-node it styles (round x) ly (round w)))
@@ -1551,7 +1550,7 @@ row (ROW eq the TABLE node) wraps every cell-like child as a cell."
 
 (defun cell-pad-bord (cs)
   "Left+right padding + border of a cell's box."
-  (if cs (+ (css:cstyle-padding-left cs) (css:cstyle-padding-right cs)
+  (if cs (+ (css::resolve-pad (css:cstyle-padding-left cs) nil) (css::resolve-pad (css:cstyle-padding-right cs) nil)
             (used-border cs :l) (used-border cs :r))
       0))
 
@@ -1651,7 +1650,7 @@ token (word or atomic box)."
            (min content-w
                 (if block-kids
                      (loop for k in block-kids
-                           maximize (+ (css:cstyle-padding-left (st styles k)) (css:cstyle-padding-right (st styles k))
+                           maximize (+ (css::resolve-pad (css:cstyle-padding-left (st styles k)) content-w) (css::resolve-pad (css:cstyle-padding-right (st styles k)) content-w)
                                        (used-border (st styles k) :l) (used-border (st styles k) :r)
                                        (min-content-width k styles content-w (1+ depth))))
                      (min-inline-width node styles cs content-w)))))))))
@@ -1920,7 +1919,7 @@ max-content width.  Bounded by CONTENT-W so it stays resilient."
     (if (null cs) 0
         (+ (css:cstyle-margin-left cs) (css:cstyle-margin-right cs)
            (used-border cs :l) (used-border cs :r)
-           (css:cstyle-padding-left cs) (css:cstyle-padding-right cs)
+           (css::resolve-pad (css:cstyle-padding-left cs) content-w) (css::resolve-pad (css:cstyle-padding-right cs) content-w)
            (if (numberp w) w (pref-content-width node styles content-w depth))))))
 
 (defun place-float (node styles cleft cright top content-w)
@@ -1930,7 +1929,7 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
          (side (if (string= (css:cstyle-float cs) "left") :left :right))
          (ml (css:cstyle-margin-left cs)) (mr (css:cstyle-margin-right cs))
          (mb (css:cstyle-margin-bottom cs))
-         (extra (+ (css:cstyle-padding-left cs) (css:cstyle-padding-right cs)
+         (extra (+ (css::resolve-pad (css:cstyle-padding-left cs) content-w) (css::resolve-pad (css:cstyle-padding-right cs) content-w)
                    (used-border cs :l) (used-border cs :r)))
          ;; AVAIL-W is the available content width handed to LAYOUT-NODE; for an
          ;; auto-width float the box fills (avail - margins), so to shrink-wrap
@@ -2378,8 +2377,8 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
              ;; left of the content, in the list's padding.
              (let ((fs (css:cstyle-font-size cs)))
                (draw-text-scribe cv (marker-glyph (lbox-marker lb))
-                                 (round (- (+ (lbox-x lb) (css:cstyle-padding-left cs)) (* 1.3 fs)))
-                                 (round (+ (lbox-y lb) (css:cstyle-padding-top cs)))
+                                 (round (- (+ (lbox-x lb) (css::resolve-pad (css:cstyle-padding-left cs) nil)) (* 1.3 fs)))
+                                 (round (+ (lbox-y lb) (css::resolve-pad (css:cstyle-padding-top cs) nil)))
                                  (round (used-line-height cs))
                                  (rgb (css:cstyle-color cs)) fs))))
          ;; overflow:hidden/clip/scroll clips descendants to this box's padding box.

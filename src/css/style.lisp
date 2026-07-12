@@ -275,9 +275,12 @@ IS the multiplier; `normal` -> :NORMAL; a <percentage> -> its fraction; a <lengt
                (and w (list w h)))))))
 
 (defun resolve-size (spec avail)
-  "Resolve a parse-size result against AVAIL (containing-block px).  :auto/NIL -> NIL."
+  "Resolve a parse-size result against AVAIL (containing-block px).  :auto/NIL -> NIL.
+A percentage resolves only when AVAIL is a definite number; against an indefinite
+containing block it computes to auto (NIL), per CSS 2.1 10.2/10.5."
   (cond ((numberp spec) spec)
-        ((and (consp spec) (eq (first spec) :percent)) (* avail (/ (second spec) 100.0)))
+        ((and (consp spec) (eq (first spec) :percent) (numberp avail))
+         (* avail (/ (second spec) 100.0)))
         (t nil)))
 
 (defun resolve-height (spec avail-h)

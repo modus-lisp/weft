@@ -979,11 +979,15 @@ Returns (values lbox advance-height)."
                               :kind :block :children (nreverse children))))
           (return-from %layout-core (values lb (+ mt box-h mb) mt mb))))
       ;; flex / table containers
-      (when (member (cdisplay cs) '("flex" "table" "grid") :test #'string=)
+      ;; the atomic-inline variants (inline-flex/-grid/-table) lay their contents
+      ;; out with the same internal algorithm as the block-level form; only their
+      ;; outer participation (a shrink-to-fit box on a line) differs, handled above.
+      (when (member (cdisplay cs) '("flex" "inline-flex" "table" "inline-table"
+                                    "grid" "inline-grid") :test #'string=)
         (multiple-value-bind (boxes ch)
-            (cond ((string= (cdisplay cs) "flex")
+            (cond ((member (cdisplay cs) '("flex" "inline-flex") :test #'string=)
                    (layout-flex node styles cx cy content-w cs (or child-avail-h ar-h)))
-                  ((string= (cdisplay cs) "grid")
+                  ((member (cdisplay cs) '("grid" "inline-grid") :test #'string=)
                    (layout-grid node styles cx cy content-w cs (or child-avail-h ar-h)))
                   (t (layout-table node styles cx cy content-w cs)))
           (let* ((box-h (+ (if ar-h (max ar-h ch) ch) pt pb bt bb))

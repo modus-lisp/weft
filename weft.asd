@@ -56,7 +56,7 @@
                                            (:file "percentage") (:file "integer") (:file "time")
                                            (:file "resolution") (:file "url") (:file "css-string")
                                            (:file "font-family") (:file "text-decoration") (:file "list-style-type") (:file "line-height")
-                                           (:file "flex") (:file "box-sizing") (:file "font-style") (:file "text-transform")
+                                           (:file "flex") (:file "box-sizing") (:file "font-style") (:file "text-transform") (:file "hyphens")
                                            (:file "overflow") (:file "position") (:file "float") (:file "border-radius") (:file "transform")
                                            (:file "cursor") (:file "visibility") (:file "direction") (:file "font-variant")
                                            (:file "z-index") (:file "letter-spacing") (:file "vertical-align") (:file "white-space")
@@ -78,7 +78,8 @@
                 ((:module "render" :serial t
                   :components ((:file "packages") (:file "font") (:file "font-bold")
                                (:file "canvas") (:file "image") (:file "jpeg") (:file "vector")
-                               (:file "text") (:file "layout") (:file "grid") (:file "interact")))))))
+                               (:file "text") (:file "hyphen-en") (:file "hyphenate")
+                               (:file "layout") (:file "grid") (:file "interact")))))))
 
 ;; The scripting seam: binds shuttle (a pure-CL JavaScript engine) to the weft
 ;; DOM so inline <script> can read and mutate the live tree, with the change

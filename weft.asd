@@ -61,7 +61,7 @@
                                            (:file "cursor") (:file "visibility") (:file "direction") (:file "font-variant")
                                            (:file "z-index") (:file "letter-spacing") (:file "vertical-align") (:file "white-space")
                                            (:file "opacity") (:file "word-spacing") (:file "order")
-                                           (:file "object-fit") (:file "text-indent")
+                                           (:file "object-fit") (:file "aspect-ratio") (:file "text-indent")
                                            (:file "background-repeat") (:file "background-position")
                                            (:file "tokenizer") (:file "parser") (:file "selector") (:file "style"))))))
   :in-order-to ((test-op (test-op "weft/test"))))

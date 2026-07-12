@@ -507,6 +507,39 @@ a word that would otherwise overflow.  Returns (values prefix rest)."
     (loop while (and (< k n) (<= (word-w (subseq text 0 (1+ k)) style) w)) do (incf k))
     (values (subseq text 0 k) (subseq text k))))
 
+(defparameter *hyphen-char* (string (code-char #x2010))
+  "U+2010 HYPHEN — the visible glyph inserted at an automatic break (CSS Text 3 §6.1).")
+
+(defun try-hyphenate (word style room)
+  "When WORD hyphenates (English, hyphens:auto) so a leading fragment plus a hyphen
+glyph fits in ROOM px, return (values PREFIX+hyphen REST) for the LARGEST such
+fragment; else (values NIL NIL).  Keeps the head/tail minimums of HYPHENATE-WORD."
+  (let ((offs (hyphenate-word word)))
+    (if (null offs)
+        (values nil nil)
+        (let ((hw (word-w *hyphen-char* style)) (best nil))
+          (dolist (q offs)                     ; OFFS ascending: last that fits is largest
+            (when (<= (+ (word-w (subseq word 0 q) style) hw) room) (setf best q)))
+          (if best
+              (values (concatenate 'string (subseq word 0 best) *hyphen-char*)
+                      (subseq word best))
+              (values nil nil))))))
+
+(defun word-min-width (word style node)
+  "Min-content width of a single WORD: its full painted width, or — under
+hyphens:auto (English) — the width of its widest hyphenation fragment, since the
+word may break at any legal point (CSS Text 3 §6.1).  Interior fragments carry a
+trailing hyphen, so they include the hyphen glyph's width."
+  (let ((full (word-w word style)))
+    (if (and node (string= (css:cstyle-hyphens style) "auto") (hyphenation-lang-ok-p node))
+        (let ((offs (hyphenate-word word)))
+          (if (null offs) full
+              (let ((hw (word-w *hyphen-char* style)) (prev 0) (best 0))
+                (dolist (q offs)
+                  (setf best (max best (+ (word-w (subseq word prev q) style) hw)) prev q))
+                (max best (word-w (subseq word prev) style)))))   ; last fragment: no hyphen
+        full)))
+
 (defun next-float-bottom (y)
   "Smallest float bottom strictly greater than Y, or NIL."
   (let ((best nil))
@@ -562,10 +595,35 @@ text-align.  Returns (values line-boxes total-height)."
               (when (and cur (not nowrap) (> (+ (- cx lx) need) avail)
                          (not (and (not atomic)
                                    (string= (css:cstyle-word-break (tok-meta wd)) "break-all"))))
+                ;; before wrapping, try automatic hyphenation (CSS Text 3 §6.1): if
+                ;; the word breaks so a leading fragment + hyphen still fits this
+                ;; line, place it and send the remainder to the next line.
+                (when (and (not atomic)
+                           (string= (css:cstyle-hyphens (tok-meta wd)) "auto")
+                           (hyphenation-lang-ok-p (tok-node wd)))
+                  (multiple-value-bind (prefix rest)
+                      (try-hyphenate (car wd) (tok-meta wd) (- avail (- cx lx) sw))
+                    (when prefix
+                      (when (and (> sw 0) (> (- cx lx) 0)) (incf cx sw))
+                      (push (make-frag :x cx :w (word-w prefix (tok-meta wd)) :text prefix
+                                       :style (tok-meta wd) :node (tok-node wd)) cur)
+                      (setf (aref ws i) (list rest (tok-meta wd) nil 0 (tok-node wd))))))
                 (return))
               (when (and (> sw 0) (> (- cx lx) 0)) (incf cx sw))
               (let ((room (- avail (- cx lx))))
                 (cond
+                  ;; a word too wide for this line that hyphenates (CSS Text 3 §6.1):
+                  ;; place the largest leading fragment + hyphen that fits and send
+                  ;; the remainder to the next line (where it may hyphenate again).
+                  ((and (not atomic) (not nowrap) (> ww room) (>= room 1)
+                        (string= (css:cstyle-hyphens (tok-meta wd)) "auto")
+                        (hyphenation-lang-ok-p (tok-node wd))
+                        (nth-value 0 (try-hyphenate (car wd) (tok-meta wd) room)))
+                   (multiple-value-bind (prefix rest) (try-hyphenate (car wd) (tok-meta wd) room)
+                     (push (make-frag :x cx :w (word-w prefix (tok-meta wd)) :text prefix
+                                      :style (tok-meta wd) :node (tok-node wd)) cur)
+                     (setf (aref ws i) (list rest (tok-meta wd) nil 0 (tok-node wd)))
+                     (return)))
                   ;; word-break:break-all (break anywhere) or overflow-wrap:break-word
                   ;; on a word too wide to fit any line: place the char-prefix that fits
                   ;; and requeue the remainder to start the next line.
@@ -879,8 +937,19 @@ Returns (values lbox advance-height)."
            ;; a flex item takes the main size its parent assigned (AVAIL-W = the
            ;; flex-resolved width), ignoring its own `width` — set it explicitly so an
            ;; inline-block item fills that width instead of shrinking to content.
+           ;; intrinsic-sizing keywords (CSS Sizing 3): min-content / max-content /
+           ;; fit-content resolve to the box's own content measure, carried in the
+           ;; box-sizing sense so the width math below treats it like any length.
            (spec-w (cond (flex-item avail-w)
                          (table-cell nil)
+                         ((member (css:cstyle-width cs) '(:min-content :max-content :fit-content))
+                          (let* ((av (or avail-w 0))
+                                 (c (case (css:cstyle-width cs)
+                                      (:min-content (min-content-width node styles av))
+                                      (:max-content (pref-content-width node styles av))
+                                      (:fit-content (max (min-content-width node styles av)
+                                                         (min (pref-content-width node styles av) av))))))
+                            (if border-box (+ c pad-bord) c)))
                          (t (css::resolve-size (css:cstyle-width cs) avail-w)))) ; px or nil
            (max-w (css::resolve-size (css:cstyle-max-width cs) avail-w))
            (min-w (css::resolve-size (css:cstyle-min-width cs) avail-w))
@@ -1506,7 +1575,8 @@ cell (no text baseline of its own) is likewise centered."
 token (word or atomic box)."
   (let ((words (collect-words (coerce (h:dnode-children node) 'list) styles cs content-w)) (w 0))
     (dolist (wd words)
-      (setf w (max w (if (eq (car wd) :atomic) (lbox-w (tok-meta wd)) (word-w (car wd) (tok-meta wd))))))
+      (setf w (max w (if (eq (car wd) :atomic) (lbox-w (tok-meta wd))
+                         (word-min-width (car wd) (tok-meta wd) (tok-node wd))))))
     w))
 
 (defun min-content-width (node styles content-w &optional (depth 0))

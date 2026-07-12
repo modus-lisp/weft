@@ -854,6 +854,16 @@ Returns (values lbox advance-height)."
            ;; explicit aspect-ratio (CSS Sizing 4) for a non-replaced box: a positive
            ;; ratio derives the auto axis from the definite one (width<->height).
            (ar (let ((r (css:cstyle-aspect-ratio cs))) (and (numberp r) (plusp r) r)))
+           (min-h (css::resolve-min-height (css:cstyle-min-height cs) avail-h))
+           (max-h (css::resolve-max-height (css:cstyle-max-height cs) avail-h))
+           ;; the USED content-box height (min/max-clamped) when height is definite,
+           ;; else NIL — aspect-ratio derives the width from this, so `height:300px;
+           ;; max-height:25px` gives a box 25 tall and 25*ratio wide.
+           (used-h (when (numberp exp-h)
+                     (let ((h (if border-box (- exp-h pt pb bt bb) exp-h)))
+                       (when (numberp max-h) (setf h (min h max-h)))
+                       (when (and (numberp min-h) (> min-h 0)) (setf h (max h min-h)))
+                       (max 0 h))))
            ;; a flex item takes the main size its parent assigned (AVAIL-W = the
            ;; flex-resolved width), ignoring its own `width` — set it explicitly so an
            ;; inline-block item fills that width instead of shrinking to content.
@@ -875,12 +885,13 @@ Returns (values lbox advance-height)."
            (table-shrink (and (null spec-w) (string= (cdisplay cs) "table")))
            ;; border-box width of this element
            (width (let ((bw (cond ((numberp spec-w) (if border-box spec-w (+ spec-w pad-bord)))
-                                  ;; aspect-ratio, auto width, definite height on a
-                                  ;; shrink box (inline-block/abspos): width from the
-                                  ;; ratio (border-box = height*ratio; content-box adds
+                                  ;; aspect-ratio with a definite height and auto width:
+                                  ;; width comes from the (min/max-clamped) height * ratio
+                                  ;; — for a plain block too, not only shrink boxes
+                                  ;; (border-box = border-height*ratio; content-box adds
                                   ;; the horizontal padding+border).
-                                  ((and ar shrink (numberp exp-h))
-                                   (if border-box (* exp-h ar) (+ (* exp-h ar) pad-bord)))
+                                  ((and ar used-h (null spec-w))
+                                   (if border-box (* (+ used-h pt pb bt bb) ar) (+ (* used-h ar) pad-bord)))
                                   (shrink (min (- avail-w ml mr)
                                                (+ (pref-content-width node styles (- avail-w ml mr))
                                                   pad-bord)))
@@ -1122,7 +1133,7 @@ Returns (values lbox advance-height)."
                                   ;; the box has no in-flow content taller than that
                                   ;; (content still wins if it would overflow — the ratio
                                   ;; is a preferred, not maximum, size).
-                                  ((and ar (not (numberp exp-h)))
+                                  ((and ar (null used-h))
                                    (let ((rh (if border-box (max 0 (- (/ width ar) pt pb bt bb))
                                                  (/ content-w ar))))
                                      (max rh content-h)))

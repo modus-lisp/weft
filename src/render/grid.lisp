@@ -83,7 +83,7 @@ whole so their inner commas/spaces survive."
     (if (null cs) 0
         (+ (css:cstyle-margin-left cs) (css:cstyle-margin-right cs)
            (used-border cs :l) (used-border cs :r)
-           (css:cstyle-padding-left cs) (css:cstyle-padding-right cs)
+           (css::resolve-pad (css:cstyle-padding-left cs) nil) (css::resolve-pad (css:cstyle-padding-right cs) nil)
            (min-content-width item styles content-w)))))
 
 (defun grid-track-content-w (spec items styles content-w)

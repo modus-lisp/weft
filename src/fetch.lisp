@@ -406,12 +406,19 @@ is retried once on a fresh one.  Cookies are attached and Set-Cookie stored."
          (all-headers (if ck (cons (cons "Cookie" ck) req-headers) req-headers)))
     (flet ((exchange (stream)
              (write-request stream method host path all-headers)
-             (let* ((status (parse-status-line (read-header-line stream)))
-                    (headers (read-headers stream))
-                    (body (read-body stream headers method status)))
-               (store-cookies headers host)
-               (values (make-response :status status :headers headers :body body :url url)
-                       (keep-alive-p headers)))))
+             (let ((line (read-header-line stream)))
+               ;; No status line means the peer closed the connection before
+               ;; answering — almost always a keep-alive socket the server timed
+               ;; out since we pooled it.  Signal so the caller retries fresh
+               ;; instead of surfacing an empty 0-status response.
+               (unless (and line (position #\Space line))
+                 (error "weft.fetch: no HTTP status line (stale/closed connection)"))
+               (let* ((status (parse-status-line line))
+                      (headers (read-headers stream))
+                      (body (read-body stream headers method status)))
+                 (store-cookies headers host)
+                 (values (make-response :status status :headers headers :body body :url url)
+                         (keep-alive-p headers))))))
       (multiple-value-bind (stream pooled) (acquire-stream scheme host port *read-timeout*)
         (handler-case
             (multiple-value-bind (resp keep) (exchange stream)

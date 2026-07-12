@@ -739,6 +739,21 @@ Ignores the system-font keywords (caption/icon/...)."
            (when (or (eq v :auto) (numberp v))
              (cond ((string= prop "top") (setf (cstyle-top cs) v)) ((string= prop "left") (setf (cstyle-left cs) v))
                    ((string= prop "right") (setf (cstyle-right cs) v)) (t (setf (cstyle-bottom cs) v))))))
+        ;; the `inset` shorthand (CSS Position 3) sets top/right/bottom/left with the
+        ;; usual 1-4 value shorthand expansion; each value is a length or `auto`.
+        ((string= prop "inset")
+         (let* ((parts (split-tokens (string-trim '(#\Space) value))) (n (length parts)))
+           (when (and (>= n 1) (<= n 4))
+             (flet ((val (tok) (if (string-equal tok "auto") :auto
+                                   (let ((r (resolve-len tok fs))) (and (numberp r) r)))))
+               (let ((tp (val (nth 0 parts)))
+                     (rt (val (nth (if (>= n 2) 1 0) parts)))
+                     (bt (val (nth (if (>= n 3) 2 0) parts)))
+                     (lf (val (nth (cond ((= n 4) 3) ((>= n 2) 1) (t 0)) parts))))
+                 (when tp (setf (cstyle-top cs) tp))
+                 (when rt (setf (cstyle-right cs) rt))
+                 (when bt (setf (cstyle-bottom cs) bt))
+                 (when lf (setf (cstyle-left cs) lf)))))))
         ((string= prop "z-index") (let ((v (parse-value "z-index" value)))
                                     (when (and (listp v) (integerp (first v))) (setf (cstyle-z-index cs) (first v)))))
         ((string= prop "flex")

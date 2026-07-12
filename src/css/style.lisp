@@ -39,6 +39,7 @@
   (bg-size nil)       ; NIL(auto) | :contain | :cover | (w-spec h-spec); spec = px | (:percent N) | :auto
   (bg-attachment "scroll") ; scroll | fixed (fixed images are not painted; see paint)
   (object-fit "fill") ; fill | contain | cover | none | scale-down — how a replaced element's content fills its box
+  (aspect-ratio nil)  ; preferred width/height ratio (a double), or NIL (auto/intrinsic)
   (min-height 0.0) (max-height :none)
   (cursor "auto")     ; CSS cursor keyword (inherited)
   (text-transform "none") ; none | capitalize | uppercase | lowercase (inherited)
@@ -498,6 +499,9 @@ Ignores the system-font keywords (caption/icon/...)."
          (setf (cstyle-bg-attachment cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "object-fit")
          (let ((v (parse-value "object-fit" value))) (when (stringp v) (setf (cstyle-object-fit cs) v))))
+        ((string= prop "aspect-ratio")
+         (let ((v (parse-value "aspect-ratio" value)))
+           (setf (cstyle-aspect-ratio cs) (if (numberp v) v nil))))
         ((string= prop "font-size")
          (let ((base (if parent-cs (cstyle-font-size parent-cs) 16.0)))
            (cond ((search "%" value) (let ((p (parse-value "percentage" value))) (when (numberp p) (setf (cstyle-font-size cs) (* base (/ p 100.0))))))

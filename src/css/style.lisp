@@ -156,6 +156,12 @@
          (cond ((null px) nil)
                ((zerop pct) px)
                (t (list :calc px pct)))))
+      ;; min()/max()/clamp() comparison functions (CSS Values 4 §10): each argument
+      ;; is a calc-style linear form; the result is deferred when any argument bears
+      ;; a percentage, else collapsed to px immediately.
+      ((and (> (length tt) 4) (string= (subseq tt 0 4) "min(")) (parse-math-fn :mmin tt 4 font-size))
+      ((and (> (length tt) 4) (string= (subseq tt 0 4) "max(")) (parse-math-fn :mmax tt 4 font-size))
+      ((and (> (length tt) 6) (string= (subseq tt 0 6) "clamp(")) (parse-math-fn :mclamp tt 6 font-size))
       (t (let ((v (parse-value "length" tt)))
            (if (and (listp v) (= 2 (length v)))
                (let ((num (float (first v))) (unit (second v)))
@@ -250,6 +256,48 @@ number+length is invalid (NIL).  * and / bind tighter than + and - (Values §10)
                 (cond ((consp v) (values (float (car v)) (float (cdr v))))
                       ((numberp v) (values (float v) 0.0)))))))))))
 
+(defun split-top-commas (s)
+  "Split S on commas that sit at paren depth 0 (so nested min()/calc() args stay
+intact), trimming each piece."
+  (let ((parts '()) (start 0) (depth 0))
+    (dotimes (i (length s))
+      (case (char s i)
+        (#\( (incf depth)) (#\) (decf depth))
+        (#\, (when (zerop depth)
+               (push (string-trim '(#\Space #\Tab #\Newline) (subseq s start i)) parts)
+               (setf start (1+ i))))))
+    (push (string-trim '(#\Space #\Tab #\Newline) (subseq s start)) parts)
+    (nreverse parts)))
+
+(defun parse-math-fn (kind tt prefix-len font-size)
+  "Parse a min()/max()/clamp() length function TT (KIND :mmin/:mmax/:mclamp) into a
+deferred form (KIND (px . pct) ...), or a plain px number when every argument is a
+pure length, or NIL.  clamp() requires exactly three arguments."
+  (let* ((inner (subseq tt prefix-len (1- (length tt))))
+         (args (split-top-commas inner))
+         (forms (mapcar (lambda (a) (multiple-value-bind (px pct) (eval-calc a font-size)
+                                      (and px (cons px pct))))
+                        args)))
+    (when (and forms (notany #'null forms)
+               (or (not (eq kind :mclamp)) (= 3 (length forms))))
+      (if (every (lambda (f) (zerop (cdr f))) forms)   ; no percentages: fold now
+          (let ((vs (mapcar #'car forms)))
+            (case kind (:mmin (reduce #'min vs)) (:mmax (reduce #'max vs))
+                  (:mclamp (max (first vs) (min (second vs) (third vs))))))
+          (cons kind forms)))))
+
+(defun resolve-deferred (spec avail)
+  "Finish a deferred length form — (:calc px pct) or (:mmin/:mmax/:mclamp (px . pct)…)
+— against the containing-block size AVAIL (px), or NIL when SPEC is not deferred or
+AVAIL is indefinite."
+  (when (and (consp spec) (numberp avail))
+    (flet ((lin (f) (+ (car f) (* avail (/ (cdr f) 100.0)))))
+      (case (car spec)
+        (:calc (+ (second spec) (* avail (/ (third spec) 100.0))))
+        (:mmin (reduce #'min (mapcar #'lin (cdr spec))))
+        (:mmax (reduce #'max (mapcar #'lin (cdr spec))))
+        (:mclamp (let ((vs (mapcar #'lin (cdr spec)))) (max (first vs) (min (second vs) (third vs)))))))))
+
 (defun line-height-multiplier (value font-size)
   "Parse a line-height VALUE into a multiplier of FONT-SIZE (weft stores
 line-height as a number that LAYOUT multiplies by font-size, or the keyword
@@ -306,9 +354,7 @@ containing block it computes to auto (NIL), per CSS 2.1 10.2/10.5."
   (cond ((numberp spec) spec)
         ((and (consp spec) (eq (first spec) :percent) (numberp avail))
          (* avail (/ (second spec) 100.0)))
-        ((and (consp spec) (eq (first spec) :calc) (numberp avail))
-         (+ (second spec) (* avail (/ (third spec) 100.0))))
-        (t nil)))
+        (t (resolve-deferred spec avail))))
 
 (defun resolve-height (spec avail-h)
   "Resolve a height parse-size SPEC against the containing-block height AVAIL-H
@@ -317,9 +363,7 @@ otherwise it computes to auto (NIL).  A plain px number resolves to itself."
   (cond ((numberp spec) spec)
         ((and (consp spec) (eq (first spec) :percent) (numberp avail-h))
          (* avail-h (/ (second spec) 100.0)))
-        ((and (consp spec) (eq (first spec) :calc) (numberp avail-h))
-         (+ (second spec) (* avail-h (/ (third spec) 100.0))))
-        (t nil)))
+        (t (resolve-deferred spec avail-h))))
 
 (defun resolve-min-height (spec avail-h)
   "CSS 2.1 10.7 min-height: a length resolves to itself; a percentage resolves
@@ -327,8 +371,8 @@ against AVAIL-H if definite, else computes to 0."
   (cond ((numberp spec) spec)
         ((and (consp spec) (eq (first spec) :percent))
          (if (numberp avail-h) (* avail-h (/ (second spec) 100.0)) 0.0))
-        ((and (consp spec) (eq (first spec) :calc))
-         (+ (second spec) (if (numberp avail-h) (* avail-h (/ (third spec) 100.0)) 0.0)))
+        ((and (consp spec) (member (first spec) '(:calc :mmin :mmax :mclamp)))
+         (or (resolve-deferred spec avail-h) (resolve-deferred spec 0.0) 0.0))
         (t 0.0)))
 
 (defun resolve-max-height (spec avail-h)
@@ -337,9 +381,7 @@ against AVAIL-H if definite, else computes to none (NIL = no ceiling)."
   (cond ((numberp spec) spec)
         ((and (consp spec) (eq (first spec) :percent) (numberp avail-h))
          (* avail-h (/ (second spec) 100.0)))
-        ((and (consp spec) (eq (first spec) :calc) (numberp avail-h))
-         (+ (second spec) (* avail-h (/ (third spec) 100.0))))
-        (t nil)))
+        (t (resolve-deferred spec avail-h))))
 
 (defun resolve-color (text)
   (let ((v (parse-value "color" text))) (if (and (listp v) (>= (length v) 3)) v nil)))

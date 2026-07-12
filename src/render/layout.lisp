@@ -975,6 +975,10 @@ Returns (values lbox advance-height)."
                                       (:max-content (pref-content-width node styles av))
                                       (:fit-content (max (min-content-width node styles av)
                                                          (min (pref-content-width node styles av) av))))))
+                            ;; with a definite (clamped) block size and an aspect-ratio, the
+                            ;; intrinsic inline size is that block size transferred through the
+                            ;; ratio, floored by the content measure (CSS Sizing 4 §4).
+                            (when (and ar used-h) (setf c (max c (* used-h ar))))
                             (if border-box (+ c pad-bord) c)))
                          (t (css::resolve-size (css:cstyle-width cs) avail-w)))) ; px or nil
            (max-w (css::resolve-size (css:cstyle-max-width cs) avail-w))

@@ -1119,15 +1119,18 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
         ((< (second a) (second b)) t) ((> (second a) (second b)) nil)
         (t (< (third a) (third b)))))
 
+(defparameter +css-ws+ '(#\Space #\Tab #\Newline #\Return #\Page)
+  "CSS whitespace (CSS Syntax §3): trimmed around inline-style names and values so a
+multi-line style attribute (a newline before a declaration) still parses.")
 (defun parse-inline (s)
   "Parse an inline style attribute 'a:b; c:d' into ((a . b) ...)."
   (loop for chunk in (split-semi s)
         for cp = (position #\: chunk)
-        for name = (and cp (string-trim '(#\Space) (subseq chunk 0 cp)))
+        for name = (and cp (string-trim +css-ws+ (subseq chunk 0 cp)))
         ;; custom properties (--*) are case-sensitive; normal names are not
         when cp collect (cons (if (and (>= (length name) 2) (char= (char name 0) #\-) (char= (char name 1) #\-))
                                   name (string-downcase name))
-                              (string-trim '(#\Space) (subseq chunk (1+ cp))))))
+                              (string-trim +css-ws+ (subseq chunk (1+ cp))))))
 (defun split-semi (s)
   (loop with start = 0 for i from 0 to (length s)
         when (or (= i (length s)) (char= (char s i) #\;))

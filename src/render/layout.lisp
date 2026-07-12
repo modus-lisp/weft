@@ -745,6 +745,12 @@ than the whole render crashing.")
   "When laying out a flex item, its flex-resolved main size (px).  The item's own
 `width` is overridden by this assigned size (CSS 9.9), like a table-cell in its column.
 Reset to NIL inside the item so its descendants are laid out normally.")
+(defvar *pos-border-w* nil
+  "When re-laying out an out-of-flow box whose width is auto but both `left` and
+`right` are definite, its used BORDER-box width = cb - left - right - margins
+(CSS 2.1 10.3.7).  Consumed by the box; NIL for its descendants.")
+(defvar *pos-border-h* nil
+  "As *POS-BORDER-W* for an auto height with definite `top` and `bottom` (10.6.4).")
 (defvar *flex-item-height* nil
   "When a flex item is stretched to a definite cross size (align stretch + auto
 height in a row container of definite height, CSS 9.4), its resolved content-box
@@ -837,11 +843,23 @@ shift it to its final top/left."
     (when (and lb cb)
       (destructuring-bind (px py pw ph) cb
         (declare (ignore px py))
-        (when (positioned-needs-cb-size-p cs)
-          (handler-case
-              (let ((nlb (layout-node node styles (lbox-x lb) (lbox-y lb) pw ph)))
-                (when nlb (copy-lbox-into lb nlb)))
-            (error () nil)))
+        ;; CSS 2.1 10.3.7 / 10.6.4: an out-of-flow box with an auto width (height)
+        ;; but definite left+right (top+bottom) fills the gap between the offsets —
+        ;; its used border-box size is cb minus those offsets and its own margins.
+        (let* ((auto-w (member (css:cstyle-width cs) '(nil :auto)))
+               (auto-h (member (css:cstyle-height cs) '(nil :auto)))
+               (l (css:cstyle-left cs)) (r (css:cstyle-right cs))
+               (tp (css:cstyle-top cs)) (bt (css:cstyle-bottom cs))
+               (pos-w (and auto-w (numberp l) (numberp r)
+                           (max 0 (- pw l r (css:cstyle-margin-left cs) (css:cstyle-margin-right cs)))))
+               (pos-h (and auto-h (numberp tp) (numberp bt)
+                           (max 0 (- ph tp bt (css:cstyle-margin-top cs) (css:cstyle-margin-bottom cs))))))
+          (when (or (positioned-needs-cb-size-p cs) pos-w pos-h)
+            (handler-case
+                (let* ((*pos-border-w* pos-w) (*pos-border-h* pos-h)
+                       (nlb (layout-node node styles (lbox-x lb) (lbox-y lb) pw ph)))
+                  (when nlb (copy-lbox-into lb nlb)))
+              (error () nil))))
         (resolve-positioned lb cb cs)))))
 
 (defun replaced-box (node cs &optional avail-w avail-h)
@@ -906,6 +924,8 @@ most-negative margin.  {20,30}->30  {20,-10}->10  {-5,-8}->-8  {-20,30}->10."
 AVAIL-H the containing-block height (px when definite, else NIL).
 Returns (values lbox advance-height)."
   (let ((flex-item *flex-main-size*) (*flex-main-size* nil)   ; this box is a flex item iff set; its children are not
+        (pos-bw *pos-border-w*) (*pos-border-w* nil)
+        (pos-bh *pos-border-h*) (*pos-border-h* nil)
         (flex-ch *flex-item-height*) (*flex-item-height* nil))
    (let ((cs (st styles node)))
     (when (or (null cs) (string= (cdisplay cs) "none")) (return-from %layout-core (values nil 0 0 0)))
@@ -936,9 +956,11 @@ Returns (values lbox advance-height)."
            ;; a flex item stretched to a definite cross size adopts it as a definite
            ;; height when its own height is auto (FLEX-CH is the content-box height);
            ;; EXP-H is carried in the box-sizing sense so downstream math is uniform.
-           (exp-h (if (and flex-ch (null (css:cstyle-height cs)))
-                      (if border-box (+ flex-ch pt pb bt bb) flex-ch)
-                      (css::resolve-height (css:cstyle-height cs) avail-h)))    ; px or nil
+           (exp-h (cond ((and flex-ch (null (css:cstyle-height cs)))
+                         (if border-box (+ flex-ch pt pb bt bb) flex-ch))
+                        ;; auto height with definite top+bottom: fill the gap (10.6.4)
+                        (pos-bh (if border-box pos-bh (max 0 (- pos-bh pt pb bt bb))))
+                        (t (css::resolve-height (css:cstyle-height cs) avail-h))))  ; px or nil
            ;; content height handed to children as THEIR containing-block height:
            ;; this box's content-box height when its height is explicit, else NIL
            ;; (auto height is indefinite, so child percentage heights -> auto).
@@ -968,6 +990,8 @@ Returns (values lbox advance-height)."
            ;; box-sizing sense so the width math below treats it like any length.
            (spec-w (cond (flex-item avail-w)
                          (table-cell nil)
+                         ;; auto width with definite left+right: fill the gap (10.3.7)
+                         (pos-bw (if border-box pos-bw (max 0 (- pos-bw pad-bord))))
                          ((member (css:cstyle-width cs) '(:min-content :max-content :fit-content))
                           (let* ((av (or avail-w 0))
                                  (c (case (css:cstyle-width cs)

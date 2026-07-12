@@ -851,6 +851,9 @@ Returns (values lbox advance-height)."
                                        (- exp-h (+ (css:cstyle-padding-top cs) (css:cstyle-padding-bottom cs)
                                                    (used-border cs :t) (used-border cs :b)))
                                        exp-h))))
+           ;; explicit aspect-ratio (CSS Sizing 4) for a non-replaced box: a positive
+           ;; ratio derives the auto axis from the definite one (width<->height).
+           (ar (let ((r (css:cstyle-aspect-ratio cs))) (and (numberp r) (plusp r) r)))
            ;; a flex item takes the main size its parent assigned (AVAIL-W = the
            ;; flex-resolved width), ignoring its own `width` — set it explicitly so an
            ;; inline-block item fills that width instead of shrinking to content.
@@ -872,6 +875,12 @@ Returns (values lbox advance-height)."
            (table-shrink (and (null spec-w) (string= (cdisplay cs) "table")))
            ;; border-box width of this element
            (width (let ((bw (cond ((numberp spec-w) (if border-box spec-w (+ spec-w pad-bord)))
+                                  ;; aspect-ratio, auto width, definite height on a
+                                  ;; shrink box (inline-block/abspos): width from the
+                                  ;; ratio (border-box = height*ratio; content-box adds
+                                  ;; the horizontal padding+border).
+                                  ((and ar shrink (numberp exp-h))
+                                   (if border-box (* exp-h ar) (+ (* exp-h ar) pad-bord)))
                                   (shrink (min (- avail-w ml mr)
                                                (+ (pref-content-width node styles (- avail-w ml mr))
                                                   pad-bord)))
@@ -1108,6 +1117,15 @@ Returns (values lbox advance-height)."
                                      ;; short height:10px cell (HN's top-bar nav) still
                                      ;; expands when its links wrap to two lines.
                                      (if (string= (cdisplay cs) "table-cell") (max eh content-h) eh)))
+                                  ;; aspect-ratio with an auto height: derive the content
+                                  ;; height from the (definite) width via the ratio, when
+                                  ;; the box has no in-flow content taller than that
+                                  ;; (content still wins if it would overflow — the ratio
+                                  ;; is a preferred, not maximum, size).
+                                  ((and ar (not (numberp exp-h)))
+                                   (let ((rh (if border-box (max 0 (- (/ width ar) pt pb bt bb))
+                                                 (/ content-w ar))))
+                                     (max rh content-h)))
                                   (t (max 0 content-h))))
              (box-h0 (+ content-final pt pb bt bb))
              ;; min/max-height as box-height floor/ceiling (CSS 2.1 10.7): a

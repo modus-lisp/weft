@@ -790,15 +790,15 @@ Ignores the system-font keywords (caption/icon/...)."
            (when (and (= (length parts) 1) (string-equal (first parts) "auto"))
              (setf (cstyle-margin-left-auto cs) t (cstyle-margin-right-auto cs) t))
            (apply-box value fs cs #'(setf cstyle-margin-top) #'(setf cstyle-margin-right) #'(setf cstyle-margin-bottom) #'(setf cstyle-margin-left))))
-        ((string= prop "padding") (apply-box value fs cs #'(setf cstyle-padding-top) #'(setf cstyle-padding-right) #'(setf cstyle-padding-bottom) #'(setf cstyle-padding-left)))
+        ((string= prop "padding") (apply-pad-box value fs cs #'(setf cstyle-padding-top) #'(setf cstyle-padding-right) #'(setf cstyle-padding-bottom) #'(setf cstyle-padding-left)))
         ((string= prop "margin-top") (let ((v (len))) (when v (setf (cstyle-margin-top cs) v))))
         ((string= prop "margin-right") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-right-auto cs) t) (let ((v (len))) (when v (setf (cstyle-margin-right cs) v)))))
         ((string= prop "margin-bottom") (let ((v (len))) (when v (setf (cstyle-margin-bottom cs) v))))
         ((string= prop "margin-left") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-left-auto cs) t) (let ((v (len))) (when v (setf (cstyle-margin-left cs) v)))))
-        ((string= prop "padding-top") (let ((v (len))) (when v (setf (cstyle-padding-top cs) v))))
-        ((string= prop "padding-right") (let ((v (len))) (when v (setf (cstyle-padding-right cs) v))))
-        ((string= prop "padding-bottom") (let ((v (len))) (when v (setf (cstyle-padding-bottom cs) v))))
-        ((string= prop "padding-left") (let ((v (len))) (when v (setf (cstyle-padding-left cs) v))))
+        ((string= prop "padding-top") (setf (cstyle-padding-top cs) (pad-len value fs)))
+        ((string= prop "padding-right") (setf (cstyle-padding-right cs) (pad-len value fs)))
+        ((string= prop "padding-bottom") (setf (cstyle-padding-bottom cs) (pad-len value fs)))
+        ((string= prop "padding-left") (setf (cstyle-padding-left cs) (pad-len value fs)))
         ((string= prop "border-color")
          (apply-color-box value cs #'(setf cstyle-border-top-color) #'(setf cstyle-border-right-color)
                           #'(setf cstyle-border-bottom-color) #'(setf cstyle-border-left-color)))
@@ -891,6 +891,34 @@ rather than splitting the colour on the spaces inside its parens."
          (vals (mapcar (lambda (p) (or (resolve-len p fs) 0.0)) parts)))
     (destructuring-bind (&optional (a 0.0) (b a) (c a) (d b)) vals
       (funcall top a cs) (funcall right b cs) (funcall bottom c cs) (funcall left d cs))))
+
+(defun pad-len (tok fs)
+  "A padding value: a percentage is kept symbolic as (:percent N) — it resolves at
+layout against the containing block's inline size (CSS 2.1 8.4) — otherwise a
+resolved length (calc()/min()/max() included), defaulting to 0."
+  (let ((tt (string-trim '(#\Space #\Tab #\Newline) tok)))
+    (if (and (> (length tt) 1) (char= (char tt (1- (length tt))) #\%))
+        (let ((n (ignore-errors (read-from-string (subseq tt 0 (1- (length tt)))))))
+          (if (realp n) (list :percent (float n)) 0.0))
+        (or (resolve-len tt fs) 0.0))))
+
+(defun apply-pad-box (value fs cs top right bottom left)
+  "Like APPLY-BOX but each value may be a percentage (kept symbolic for layout)."
+  (let* ((parts (split-tokens (string-trim '(#\Space) value)))
+         (vals (mapcar (lambda (p) (pad-len p fs)) parts)))
+    (destructuring-bind (&optional (a 0.0) (b a) (c a) (d b)) vals
+      (funcall top a cs) (funcall right b cs) (funcall bottom c cs) (funcall left d cs))))
+
+(defun resolve-pad (spec avail)
+  "Used px of a padding slot SPEC (a number, (:percent N), or a deferred math form)
+against the containing-block inline size AVAIL — padding percentages always resolve
+against the inline size (CSS 2.1 8.4).  0 when the basis is indefinite or SPEC is
+unparseable, so a caller with no width still gets a safe number."
+  (cond ((numberp spec) spec)
+        ((and (consp spec) (eq (car spec) :percent))
+         (if (numberp avail) (* avail (/ (second spec) 100.0)) 0.0))
+        ((consp spec) (or (resolve-deferred spec avail) 0.0))
+        (t 0.0)))
 
 (defparameter *border-styles*
   '("none" "hidden" "solid" "dotted" "dashed" "double" "groove" "ridge" "inset" "outset"))

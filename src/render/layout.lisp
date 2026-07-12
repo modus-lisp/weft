@@ -463,6 +463,32 @@ synthetic node's style in STYLES so the normal classifier handles it."
                  (setf (gethash pn styles) pcs) pn)))))
     (values (mk :before) (mk :after))))
 
+(defun contents-p (styles node)
+  "True when NODE is a display:contents element (CSS Display 3 §3.2): it generates
+no box of its own, but its children (and ::before/::after) take its place in flow."
+  (and (eq (h:dnode-kind node) :element)
+       (let ((cs (st styles node))) (and cs (string= (css:cstyle-display cs) "contents")))))
+
+(defun flatten-contents (nodes styles)
+  "Replace each display:contents element in NODES by its own in-flow children
+(with its generated ::before/::after), recursively, so the box tree skips it while
+the cascade still inherits its computed style down to those children."
+  (loop for n in nodes
+        if (contents-p styles n)
+          append (flatten-contents
+                  (multiple-value-bind (before after) (pseudo-kids n styles)
+                    (append (when before (list before))
+                            (coerce (h:dnode-children n) 'list)
+                            (when after (list after))))
+                  styles)
+        else collect n))
+
+(defun effective-child-elements (node styles)
+  "NODE's in-flow child *elements* with display:contents wrappers flattened away —
+the box-generating children a flex/grid/block container actually lays out."
+  (remove-if-not (lambda (k) (eq (h:dnode-kind k) :element))
+                 (flatten-contents (coerce (h:dnode-children node) 'list) styles)))
+
 (defun style-size (style)
   "Font-size (px) of a token's style, defaulting to 16 when style is missing."
   (if style (css:cstyle-font-size style) 16))
@@ -705,7 +731,7 @@ flattening every token to the pre's own colour."
           collect (prog1 (subseq s start i) (setf start (1+ i)))))
 (defun has-block-children (styles node)
   (some (lambda (c) (block-level-p styles c))
-        (loop for c across (h:dnode-children node) collect c)))
+        (flatten-contents (coerce (h:dnode-children node) 'list) styles)))
 
 ;;; ---- block layout -------------------------------------------------------
 (defvar *layout-debug* nil)
@@ -1070,10 +1096,12 @@ Returns (values lbox advance-height)."
       ;; collapse (CSS 2.1 8.3.1) with the next sibling's top margin instead of
       ;; simply summing.  NIL = no collapsible margin precedes the next block
       ;; (start of flow, or inline/clearance separates them).
-      (let ((kids (multiple-value-bind (before after) (pseudo-kids node styles)
-                    (append (when before (list before))
-                            (coerce (h:dnode-children node) 'list)
-                            (when after (list after)))))
+      (let ((kids (flatten-contents
+                   (multiple-value-bind (before after) (pseudo-kids node styles)
+                     (append (when before (list before))
+                             (coerce (h:dnode-children node) 'list)
+                             (when after (list after))))
+                   styles))
             ;; PREV-MB is the pending collapsible margin of the last in-flow
             ;; block, kept as a (max-positive . min-negative) pair (NIL = none) so
             ;; that a negative margin which is momentarily dominated by a larger
@@ -1285,7 +1313,7 @@ column distributes grow/shrink into; NIL means auto (size to content)."
          (justify (css:cstyle-justify-content base-cs))
          (align (css:cstyle-align-items base-cs))
          (gap (css:cstyle-gap base-cs))
-         (items (remove-if-not (lambda (k) (let ((c (st styles k))) (and c (not (string= (css:cstyle-display c) "none"))))) (child-elements node)))
+         (items (remove-if-not (lambda (k) (let ((c (st styles k))) (and c (not (string= (css:cstyle-display c) "none"))))) (effective-child-elements node styles)))
          ;; `order` reorders items (CSS 5.4); a stable sort keeps DOM order among ties.
          (items (stable-sort (copy-list items) #'<
                              :key (lambda (it) (let ((c (st styles it))) (if c (css:cstyle-order c) 0)))))
@@ -1843,7 +1871,7 @@ max-content width.  Bounded by CONTENT-W so it stays resilient."
         ;; heuristic that flattened a vertical menu onto one line and over-sized the
         ;; item badly.  Out-of-flow children contribute nothing.
         ((flex-row-p cs)
-         (let ((items (remove-if (lambda (k) (out-of-flow-p styles k)) (child-elements node))))
+         (let ((items (remove-if (lambda (k) (out-of-flow-p styles k)) (effective-child-elements node styles))))
            (min content-w
                 (+ (loop for k in items sum (pref-border-width k styles content-w (1+ depth)))
                    (* (css:cstyle-gap cs) (max 0 (1- (length items))))))))

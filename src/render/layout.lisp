@@ -162,6 +162,10 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                        (atom! (svg-box n cs) n))
                       ((string= (h:dnode-name n) "canvas")
                        (atom! (canvas-box n cs) n))
+                      ;; <iframe>: replaced by the nested document, never its fallback
+                      ;; children — an empty box, not the "FAIL" text between its tags.
+                      ((string= (h:dnode-name n) "iframe")
+                       (atom! (replaced-box n cs content-w) n))
                       ((and cs (member (cdisplay cs) '("inline-block" "flex" "table") :test #'string=))
                        (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
                          (declare (ignore adv))
@@ -937,7 +941,14 @@ shift it to its final top/left."
             ((string-equal name "svg") (svg-box node cs))
             ((string-equal name "canvas") (canvas-box node cs))
             ((and (string-equal name "object") (object-data-image node))
-             (object-box node cs (object-data-image node)))))))
+             (object-box node cs (object-data-image node)))
+            ;; <iframe> is replaced: its content is the nested document, never the
+            ;; fallback children — an unsupported iframe renders as an empty box of
+            ;; its own size (default 300x150), not the "FAIL" text between its tags.
+            ((string-equal name "iframe")
+             (let ((w (let ((s (css::resolve-size (css:cstyle-width cs) (or avail-w 300)))) (if (numberp s) (max 0 s) 300)))
+                   (hh (let ((s (css::resolve-size (css:cstyle-height cs) avail-h))) (if (numberp s) (max 0 s) 150))))
+               (make-lbox :x 0 :y 0 :w w :h hh :style cs :node node :kind :block)))))))
 
 (defun %layout-node (node styles x y avail-w &optional avail-h)
   "Establish an absolute containing block for positioned elements, then lay the

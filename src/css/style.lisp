@@ -977,12 +977,16 @@ Invalid/unparseable components are left as NIL (= fall back to BORDER-COLOR)."
     ;; prior rule left — so `border: 1px solid` over `border: 2em dotted red` is
     ;; solid black (currentColor), not solid red (CSS Backgrounds 3 §border).
     (unless col (setf col (cstyle-color cs)))
+    ;; an omitted style resets to `none` (the initial value): `border: 1px blue`
+    ;; paints nothing, not a leftover `solid` from a prior rule — Acid3's
+    ;; `* { border: 1px blue }` must not draw a blue box round every element.
+    (unless sty (setf sty "none"))
     (flet ((setw (side) (case side (:t (setf (cstyle-border-top-width cs) w)) (:r (setf (cstyle-border-right-width cs) w))
                           (:b (setf (cstyle-border-bottom-width cs) w)) (:l (setf (cstyle-border-left-width cs) w))))
            (setc (side) (case side (:t (setf (cstyle-border-top-color cs) col)) (:r (setf (cstyle-border-right-color cs) col))
                           (:b (setf (cstyle-border-bottom-color cs) col)) (:l (setf (cstyle-border-left-color cs) col))))
-           (sets (side) (when sty (case side (:t (setf (cstyle-border-top-style cs) sty)) (:r (setf (cstyle-border-right-style cs) sty))
-                          (:b (setf (cstyle-border-bottom-style cs) sty)) (:l (setf (cstyle-border-left-style cs) sty))))))
+           (sets (side) (case side (:t (setf (cstyle-border-top-style cs) sty)) (:r (setf (cstyle-border-right-style cs) sty))
+                          (:b (setf (cstyle-border-bottom-style cs) sty)) (:l (setf (cstyle-border-left-style cs) sty)))))
       (cond ((string= prop "border") (mapc (lambda (s) (setw s) (setc s) (sets s)) '(:t :r :b :l)))
             ((string= prop "border-top") (setw :t) (setc :t) (sets :t))
             ((string= prop "border-bottom") (setw :b) (setc :b) (sets :b))

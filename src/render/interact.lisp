@@ -74,15 +74,19 @@
 ;;; (values canvas root-box styles).
 
 (defun render-document (doc &key (width 1024) (css "") (min-height 200)
-                                 (max-height 20000) viewport-height (scroll-y 0))
+                                 (max-height 20000) viewport-height (scroll-y 0) scroll-to)
   "Cascade + lay out + paint an already-parsed DOC at WIDTH px.  Returns
    (values CANVAS ROOT-BOX STYLES).
 
-   Height models mirror RENDER-TO-CANVAS: with VIEWPORT-HEIGHT NIL the canvas
-   grows to content height (reader view — a shell scrolls by blitting a
-   sub-rectangle).  With VIEWPORT-HEIGHT set the canvas is that fixed height and
-   the page is scrolled up by SCROLL-Y px (clamped to the scrollable range) and
-   clipped to the viewport — an in-canvas viewport scroll."
+   Two height models, chosen the same way as RENDER-TO-CANVAS so the reader-view
+   service and the conformance harness agree:
+   * Viewport model — when VIEWPORT-HEIGHT is set AND the root establishes overflow
+     clipping (html/body {overflow:hidden|clip|scroll}), the canvas is a fixed
+     VIEWPORT-HEIGHT rectangle, painting is clipped to it, position:fixed boxes land
+     at viewport coordinates, and the page is scrolled so SCROLL-TO's fragment anchor
+     sits at the top (how a browser tames Acid2's giant margins and composes the face).
+   * Reader view — otherwise the canvas grows to content height (a shell scrolls by
+     blitting a sub-rectangle); SCROLL-Y offsets it within MAX-HEIGHT."
   (let* ((css::*viewport-w* (float width))
          (css::*viewport-h* (float (or viewport-height 600)))
          (*element-canvas* (make-hash-table :test 'eq))
@@ -93,14 +97,18 @@
          ;; page's own font resolves over the bundled fallback (no-op offline).
          (styles (progn (load-font-faces sheet)
                         (note-progress :cascade) (css:compute-styles doc sheet)))
-         (vph (and viewport-height (round viewport-height))))
+         ;; a fixed-height viewport only when the page itself clips at the root —
+         ;; a normal page keeps growing to content even with a viewport height given.
+         (viewport-p (and viewport-height (root-clips-p doc styles)))
+         (vph (and viewport-p (round viewport-height))))
     (note-progress :layout)
-    (multiple-value-bind (root adv) (layout-tree doc styles width vph)
+    (multiple-value-bind (root adv) (layout-tree doc styles width vph (and viewport-p scroll-to))
       (declare (ignore adv))
       (let* ((content-h (if root (round (+ (lbox-y root) (lbox-h root) 8)) min-height))
              (height (if vph vph (min max-height (max min-height content-h))))
-             ;; clamp the requested scroll to the scrollable range
-             (sy (if vph (max 0 (min (round scroll-y) (max 0 (- content-h vph)))) 0))
+             ;; reader-view only: clamp an extra scroll offset to the scrollable range
+             (sy (if (and (not vph) (plusp scroll-y))
+                     (max 0 (min (round scroll-y) (max 0 (- content-h height)))) 0))
              (body (css:query-select doc "body"))
              (bg (let ((cs (and body (gethash body styles))))
                    (and cs (css:cstyle-background cs))))

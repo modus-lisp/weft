@@ -551,7 +551,10 @@ Ignores the system-font keywords (caption/icon/...)."
                  ;; `none`/`transparent` clear any background set by an earlier rule
                  ((member tok '("none" "transparent") :test #'string=)
                   (setf (cstyle-background cs) nil (cstyle-bg-gradient cs) nil (cstyle-bg-image cs) nil))
-                 (t (let ((c (resolve-color (first-token value)))) (when c (setf (cstyle-background cs) c)))))
+                 ;; the colour can sit anywhere in the shorthand, not just first —
+                 ;; `background: url(…) no-repeat 1px white` still sets the bg colour.
+                 (t (let ((c (some #'resolve-color (css-background-tokens value))))
+                      (when c (setf (cstyle-background cs) c)))))
            ;; capture a url() image (data: URI) from `background`/`background-image`
            (when url
              (setf (cstyle-bg-image cs) url)

@@ -1975,14 +1975,18 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
           (some (lambda (c) (find-lbox-for-node c node)) (lbox-children lb))))))
 
 (defun layout-tree (document styles width &optional viewport-height scroll-to)
-  (let ((*floats* nil) (*abs-pending* nil) (*fixed-pending* nil)
-        (*intrinsic-cache* (make-hash-table :test 'equal))
-        (body (css:query-select document "body")))
-    (when body
+  (let* ((*floats* nil) (*abs-pending* nil) (*fixed-pending* nil)
+         (*intrinsic-cache* (make-hash-table :test 'equal))
+         ;; Lay out the ROOT element (<html>), not <body>: the root's own width /
+         ;; border / margin / padding form the containing block for <body> (Acid3's
+         ;; `html { width: 32em; border: 2cm solid gray; margin: 1em }`).  A normal
+         ;; page's html is auto-width with no box, so <body> still fills the viewport.
+         (root-el (or (css:query-select document "html") (css:query-select document "body"))))
+    (when root-el
       ;; The initial containing block has the viewport height when the viewport
-      ;; model is active (definite) — so body's percentage height resolves
-      ;; against it (CSS 2.1 10.5); otherwise the page height is indefinite.
-      (multiple-value-bind (root adv) (layout-node body styles 0 0 width viewport-height)
+      ;; model is active (definite) — so a percentage height resolves against it
+      ;; (CSS 2.1 10.5); otherwise the page height is indefinite.
+      (multiple-value-bind (root adv) (layout-node root-el styles 0 0 width viewport-height)
         (let* ((ph (if root (max 0 (+ (lbox-y root) (lbox-h root))) 0))
                (vph (or viewport-height ph))
                ;; Scroll the viewport to the SCROLL-TO anchor (e.g. Acid2's

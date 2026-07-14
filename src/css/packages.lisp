@@ -35,7 +35,7 @@
            #:cstyle-justify-items #:cstyle-justify-self #:cstyle-align-self
            #:cstyle-top #:cstyle-left #:cstyle-right #:cstyle-bottom #:cstyle-z-index #:cstyle-bg-gradient
            #:cstyle-min-height #:cstyle-max-height #:cstyle-content #:cstyle-cursor
-           #:cstyle-text-transform #:cstyle-hyphens #:cstyle-visibility
+           #:cstyle-text-transform #:cstyle-hyphens #:cstyle-visibility #:cstyle-vertical-align
            #:cstyle-letter-spacing #:cstyle-word-spacing #:cstyle-text-indent
            #:cstyle-overflow-wrap #:cstyle-word-break
            #:cstyle-bg-image #:cstyle-bg-repeat #:cstyle-bg-position #:cstyle-bg-size #:cstyle-bg-attachment

@@ -23,6 +23,7 @@
   (text-decoration nil) (list-style "disc")
   (max-width :none) (min-width 0.0) (margin-left-auto nil) (margin-right-auto nil)
   (float "none") (clear "none") (position "static") (box-sizing "content-box") (overflow "visible")
+  (vertical-align nil)  ; NIL=baseline | ("top"|"middle"|"bottom"|"sub"|"super") | (num "px"|"em"|"%") — not inherited
   (flex-direction "row") (justify-content "flex-start") (align-items "stretch") (align-content "stretch")
   (flex-wrap "nowrap") (flex-grow 0.0) (flex-shrink 1.0) (flex-basis "auto") (order 0) (gap 0.0)
   ;; CSS Grid (raw template/placement strings, parsed at layout time; see grid.lisp)
@@ -613,6 +614,8 @@ Ignores the system-font keywords (caption/icon/...)."
          (let ((v (parse-value "text-transform" value))) (when (stringp v) (setf (cstyle-text-transform cs) v))))
         ((string= prop "hyphens")
          (let ((v (parse-value "hyphens" value))) (when (stringp v) (setf (cstyle-hyphens cs) v))))
+        ((string= prop "vertical-align")
+         (let ((v (parse-value "vertical-align" value))) (unless (eq v :invalid) (setf (cstyle-vertical-align cs) v))))
         ((string= prop "visibility")
          (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
            (when (member v '("visible" "hidden" "collapse") :test #'string=)

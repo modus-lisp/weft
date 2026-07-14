@@ -501,6 +501,34 @@ explicit <number>/<length>/<percentage> multiplier is used as-is; `normal`
   (let ((lh (css:cstyle-line-height cs)) (fs (css:cstyle-font-size cs)))
     (* fs (if (eq lh :normal) (face-normal-lh-factor face) lh))))
 
+(defun font-ascent-px (cs)
+  "Ascent of CS's font in px (baseline to top of the em box)."
+  (* (css:cstyle-font-size cs) (face-ascent-ratio (style-face cs))))
+
+(defun va-atomic-extent (lb base-cs)
+  "The ascent/descent an atomic inline box LB contributes ABOVE/BELOW the line's
+baseline for its vertical-align (CSS 2.1 10.8), plus a placement KIND.  An inline
+box's own baseline is its bottom margin edge.  Returns (values ASCENT DESCENT KIND)
+where KIND is :normal (positioned by baseline), :top or :bottom (line-relative)."
+  (let* ((cs (lbox-style lb)) (h (lbox-h lb))
+         (va (and cs (css:cstyle-vertical-align cs)))
+         (fs (css:cstyle-font-size (or cs base-cs))))
+    (flet ((shift (raise) (values (+ h raise) (- raise))))   ; raise>0 lifts the box up
+      (cond
+        ((null va) (shift 0))                                        ; baseline
+        ((and (consp va) (numberp (first va)))                       ; <length>/<percentage>
+         (shift (let ((n (first va)) (u (second va)))
+                  (cond ((string= u "px") n) ((string= u "em") (* n fs))
+                        ((string= u "%") (* (/ n 100.0) (used-line-height (or cs base-cs)))) (t 0)))))
+        ((equal va '("super")) (shift (* 0.3 (css:cstyle-font-size base-cs))))
+        ((equal va '("sub"))   (shift (* -0.2 (css:cstyle-font-size base-cs))))
+        ((equal va '("middle"))
+         (let ((xh (* 0.25 (css:cstyle-font-size base-cs))))         ; ~half the x-height above baseline
+           (values (+ (/ h 2.0) xh) (- (/ h 2.0) xh) :normal)))
+        ((equal va '("top"))    (values h 0 :top))
+        ((equal va '("bottom")) (values h 0 :bottom))
+        (t (shift 0))))))
+
 (defun apply-text-transform (word transform)
   "Apply CSS text-transform to WORD (a whitespace-delimited token, so `capitalize`
    upper-cases the token's first character)."
@@ -689,7 +717,21 @@ text-align.  Returns (values line-boxes total-height)."
                             lx))    ; blank line (pre-line/pre-wrap forced break): empty line box
                  (used (- lastx lx))
                  (shift (cond ((string= align "center") (max 0 (floor (- avail used) 2)))
-                              ((string= align "right") (max 0 (- avail used))) (t 0))))
+                              ((string= align "right") (max 0 (- avail used))) (t 0)))
+                 ;; baseline model (CSS 2.1 10.8): the strut is the block's own font;
+                 ;; each atomic contributes ascent/descent about the baseline per its
+                 ;; vertical-align.  line height = max-ascent + max-descent.  With no
+                 ;; atomics this is just the strut, so a text-only line is unchanged.
+                 (strut-asc (font-ascent-px base-cs))
+                 (strut-desc (max 0.0 (- lh strut-asc)))
+                 (metrics (loop for it in items unless (frag-p it)
+                                collect (multiple-value-bind (a d k) (va-atomic-extent it base-cs)
+                                          (list it a d (or k :normal)))))
+                 (line-asc (reduce #'max metrics :initial-value strut-asc
+                                   :key (lambda (m) (if (member (fourth m) '(:top :bottom)) (lbox-h (first m)) (second m)))))
+                 (line-desc (reduce #'max metrics :initial-value strut-desc
+                                    :key (lambda (m) (if (member (fourth m) '(:top :bottom)) 0.0 (third m)))))
+                 (lh2 (max 1 (round (+ line-asc line-desc)))))
             (when (plusp shift)
               (dolist (it items) (if (frag-p it) (incf (frag-x it) shift) (shift-box it shift 0))))
             (when (and (string= align "justify") (< i n))
@@ -700,9 +742,29 @@ text-align.  Returns (values line-boxes total-height)."
                     (when (plusp extra)
                       (loop for j from 0 for it in frags
                             do (incf (frag-x it) (round (* j (/ extra (1- f)))))))))))
-            (dolist (it items) (unless (frag-p it) (shift-box it 0 (round y))))  ; atomic to line y
-            (push (make-lbox :x lx :y y :w avail :h line-h :kind :line :children items) lines))
-          (incf y line-h) (incf h line-h))))
+            (if (loop for m in metrics
+                      thereis (let ((va (css:cstyle-vertical-align (lbox-style (first m)))))
+                                (and (consp va) (numberp (first va)))))   ; a <length>/<percentage> shift
+                ;; a line carrying an explicit vertical-align uses the baseline model:
+                ;; place each atomic at its aligned position; text frags still paint
+                ;; from the line top (line-asc is the strut ascent, so text lines up).
+                (progn
+                  (dolist (m metrics)
+                    (destructuring-bind (it a d k) m
+                      (declare (ignore d))
+                      (let ((top (case k
+                                   (:top    (round y))
+                                   (:bottom (round (+ y (- lh2 (lbox-h it)))))
+                                   (t       (round (+ y (- line-asc a)))))))
+                        (shift-box it 0 (- top (round (lbox-y it)))))))
+                  (push (make-lbox :x lx :y y :w avail :h lh2 :kind :line :children items) lines)
+                  (incf y lh2) (incf h lh2))
+                ;; the common case (no explicit vertical-align): unchanged — atomics
+                ;; sit at the line top, line height is the tallest item.
+                (progn
+                  (dolist (it items) (unless (frag-p it) (shift-box it 0 (round y))))
+                  (push (make-lbox :x lx :y y :w avail :h line-h :kind :line :children items) lines)
+                  (incf y line-h) (incf h line-h)))))))
     (values (nreverse lines) h)))
 
 (defun collect-raw (node)

@@ -384,17 +384,23 @@ Returns NIL at end of stream with no bytes read."
 
 (defun keep-alive-p (headers)
   "Whether the connection may be reused: the body was self-delimiting (Content-Length
-   or chunked) and the server didn't ask to close."
+   or chunked) and the server didn't ask to close OR switch protocols."
   (let ((conn (get-header headers "connection")))
-    (and (not (and conn (search "close" conn :test #'char-equal)))
+    (and (not (and conn (or (search "close" conn :test #'char-equal)
+                            ;; `Connection: Upgrade` leaves the socket in a protocol-
+                            ;; switch limbo (some Apache configs send it on plain 200s);
+                            ;; pooling it makes the *next* request read garbage/EOF.
+                            (search "upgrade" conn :test #'char-equal))))
          (or (get-header headers "content-length")
              (let ((te (get-header headers "transfer-encoding")))
                (and te (search "chunked" te :test #'char-equal)))))))
 
 (defun socket-transport (method url req-headers)
   "One HTTP/1.1 exchange to URL over a pooled raw socket (http) or seal TLS stream
-(https).  Connections are kept alive and reused per host; a stale reused connection
-is retried once on a fresh one.  Cookies are attached and Set-Cookie stored."
+(https).  Connections are kept alive and reused per host; a connection-level failure
+(a pooled socket the server has since closed, or a transient reset) is retried on a
+fresh connection, up to *TRANSPORT-TRIES* attempts.  Cookies are attached and
+Set-Cookie stored."
   (let* ((u (url:parse url))
          (scheme (url:url-scheme u))
          (host (url:hostname u))
@@ -408,9 +414,9 @@ is retried once on a fresh one.  Cookies are attached and Set-Cookie stored."
              (write-request stream method host path all-headers)
              (let ((line (read-header-line stream)))
                ;; No status line means the peer closed the connection before
-               ;; answering — almost always a keep-alive socket the server timed
-               ;; out since we pooled it.  Signal so the caller retries fresh
-               ;; instead of surfacing an empty 0-status response.
+               ;; answering — a keep-alive socket the server timed out since we
+               ;; pooled it.  Signal so the loop retries fresh instead of returning
+               ;; an empty 0-status response.
                (unless (and line (position #\Space line))
                  (error "weft.fetch: no HTTP status line (stale/closed connection)"))
                (let* ((status (parse-status-line line))
@@ -419,21 +425,20 @@ is retried once on a fresh one.  Cookies are attached and Set-Cookie stored."
                  (store-cookies headers host)
                  (values (make-response :status status :headers headers :body body :url url)
                          (keep-alive-p headers))))))
-      (multiple-value-bind (stream pooled) (acquire-stream scheme host port *read-timeout*)
-        (handler-case
-            (multiple-value-bind (resp keep) (exchange stream)
-              (release-stream scheme host port stream keep)
-              resp)
-          (error (e)
-            (ignore-errors (close stream))
-            ;; a reused connection may have been closed by the server since — retry fresh
-            (if pooled
-                (let ((s2 (open-stream-for scheme host port *read-timeout*)))
-                  (handler-case
-                      (multiple-value-bind (resp keep) (exchange s2)
-                        (release-stream scheme host port s2 keep) resp)
-                    (error (e2) (ignore-errors (close s2)) (error e2))))
-                (error e))))))))
+      (labels ((attempt (stream pooled)
+                 (handler-case
+                     (multiple-value-bind (resp keep) (exchange stream)
+                       (release-stream scheme host port stream keep)
+                       resp)
+                   (error (e)
+                     (ignore-errors (close stream))
+                     ;; only a *reused* socket is expected to have gone stale — retry it
+                     ;; once on a fresh connection; a fresh failure is a real error.
+                     (if pooled
+                         (attempt (open-stream-for scheme host port *read-timeout*) nil)
+                         (error e))))))
+        (multiple-value-bind (stream pooled) (acquire-stream scheme host port *read-timeout*)
+          (attempt stream pooled))))))
 
 (defvar *http-transport* #'socket-transport
   "Function (method url req-headers) -> RESPONSE.  The default is a pure-CL

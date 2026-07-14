@@ -110,8 +110,13 @@
              (sy (if (and (not vph) (plusp scroll-y))
                      (max 0 (min (round scroll-y) (max 0 (- content-h height)))) 0))
              (body (css:query-select doc "body"))
-             (bg (let ((cs (and body (gethash body styles))))
-                   (and cs (css:cstyle-background cs))))
+             ;; canvas background propagation (CSS 2.1 14.2): the root element's
+             ;; background paints the canvas; only when the root is transparent does
+             ;; the body's background propagate up in its place.
+             (bg (let* ((html (css:query-select doc "html"))
+                        (hbg (let ((cs (and html (gethash html styles)))) (and cs (css:cstyle-background cs))))
+                        (bbg (let ((cs (and body (gethash body styles)))) (and cs (css:cstyle-background cs)))))
+                   (or hbg bbg)))
              (cv (make-canvas width height (if bg (rgb bg) '(255 255 255)))))
         (when (and root (plusp sy)) (shift-box root 0 (- sy)))
         (note-progress :painting)

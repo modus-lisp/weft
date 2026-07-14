@@ -234,14 +234,29 @@
   (and (> (length name) 2) (string-equal (subseq name 0 2) "on")
        (member (string-downcase (subseq name 2)) +on-events+ :test #'string=)))
 
+(defparameter +window-reflected-events+
+  '("load" "unload" "resize" "scroll" "error" "beforeunload" "hashchange"
+    "popstate" "pageshow" "pagehide" "online" "offline" "message")
+  "Event-handler content attributes that, when written on <body> (or <frameset>),
+   set the handler on the WINDOW rather than the element (HTML §body-onload et al.)
+   — e.g. Acid3's `<body onload=\"update()\">` is really window.onload.")
+
+(defun window-reflected-handler-p (node type)
+  (and (eq (h:dnode-kind node) :element)
+       (member (h:dnode-name node) '("body" "frameset") :test #'string-equal)
+       (member type +window-reflected-events+ :test #'string=)))
+
 (defun register-inline-handler (ctx node name code)
   "Compile an on<event>=\"CODE\" content attribute into an event handler.  The
-   handler body runs with `event` in scope (the classic inline-handler form)."
+   handler body runs with `event` in scope (the classic inline-handler form).  On
+   <body>/<frameset> the window-reflected handlers (onload, …) target the window."
   (let ((fn (ignore-errors
              (js:eval-script (context-realm ctx)
                              (format nil "(function(event){~a~%})" code)))))
     (when (js:js-callable-p fn)
-      (set-on-handler ctx node (string-downcase (subseq name 2)) fn))))
+      (let ((type (string-downcase (subseq name 2))))
+        (set-on-handler ctx (if (window-reflected-handler-p node type) (proto ctx :window) node)
+                        type fn)))))
 
 (defun install-on-handlers (ctx target)
   "Install on<event> accessor properties on prototype TARGET."

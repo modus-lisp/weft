@@ -76,9 +76,20 @@ and the selector parser sees it as a literal (type) identifier."
                         finally (setf vend end))
                   (let* ((vtext (string-trim '(#\Space) (toks-text toks vstart vend)))
                          (imp nil))
-                    ;; strip !important
-                    (let ((p (search "!important" vtext :test #'char-equal)))
-                      (when p (setf imp t vtext (string-trim '(#\Space) (subseq vtext 0 p)))))
+                    ;; strip a trailing !important — CSS Syntax allows whitespace
+                    ;; (and comments) between the `!` and `important`, so Acid3's
+                    ;; `border: 1px solid ! important` counts as important too.
+                    (let ((p (position #\! vtext :from-end t)))
+                      (when p
+                        (let ((rest (string-left-trim '(#\Space #\Tab #\Newline #\Return)
+                                                      (subseq vtext (1+ p)))))
+                          (when (and (>= (length rest) 9)
+                                     (string-equal (subseq rest 0 9) "important")
+                                     (every (lambda (c) (member c '(#\Space #\Tab #\Newline #\Return)))
+                                            (subseq rest 9)))
+                            (setf imp t
+                                  vtext (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                     (subseq vtext 0 p)))))))
                     (when (plusp (length vtext))
                       (push (make-css-decl :prop prop :value vtext :important imp) decls)))
                   (setf i (1+ vend)))

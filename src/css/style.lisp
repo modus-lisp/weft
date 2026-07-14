@@ -966,10 +966,15 @@ Invalid/unparseable components are left as NIL (= fall back to BORDER-COLOR)."
               ((member tok '("thin" "medium" "thick") :test #'string-equal) (setf w (cond ((string-equal tok "thin") 1.0) ((string-equal tok "thick") 5.0) (t 3.0))))
               ((border-style-token-p tok) (setf sty (string-downcase tok)))
               ((resolve-border-color tok cs) (setf col (resolve-border-color tok cs))))))
+    ;; the `border` shorthand sets all three sub-properties: an omitted color
+    ;; resets border-color to currentColor (the element's color), not the value a
+    ;; prior rule left — so `border: 1px solid` over `border: 2em dotted red` is
+    ;; solid black (currentColor), not solid red (CSS Backgrounds 3 §border).
+    (unless col (setf col (cstyle-color cs)))
     (flet ((setw (side) (case side (:t (setf (cstyle-border-top-width cs) w)) (:r (setf (cstyle-border-right-width cs) w))
                           (:b (setf (cstyle-border-bottom-width cs) w)) (:l (setf (cstyle-border-left-width cs) w))))
-           (setc (side) (when col (case side (:t (setf (cstyle-border-top-color cs) col)) (:r (setf (cstyle-border-right-color cs) col))
-                          (:b (setf (cstyle-border-bottom-color cs) col)) (:l (setf (cstyle-border-left-color cs) col)))))
+           (setc (side) (case side (:t (setf (cstyle-border-top-color cs) col)) (:r (setf (cstyle-border-right-color cs) col))
+                          (:b (setf (cstyle-border-bottom-color cs) col)) (:l (setf (cstyle-border-left-color cs) col))))
            (sets (side) (when sty (case side (:t (setf (cstyle-border-top-style cs) sty)) (:r (setf (cstyle-border-right-style cs) sty))
                           (:b (setf (cstyle-border-bottom-style cs) sty)) (:l (setf (cstyle-border-left-style cs) sty))))))
       (cond ((string= prop "border") (mapc (lambda (s) (setw s) (setc s) (sets s)) '(:t :r :b :l)))
@@ -1200,14 +1205,24 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                          (dolist (pv inline-pvs)
                            (when (font-decl-p (car pv))
                              (apply-decl cs (car pv) (resolve-vars (cdr pv) vars) parent-cs))))
-                       ;; pass 2: author rules (var()-resolved), then inline style (wins)
-                       (dolist (m sorted)
-                         (dolist (d (third m))
-                           (unless (custom-prop-p (css-decl-prop d))
-                             (apply-decl cs (css-decl-prop d) (resolve-vars (css-decl-value d) vars) parent-cs))))
-                       (dolist (pv inline-pvs)
-                         (unless (custom-prop-p (car pv))
-                           (apply-decl cs (car pv) (resolve-vars (cdr pv) vars) parent-cs)))
+                       ;; pass 2: the cascade origins in priority order (CSS 2.1 6.4.1):
+                       ;; author normal (by specificity) -> inline normal -> author
+                       ;; !important (by specificity).  Splitting normal from !important
+                       ;; is what lets a low-specificity `!important` beat a
+                       ;; higher-specificity normal rule (Acid3's `* + * > * > p
+                       ;; { border: 1px solid !important }` over `.buckets p`).
+                       (flet ((apply-author (important)
+                                (dolist (m sorted)
+                                  (dolist (d (third m))
+                                    (when (and (not (custom-prop-p (css-decl-prop d)))
+                                               (eq (not (null (css-decl-important d))) important))
+                                      (apply-decl cs (css-decl-prop d)
+                                                  (resolve-vars (css-decl-value d) vars) parent-cs))))))
+                         (apply-author nil)                      ; author normal
+                         (dolist (pv inline-pvs)                 ; inline normal (beats author normal)
+                           (unless (custom-prop-p (car pv))
+                             (apply-decl cs (car pv) (resolve-vars (cdr pv) vars) parent-cs)))
+                         (apply-author t))                       ; author !important (beats all normal)
                        ;; legacy <center>: horizontally center its block-level children
                        ;; (the -webkit-center behavior) unless the author set a margin.
                        (let ((p (weft.html:dnode-parent n)))

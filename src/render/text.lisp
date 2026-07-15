@@ -100,24 +100,38 @@ downloading — text falls back to the bundled faces, as before.")
   "src-url -> :loaded | :failed, so a re-render (or a repeated @font-face across
 sheets) fetches each web font at most once.")
 
+(defvar *font-load-budget* nil
+  "Seconds LOAD-FONT-FACES may spend fetching @font-face fonts before it stops and
+   leaves the rest on the bundled fallback.  @font-face fetches are serial, and a
+   page can inject a stylesheet declaring hundreds of faces (nytimes.com ships a
+   1.4 MB script-built sheet), which would otherwise stall the render ~75s on fonts
+   the viewport never uses.  NIL (the default) is unbounded — the Acid gates and
+   any single-font page are unaffected.")
+
 (defun load-font-faces (sheet)
   "Fetch and register the @font-face web fonts declared in SHEET through
 *FONT-LOADER*.  A no-op when no loader is bound.  For each face the src URLs are
 tried best-format-first; the first that downloads and decodes is registered for
 that (family, weight, style) and the rest are skipped.  Every fetch is guarded and
-memoized, so a failed or absent font never breaks a render."
+memoized, so a failed or absent font never breaks a render.  Stops early once
+*FONT-LOAD-BUDGET* seconds have elapsed (a page can declare far more faces than it
+uses)."
   (when *font-loader*
-    (dolist (face (css:collect-font-faces sheet))
-      (let ((fam (getf face :family)) (weight (getf face :weight)) (style (getf face :style)))
-        (block one
-          (dolist (url (getf face :urls))
-            (case (gethash url *font-face-cache*)
-              (:loaded (return-from one))          ; this face already came from this url
-              (:failed nil)                        ; known-bad url: try the next
-              (t (let ((bytes (ignore-errors (funcall *font-loader* url))))
-                   (if (and bytes (register-font fam bytes :weight weight :style style))
-                       (progn (setf (gethash url *font-face-cache*) :loaded) (return-from one))
-                       (setf (gethash url *font-face-cache*) :failed)))))))))))
+    (let ((deadline (and *font-load-budget*
+                         (+ (get-internal-real-time)
+                            (round (* *font-load-budget* internal-time-units-per-second))))))
+      (dolist (face (css:collect-font-faces sheet))
+        (when (and deadline (> (get-internal-real-time) deadline)) (return))
+        (let ((fam (getf face :family)) (weight (getf face :weight)) (style (getf face :style)))
+          (block one
+            (dolist (url (getf face :urls))
+              (case (gethash url *font-face-cache*)
+                (:loaded (return-from one))          ; this face already came from this url
+                (:failed nil)                        ; known-bad url: try the next
+                (t (let ((bytes (ignore-errors (funcall *font-loader* url))))
+                     (if (and bytes (register-font fam bytes :weight weight :style style))
+                         (progn (setf (gethash url *font-face-cache*) :loaded) (return-from one))
+                         (setf (gethash url *font-face-cache*) :failed))))))))))))
 
 (defun resolve-face (family-list weight style-kw)
   "Return the cached FACE for (FAMILY-LIST WEIGHT STYLE-KW), resolving+caching on

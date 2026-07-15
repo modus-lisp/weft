@@ -75,6 +75,10 @@ no-op passthrough when the cache is unbound (measurement outside a layout pass).
   (and (eq (h:dnode-kind node) :element)
        (let ((cs (st styles node)))
          (and cs (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)))))
+(defun pseudo-out-of-flow-p (cs)
+  "True when a ::before/::after computed style CS is absolutely/fixed positioned,
+   so its generated box is removed from the enclosing inline run."
+  (and cs (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)))
 (defun flex-row-p (cs)
   "True when CS is a flex container whose main axis is horizontal (a row)."
   (and cs (string= (cdisplay cs) "flex")
@@ -201,12 +205,15 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                        ;; (e.g. .hlist li::after { content:"\a0 · " } separators).
                        ;; Block-level pseudo boxes are materialised in %LAYOUT-CORE;
                        ;; inline ones are emitted here as text in the enclosing run.
+                       ;; ...but an out-of-flow (absolute/fixed) pseudo is removed
+                       ;; from the inline run, just like an out-of-flow real child
+                       ;; (above): it is not part of the line's content flow.
                        (let ((bcs (gethash (cons n :before) styles)))
-                         (when (and bcs (css:cstyle-content bcs))
+                         (when (and bcs (css:cstyle-content bcs) (not (pseudo-out-of-flow-p bcs)))
                            (emit-text (css:cstyle-content bcs) bcs n)))
                        (loop for c across (h:dnode-children n) do (rec c cs n))
                        (let ((acs (gethash (cons n :after) styles)))
-                         (when (and acs (css:cstyle-content acs))
+                         (when (and acs (css:cstyle-content acs) (not (pseudo-out-of-flow-p acs)))
                            (emit-text (css:cstyle-content acs) acs n)))
                        (incf pend-px (iedge cs :right)))))))))
       (dolist (n nodes) (rec n (or (st styles n) default-style) n)))
@@ -2457,7 +2464,7 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                                  (round (- (+ (lbox-x lb) (css::resolve-pad (css:cstyle-padding-left cs) nil)) (* 1.3 fs)))
                                  (round (+ (lbox-y lb) (css::resolve-pad (css:cstyle-padding-top cs) nil)))
                                  (round (used-line-height cs))
-                                 (rgb (css:cstyle-color cs)) fs))))
+                                 (css:cstyle-color cs) fs))))
          ;; overflow:hidden/clip/scroll clips descendants to this box's padding box.
          (if (and cs (member (css:cstyle-overflow cs) '("hidden" "clip" "scroll") :test #'string=))
              (let ((*clip* (clip-intersect
@@ -2503,7 +2510,7 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                                            (+ (frag-x it) (frag-w it))))))
                           (draw-text-scribe cv (frag-text it) (round (frag-x it))
                                    (lbox-y lb) (lbox-h lb)
-                                   (rgb (css:cstyle-color cs))
+                                   (css:cstyle-color cs)
                                    (css:cstyle-font-size cs)
                                    :face (style-face cs)
                                    :bold (>= (css:cstyle-font-weight cs) 600)

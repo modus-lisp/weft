@@ -344,6 +344,9 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                    (cy0 (if *clip* (the fixnum (second *clip*)) 0))
                    (cx1 (if *clip* (the fixnum (third *clip*)) (canvas-width cv)))
                    (cy1 (if *clip* (the fixnum (fourth *clip*)) (canvas-height cv)))
+                   ;; the colour's alpha modulates glyph coverage: `color: transparent`
+                   ;; (alpha 0) paints nothing, a translucent colour paints faded.
+                   (alpha (let ((a (fourth color))) (if a (float a 1d0) 1d0)))
                    (penx (float x 1d0)))
               ;; itemize into script runs; paint each with the face that covers it
               ;; (fallback faces for non-Latin scripts / emoji), all on the primary
@@ -367,7 +370,7 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                                     (dotimes (xx w)
                                       (let ((px (+ ox xx)))
                                         (when (and (>= px cx0) (< px cx1))
-                                          (let ((c (aref cov (+ (* yy w) xx))))
+                                          (let ((c (* alpha (aref cov (+ (* yy w) xx)))))
                                             (when (> c 0d0)
                                               (scribe:blend-coverage scv px py c color)))))))))))
                           (incf penx (+ xadv letter-spacing))))))))

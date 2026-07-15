@@ -35,7 +35,7 @@ and the selector parser sees it as a literal (type) identifier."
                (:ws (write-char #\Space o))
                (:ident (write-string (css-escape-ident (ctok-value tk)) o))
                (:function (format o "~a(" (ctok-value tk)))
-               (:hash (format o "#~a" (ctok-value tk)))
+               (:hash (format o "#~a" (css-escape-ident (ctok-value tk))))
                (:string (format o "\"~a\"" (ctok-value tk)))
                (:url (format o "url(~a)" (ctok-value tk)))
                (:number (format o "~a" (ctok-value tk)))
@@ -278,7 +278,10 @@ prelude matches (a bare @media)."
                           (loop while (and (< j end) (not (eq (ctok-type (aref toks j)) :lbrace))) do (incf j))
                           (if (< j end)
                               (let* ((close (match-brace toks j))
-                                     (sel (string-trim '(#\Space) (toks-text toks pstart j)))
+                                     ;; trim only leading whitespace — a trailing space
+                                     ;; may be an escaped part of an identifier (`#\ `),
+                                     ;; and the selector parser trims safely per part.
+                                     (sel (string-left-trim '(#\Space #\Tab #\Newline) (toks-text toks pstart j)))
                                      (decls (parse-declarations toks (1+ j) close)))
                                 (when (plusp (length sel))
                                   (push (make-css-rule :selector sel :decls decls) rules))

@@ -323,6 +323,22 @@
                     ("DOCUMENT_FRAGMENT_NODE" . 11) ("NOTATION_NODE" . 12)))
       (js:put np (car pair) (num (cdr pair)) :enumerable nil :writable nil :configurable nil))))
 
+(defun image-preload (ctx node src)
+  "A script set NODE's (an <img>) src to SRC: fetch it on a macrotask, then fire
+   `load` (or `error` if it can't be decoded) on NODE.  Detached images created
+   with `new Image()` and lazy-loaders that swap a real URL in on `onload` rely on
+   this event to run their swap; without it the swap never fires in a static
+   render.  Fetching happens under the image loader bound around the script phase;
+   data: URLs decode at paint time, so they just report success."
+  (when (and (stringp src) (plusp (length src)))
+    (schedule-task ctx
+      (lambda ()
+        (let ((ok (if (and (>= (length src) 5) (string-equal (subseq src 0 5) "data:"))
+                      t
+                      (ignore-errors (and (weft.render:fetch-image src) t)))))
+          (ignore-errors
+            (dispatch-event ctx node (make-event-object ctx (if ok "load" "error") nil))))))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Element.prototype (<- Node.prototype)
 ;;; ---------------------------------------------------------------------------
@@ -371,8 +387,13 @@
     (defgetset ctx ep "src" (this) (or (get-attr (n this) "src") "")
       (v) (let ((node (n this)))
             (set-attr node "src" (jstr v)) (setf (context-dirty ctx) t)
-            (when (member (h:dnode-name node) '("iframe" "frame") :test #'string=)
-              (load-frame ctx node (jstr v)))))
+            (cond ((member (h:dnode-name node) '("iframe" "frame") :test #'string=)
+                   (load-frame ctx node (jstr v)))
+                  ;; setting an <img>'s src fetches it and fires load/error on a
+                  ;; macrotask — so `new Image(); img.onload=swap; img.src=url`
+                  ;; (lazy-image loaders) actually runs its swap before the render.
+                  ((string= (h:dnode-name node) "img")
+                   (image-preload ctx node (jstr v))))))
     (defgetset ctx ep "data" (this)
       (let ((node (n this)))
         (if (string= (h:dnode-name node) "object")

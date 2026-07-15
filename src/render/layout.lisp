@@ -110,7 +110,8 @@ whitespace state across the whole run is what keeps a space at a text/element
 boundary — \"see \" <a>x</a> stays \"see x\" — while genuinely adjacent runs like
 \"(\", <a>x</a>, \")\" still get none.  GAP is extra leading px from inline
 horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP."
-  (let ((words '()) (pend nil) (pend-px 0))        ; whitespace + inline-margin px before next token
+  (let ((words '()) (pend nil) (pend-px 0)        ; whitespace + inline-margin px before next token
+        (floats '()) (blocks '()))                ; float / block-level descendants hoisted out
     (labels ((emit1 (payload meta node)
                (push (list payload meta pend pend-px node) words) (setf pend nil pend-px 0))
              (amargin (cs side)                      ; atomic's OWN horizontal margin px (may be negative)
@@ -157,6 +158,12 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                       ;; inline run and must not contribute to a line's / a flex
                       ;; item's content width (they are placed separately).
                       ((and cs (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)))
+                      ;; A floated descendant is out of flow (CSS 2.1 §9.5): hoist it
+                      ;; so the enclosing block places it as a float and the inline
+                      ;; content flows around it, rather than laying it out inline
+                      ;; (which would give an empty run a phantom strut-height line).
+                      ((and cs (member (css:cstyle-float cs) '("left" "right") :test #'string=))
+                       (push n floats))
                       ((member (h:dnode-name n) '("script" "style") :test #'string=))
                       ;; Replaced elements (img, decodable <object>) render at their
                       ;; OWN intrinsic/attr size — checked BEFORE inline-block, because
@@ -181,10 +188,16 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                       ;; children — an empty box, not the "FAIL" text between its tags.
                       ((string= (h:dnode-name n) "iframe")
                        (atom! (replaced-box n cs content-w) n))
-                      ((and cs (member (cdisplay cs) '("inline-block" "flex" "table") :test #'string=))
+                      ((and cs (string= (cdisplay cs) "inline-block"))
                        (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
                          (declare (ignore adv))
                          (atom! lb n)))
+                      ;; A block-level flex/table/grid inside an inline run is not an
+                      ;; atomic inline: it breaks the run and lays out as a block
+                      ;; (block-in-inline, CSS 2.1 §9.2.1.1).  Hoisted for the enclosing
+                      ;; block to place, so a run of only such boxes leaves no line box.
+                      ((and cs (member (cdisplay cs) '("flex" "table" "grid") :test #'string=))
+                       (push n blocks))
                       ;; A block-level element with an explicit px width AND height
                       ;; that appears in inline flow (e.g. HN's <div class=votearrow>
                       ;; 10x10 inside an inline <a>) is not part of the surrounding
@@ -228,7 +241,10 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                            (emit-text (css:cstyle-content acs) acs n)))
                        (incf pend-px (iedge cs :right)))))))))
       (dolist (n nodes) (rec n (or (st styles n) default-style) n)))
-    (nreverse words)))
+    ;; extra values: floated and block-level descendants hoisted out of the run, in
+    ;; document order, for the caller to place (FLUSH-INLINE).  Single-value callers
+    ;; (intrinsic width) ignore them.
+    (values (nreverse words) (nreverse floats) (nreverse blocks))))
 
 ;;; Inline-token accessors: (PAYLOAD META SPACE GAP) — PAYLOAD is (CAR tok) (a word
 ;;; string or :ATOMIC), META its style or lbox, SPACE whether whitespace preceded it,
@@ -1233,7 +1249,29 @@ Returns (values lbox advance-height)."
             (min-cn 0))
         (flet ((flush-inline ()
                  (when group
-                   (let ((words (collect-words (nreverse group) styles cs content-w)))
+                   (multiple-value-bind (words hoisted-floats hoisted-blocks)
+                       (collect-words (nreverse group) styles cs content-w)
+                     ;; place floats hoisted out of the inline run first, at the flow
+                     ;; position the run starts from (after the pending margin), so the
+                     ;; lines flow around them (CSS 2.1 §9.5) — and an all-float run
+                     ;; leaves no phantom line box behind.
+                     (dolist (fn hoisted-floats)
+                       (let* ((pend (if prev-mb (+ (max 0 (car prev-mb)) (min 0 (cdr prev-mb))) 0))
+                              (lb (place-float fn styles cx (+ cx content-w) (+ yy pend) content-w)))
+                         (when lb (push lb children))))
+                     ;; block-level descendants hoisted out of the run break the inline
+                     ;; formatting context (block-in-inline, CSS 2.1 §9.2.1.1) and lay
+                     ;; out as normal blocks at the current flow position.
+                     (dolist (bn hoisted-blocks)
+                       (when prev-mb
+                         (let ((m (+ (max 0 (car prev-mb)) (min 0 (cdr prev-mb)))))
+                           (incf yy m) (incf content-h m)))
+                       (setf prev-mb nil)
+                       (multiple-value-bind (lb adv) (layout-node bn styles cx yy content-w child-avail-h)
+                         (when lb
+                           (push lb children)
+                           (incf yy adv) (incf content-h adv)
+                           (setf content-started t))))
                      (when words
                        ;; The preceding block's pending bottom margin applies in
                        ;; FULL before inline content — inline boxes have no

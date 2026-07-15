@@ -152,6 +152,25 @@
   G.ResizeObserver=RO;
   function Image(w,h){var e=document.createElement('img');if(w!==undefined)e.width=w;if(h!==undefined)e.height=h;return e;}
   G.Image=Image;
+  function Headers(init){this._h={};var self=this;if(init&&typeof init==='object'&&typeof init.forEach!=='function'){Object.keys(init).forEach(function(k){self._h[String(k).toLowerCase()]=String(init[k]);});}}
+  Headers.prototype.get=function(k){var v=this._h[String(k).toLowerCase()];return v===undefined?null:v;};
+  Headers.prototype.set=function(k,v){this._h[String(k).toLowerCase()]=String(v);};Headers.prototype.append=Headers.prototype.set;
+  Headers.prototype.has=function(k){return String(k).toLowerCase() in this._h;};Headers.prototype['delete']=function(k){delete this._h[String(k).toLowerCase()];};
+  Headers.prototype.forEach=function(cb,t){var self=this;Object.keys(this._h).forEach(function(k){cb.call(t,self._h[k],k,self);});};
+  G.Headers=Headers;
+  function Response(body,init){init=init||{};this._body=body==null?'':String(body);this.status=init.status||200;this.ok=this.status>=200&&this.status<300;this.statusText=init.statusText||'';this.headers=new Headers(init.headers);this.url='';this.redirected=false;this.type='basic';this.bodyUsed=false;}
+  Response.prototype.text=function(){return Promise.resolve(this._body);};
+  Response.prototype.json=function(){var b=this._body;return new Promise(function(res,rej){try{res(JSON.parse(b||'null'));}catch(e){rej(e);}});};
+  Response.prototype.clone=function(){return this;};Response.prototype.arrayBuffer=function(){return Promise.resolve(null);};Response.prototype.blob=function(){return Promise.resolve(null);};
+  G.Response=Response;
+  function Request(u,o){o=o||{};this.url=String(u);this.method=o.method||'GET';this.headers=new Headers(o.headers);this.credentials=o.credentials||'same-origin';}
+  G.Request=Request;
+  // A static render has no live network for scripts: reject fetch like an offline
+  // browser so a page degrades to its server-rendered content instead of throwing
+  // an uncaught ReferenceError that aborts hydration mid-flight.
+  function fetch(u,o){return Promise.reject(new TypeError('Failed to fetch (static render)'));}
+  G.fetch=fetch;
+  if(typeof G.queueMicrotask!=='function'){G.queueMicrotask=function(cb){Promise.resolve().then(cb);};}
   function mkctor(nat){var w=function(t,i){return nat(t,i);};w.prototype=nat.prototype;return w;}
   ['Event','CustomEvent','UIEvent','MouseEvent','KeyboardEvent'].forEach(function(nm){if(typeof G[nm]==='function')G[nm]=mkctor(G[nm]);});
 })(globalThis);")

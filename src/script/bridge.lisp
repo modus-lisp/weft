@@ -91,6 +91,70 @@
                         ("DOCUMENT_FRAGMENT_NODE" . 11) ("NOTATION_NODE" . 12)))
           (js:put node-iface (car pair) (num (cdr pair)) :enumerable nil :writable nil :configurable nil)))
       (iface "Element" :element) (iface "Document" :document))
+    ;; URL / URLSearchParams / XMLHttpRequest / IntersectionObserver / ResizeObserver —
+    ;; Web APIs real pages depend on.  URL parsing is delegated to weft.url (WHATWG)
+    ;; through a native helper; the rest are JS polyfills.  IntersectionObserver reports
+    ;; every observed element as intersecting on the next tick, so lazy-image loaders
+    ;; (NYT, CNN, …) swap in their real src/background before the final render instead
+    ;; of leaving grey placeholders a static render would never scroll into view.
+    (js:define-global realm "__weft_url_parse"
+      (js:native-function realm "__weft_url_parse"
+        (lambda (this args) (declare (ignore this))
+          (let* ((s (jstr (arg args 0)))
+                 (bv (arg args 1))
+                 (b (if (or (js:js-undefined-p bv) (eq bv js:*null*)) nil (jstr bv)))
+                 (u (ignore-errors (weft.url:parse s b))))
+            (if u
+                (let ((o (js:make-object :proto (js:eval-script realm "Object.prototype"))))
+                  (flet ((f (k v) (js:put o k (or v ""))))
+                    (f "href" (weft.url:href u))       (f "protocol" (weft.url:protocol u))
+                    (f "host" (weft.url:host-str u))    (f "hostname" (weft.url:hostname u))
+                    (f "port" (weft.url:port-str u))    (f "pathname" (weft.url:pathname-str u))
+                    (f "search" (weft.url:search-str u))(f "hash" (weft.url:hash-str u))
+                    (f "origin" (ignore-errors (weft.url:origin u))))
+                  o)
+                js:*null*)))
+        2))
+    (js:eval-script realm "(function(G){
+  function dec(x){try{return decodeURIComponent(String(x).replace(/\\+/g,' '));}catch(e){return x;}}
+  function USP(init){this._e=[];var self=this;
+    if(typeof init==='string'){var s=init.charAt(0)==='?'?init.slice(1):init;
+      if(s)s.split('&').forEach(function(p){if(!p)return;var i=p.indexOf('='),k=i<0?p:p.slice(0,i),v=i<0?'':p.slice(i+1);self._e.push([dec(k),dec(v)]);});}
+    else if(init&&typeof init==='object'){Object.keys(init).forEach(function(k){self._e.push([k,String(init[k])]);});}}
+  USP.prototype.append=function(k,v){this._e.push([String(k),String(v)]);};
+  USP.prototype['delete']=function(k){this._e=this._e.filter(function(e){return e[0]!==k;});};
+  USP.prototype.get=function(k){for(var i=0;i<this._e.length;i++)if(this._e[i][0]===k)return this._e[i][1];return null;};
+  USP.prototype.getAll=function(k){return this._e.filter(function(e){return e[0]===k;}).map(function(e){return e[1];});};
+  USP.prototype.has=function(k){return this.get(k)!==null;};
+  USP.prototype.set=function(k,v){var f=false;this._e=this._e.filter(function(e){if(e[0]===k){if(f)return false;f=true;e[1]=String(v);}return true;});if(!f)this._e.push([String(k),String(v)]);};
+  USP.prototype.forEach=function(cb,t){var self=this;this._e.forEach(function(e){cb.call(t,e[1],e[0],self);});};
+  USP.prototype.keys=function(){return this._e.map(function(e){return e[0];});};
+  USP.prototype.values=function(){return this._e.map(function(e){return e[1];});};
+  USP.prototype.toString=function(){return this._e.map(function(e){return encodeURIComponent(e[0])+'='+encodeURIComponent(e[1]);}).join('&');};
+  G.URLSearchParams=USP;
+  function URL(url,base){var p=__weft_url_parse(String(url),(base===undefined||base===null)?undefined:String(base));
+    if(!p)throw new TypeError('Invalid URL: '+url);
+    this.href=p.href;this.protocol=p.protocol;this.host=p.host;this.hostname=p.hostname;this.port=p.port;
+    this.pathname=p.pathname;this.search=p.search;this.hash=p.hash;this.origin=p.origin;this.searchParams=new USP(p.search);}
+  URL.prototype.toString=function(){return this.href;};URL.prototype.toJSON=function(){return this.href;};
+  G.URL=URL;
+  function XHR(){this.readyState=0;this.status=0;this.responseText='';this.response=null;this.onreadystatechange=null;this.onload=null;this.onerror=null;}
+  XHR.prototype.open=function(){this.readyState=1;};XHR.prototype.setRequestHeader=function(){};
+  XHR.prototype.overrideMimeType=function(){};XHR.prototype.getResponseHeader=function(){return null;};
+  XHR.prototype.getAllResponseHeaders=function(){return '';};XHR.prototype.abort=function(){};XHR.prototype.send=function(){};
+  XHR.prototype.addEventListener=function(){};XHR.prototype.removeEventListener=function(){};
+  G.XMLHttpRequest=XHR;
+  function IO(cb){this._cb=cb;}
+  IO.prototype.observe=function(el){var cb=this._cb,self=this;setTimeout(function(){try{cb([{target:el,isIntersecting:true,intersectionRatio:1,boundingClientRect:{top:0,left:0,bottom:0,right:0,width:0,height:0,x:0,y:0},intersectionRect:{top:0,left:0,bottom:0,right:0,width:0,height:0},rootBounds:null,time:0}],self);}catch(e){}},0);};
+  IO.prototype.unobserve=function(){};IO.prototype.disconnect=function(){};IO.prototype.takeRecords=function(){return [];};
+  G.IntersectionObserver=IO;
+  function RO(cb){this._cb=cb;}RO.prototype.observe=function(){};RO.prototype.unobserve=function(){};RO.prototype.disconnect=function(){};
+  G.ResizeObserver=RO;
+  function Image(w,h){var e=document.createElement('img');if(w!==undefined)e.width=w;if(h!==undefined)e.height=h;return e;}
+  G.Image=Image;
+  function mkctor(nat){var w=function(t,i){return nat(t,i);};w.prototype=nat.prototype;return w;}
+  ['Event','CustomEvent','UIEvent','MouseEvent','KeyboardEvent'].forEach(function(nm){if(typeof G[nm]==='function')G[nm]=mkctor(G[nm]);});
+})(globalThis);")
     docobj))
 
 (defun make-context (document &key (css "") (width 800) (base "") loader)

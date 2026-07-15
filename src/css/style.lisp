@@ -905,8 +905,9 @@ resolved length (calc()/min()/max() included), defaulting to 0."
   (let ((tt (string-trim '(#\Space #\Tab #\Newline) tok)))
     (if (and (> (length tt) 1) (char= (char tt (1- (length tt))) #\%))
         (let ((n (ignore-errors (read-from-string (subseq tt 0 (1- (length tt)))))))
-          (if (realp n) (list :percent (float n)) 0.0))
-        (or (resolve-len tt fs) 0.0))))
+          (if (realp n) (list :percent (max 0.0 (float n))) 0.0))
+        ;; used padding is never negative (CSS 2.1 §8.4): clamp a resolved length.
+        (let ((v (resolve-len tt fs))) (if v (max 0.0 v) 0.0)))))
 
 (defun apply-pad-box (value fs cs top right bottom left)
   "Like APPLY-BOX but each value may be a percentage (kept symbolic for layout)."

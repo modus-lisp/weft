@@ -8,7 +8,7 @@
            #:layout-tree #:render-to-png #:render-to-canvas #:canvas-ink #:canvas-pixels
            #:element-canvas #:*element-canvas*
            ;; network image loading + cache (bind *IMAGE-LOADER* to a fetcher)
-           #:*image-loader* #:*image-store* #:clear-image-cache
+           #:*image-loader* #:*image-store* #:clear-image-cache #:*image-fetch-deadline*
            #:fetch-image #:decode-image-bytes
            ;; live progress hook (:cascade :layout :painting) — NIL disables it
            #:*progress*

@@ -113,7 +113,18 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
   (let ((words '()) (pend nil) (pend-px 0))        ; whitespace + inline-margin px before next token
     (labels ((emit1 (payload meta node)
                (push (list payload meta pend pend-px node) words) (setf pend nil pend-px 0))
-             (atom! (lb node) (when lb (emit1 :atomic lb node)))
+             (amargin (cs side)                      ; atomic's OWN horizontal margin px (may be negative)
+               (let ((v (if (eq side :left) (css:cstyle-margin-left cs) (css:cstyle-margin-right cs))))
+                 (if (numberp v) v 0)))
+             (atom! (lb node)
+               ;; an atomic inline (inline-block / replaced) advances by its own
+               ;; horizontal margins too — margin-left leads it, margin-right trails
+               ;; into the next token's gap (CSS 2.1 §10.3.9 / §9.4.2).
+               (when lb
+                 (let ((cs (lbox-style lb)))
+                   (when cs (incf pend-px (amargin cs :left)))
+                   (emit1 :atomic lb node)
+                   (when cs (setf pend-px (amargin cs :right))))))
              (iedge (cs side)                        ; inline horizontal margin px on :left / :right
                (let ((v (if (eq side :left) (css:cstyle-margin-left cs) (css:cstyle-margin-right cs))))
                  (if (numberp v) (max 0 v) 0)))
@@ -674,7 +685,10 @@ text-align.  Returns (values line-boxes total-height)."
                                        :style (tok-meta wd) :node (tok-node wd)) cur)
                       (setf (aref ws i) (list rest (tok-meta wd) nil 0 (tok-node wd))))))
                 (return))
-              (when (and (> sw 0) (> (- cx lx) 0)) (incf cx sw))
+              ;; leading advance: collapsible whitespace is dropped at line start, but
+              ;; a leading inline margin (TOK-GAP) still offsets the first item.
+              (when (> sw 0)
+                (if (> (- cx lx) 0) (incf cx sw) (incf cx (tok-gap wd))))
               (let ((room (- avail (- cx lx))))
                 (cond
                   ;; a word too wide for this line that hyphenates (CSS Text 3 §6.1):
@@ -1282,8 +1296,15 @@ Returns (values lbox advance-height)."
                                 ;; parent/first in-flow child top-margin collapse:
                                 ;; only with zero top border AND padding, at the
                                 ;; very start of flow (nothing precedes the child).
+                                ;; The root element (<html>) is a barrier: its first
+                                ;; child's (<body>'s) top margin applies inside it and
+                                ;; is not bubbled to the viewport, so <body> lands at
+                                ;; the root's content top plus its own margin (how
+                                ;; browsers place the body — Acid3's body{margin:-0.2em}).
                                 (top-collapse (and (not content-started)
-                                                   (zerop bt) (zerop pt)))
+                                                   (zerop bt) (zerop pt)
+                                                   (let ((p (h:dnode-parent node)))
+                                                     (and p (eq (h:dnode-kind p) :element)))))
                                 (gap (cond (prev-mb (+ (max (car prev-mb) (max 0 cmt))
                                                        (min (cdr prev-mb) (min 0 cmt))))
                                            (top-collapse 0)   ; margin bubbles to parent's mt-eff

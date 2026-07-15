@@ -1189,7 +1189,7 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                             ;; custom properties (--name) inherit; only allocate a fresh
                             ;; environment when this element actually declares one.
                             (has-custom (or (some (lambda (m) (some (lambda (d) (custom-prop-p (css-decl-prop d))) (third m))) sorted)
-                                            (some (lambda (pv) (custom-prop-p (car pv))) inline-pvs)))
+                                            (some (lambda (pv) (custom-prop-p (first pv))) inline-pvs)))
                             (vars (if has-custom
                                       (let ((h (make-hash-table :test 'equal)))
                                         (when parent-vars (maphash (lambda (k v) (setf (gethash k h) v)) parent-vars))
@@ -1202,8 +1202,8 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                              (when (custom-prop-p (css-decl-prop d))
                                (setf (gethash (css-decl-prop d) vars) (resolve-vars (css-decl-value d) vars)))))
                          (dolist (pv inline-pvs)
-                           (when (custom-prop-p (car pv))
-                             (setf (gethash (car pv) vars) (resolve-vars (cdr pv) vars)))))
+                           (when (custom-prop-p (first pv))
+                             (setf (gethash (first pv) vars) (resolve-vars (second pv) vars)))))
                        ;; pass 2a: resolve font-size first, so em/ch on other
                        ;; properties use the element's FINAL font-size regardless of
                        ;; declaration order (a rule may set max-width:65ch before
@@ -1214,8 +1214,8 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                              (when (font-decl-p (css-decl-prop d))
                                (apply-decl cs (css-decl-prop d) (resolve-vars (css-decl-value d) vars) parent-cs))))
                          (dolist (pv inline-pvs)
-                           (when (font-decl-p (car pv))
-                             (apply-decl cs (car pv) (resolve-vars (cdr pv) vars) parent-cs))))
+                           (when (font-decl-p (first pv))
+                             (apply-decl cs (first pv) (resolve-vars (second pv) vars) parent-cs))))
                        ;; pass 2: the cascade origins in priority order (CSS 2.1 6.4.1):
                        ;; author normal (by specificity) -> inline normal -> author
                        ;; !important (by specificity).  Splitting normal from !important
@@ -1229,11 +1229,15 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                                                (eq (not (null (css-decl-important d))) important))
                                       (apply-decl cs (css-decl-prop d)
                                                   (resolve-vars (css-decl-value d) vars) parent-cs))))))
-                         (apply-author nil)                      ; author normal
-                         (dolist (pv inline-pvs)                 ; inline normal (beats author normal)
-                           (unless (custom-prop-p (car pv))
-                             (apply-decl cs (car pv) (resolve-vars (cdr pv) vars) parent-cs)))
-                         (apply-author t))                       ; author !important (beats all normal)
+                         (flet ((apply-inline (important)
+                                  (dolist (pv inline-pvs)
+                                    (when (and (not (custom-prop-p (first pv)))
+                                               (eq (not (null (third pv))) important))
+                                      (apply-decl cs (first pv) (resolve-vars (second pv) vars) parent-cs)))))
+                           (apply-author nil)                    ; author normal
+                           (apply-inline nil)                    ; inline normal (beats author normal)
+                           (apply-author t)                      ; author !important (beats all normal)
+                           (apply-inline t)))                    ; inline !important (beats author !important)
                        ;; legacy <center>: horizontally center its block-level children
                        ;; (the -webkit-center behavior) unless the author set a margin.
                        (let ((p (weft.html:dnode-parent n)))
@@ -1260,15 +1264,26 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
 (defparameter +css-ws+ '(#\Space #\Tab #\Newline #\Return #\Page)
   "CSS whitespace (CSS Syntax §3): trimmed around inline-style names and values so a
 multi-line style attribute (a newline before a declaration) still parses.")
+(defun strip-important (v)
+  "Return (values VALUE-without-!important IMPORTANT-P) for a declaration value —
+the trailing `! important` (whitespace-tolerant) marks it important (CSS 2.1 6.4.2)."
+  (let ((bang (position #\! v :from-end t)))
+    (if (and bang (string-equal "important" (string-trim +css-ws+ (subseq v (1+ bang)))))
+        (values (string-trim +css-ws+ (subseq v 0 bang)) t)
+        (values v nil))))
+
 (defun parse-inline (s)
-  "Parse an inline style attribute 'a:b; c:d' into ((a . b) ...)."
+  "Parse an inline style attribute 'a:b; c:d !important' into (NAME VALUE IMPORTANT-P)
+triples (VALUE has any trailing !important stripped)."
   (loop for chunk in (split-semi s)
         for cp = (position #\: chunk)
         for name = (and cp (string-trim +css-ws+ (subseq chunk 0 cp)))
-        ;; custom properties (--*) are case-sensitive; normal names are not
-        when cp collect (cons (if (and (>= (length name) 2) (char= (char name 0) #\-) (char= (char name 1) #\-))
-                                  name (string-downcase name))
-                              (string-trim +css-ws+ (subseq chunk (1+ cp))))))
+        when cp collect
+        (multiple-value-bind (val imp) (strip-important (string-trim +css-ws+ (subseq chunk (1+ cp))))
+          ;; custom properties (--*) are case-sensitive; normal names are not
+          (list (if (and (>= (length name) 2) (char= (char name 0) #\-) (char= (char name 1) #\-))
+                    name (string-downcase name))
+                val imp))))
 (defun split-semi (s)
   (loop with start = 0 for i from 0 to (length s)
         when (or (= i (length s)) (char= (char s i) #\;))

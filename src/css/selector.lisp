@@ -474,6 +474,18 @@ list is built — each rule is keyed to exactly one bucket, so no duplicates."
         (make-cx :compounds (coerce (nreverse compounds) 'vector)
                  :combs (coerce (nreverse combs) 'vector)))))
 
+(defun trim-selector (s)
+  "Trim leading whitespace and trailing UNESCAPED whitespace from a selector part.
+An escaped trailing space (`#\\ ` — an odd run of backslashes before it) is part of
+the identifier and is kept, so `#\\ ` still selects id=\" \"."
+  (let ((start 0) (end (length s)))
+    (loop while (and (< start end) (member (char s start) '(#\Space #\Tab #\Newline))) do (incf start))
+    (loop while (and (> end start) (member (char s (1- end)) '(#\Space #\Tab #\Newline))
+                     (evenp (loop for k downfrom (- end 2) to start
+                                  while (char= (char s k) #\\) count t)))
+          do (decf end))
+    (subseq s start end)))
+
 (defun parse-selector-list (string)
   "Parse a comma-separated selector list into a list of CX."
   (let ((parts '()) (depth 0) (start 0) (n (length string)))
@@ -482,7 +494,7 @@ list is built — each rule is keyed to exactly one bucket, so no duplicates."
         (#\, (when (zerop depth) (push (subseq string start i) parts) (setf start (1+ i))))))
     (push (subseq string start) parts)
     (loop for p in (nreverse parts)
-          for trimmed = (string-trim '(#\Space #\Tab #\Newline) p)
+          for trimmed = (trim-selector p)
           for cx = (and (plusp (length trimmed)) (parse-complex trimmed))
           ;; drop invalid selectors (parse-complex yields no compounds), e.g. a
           ;; selector containing a stray `;` from a botched preceding rule.

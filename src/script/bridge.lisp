@@ -93,10 +93,11 @@
       (iface "Element" :element) (iface "Document" :document))
     ;; URL / URLSearchParams / XMLHttpRequest / IntersectionObserver / ResizeObserver —
     ;; Web APIs real pages depend on.  URL parsing is delegated to weft.url (WHATWG)
-    ;; through a native helper; the rest are JS polyfills.  IntersectionObserver reports
-    ;; every observed element as intersecting on the next tick, so lazy-image loaders
-    ;; (NYT, CNN, …) swap in their real src/background before the final render instead
-    ;; of leaving grey placeholders a static render would never scroll into view.
+    ;; through a native helper; the rest are JS polyfills.  IntersectionObserver /
+    ;; ResizeObserver are inert stubs — firing them "intersecting" up front makes a
+    ;; heavy SPA (NYT) eagerly load its entire below-the-fold image pipeline (and each
+    ;; onload cascades into more), which costs seconds for content outside the viewport;
+    ;; above-the-fold lazy <img>s already resolve via IMG-SOURCE-URL's data-src read.
     (js:define-global realm "__weft_url_parse"
       (js:native-function realm "__weft_url_parse"
         (lambda (this args) (declare (ignore this))
@@ -145,9 +146,8 @@
   XHR.prototype.addEventListener=function(){};XHR.prototype.removeEventListener=function(){};
   G.XMLHttpRequest=XHR;
   function IO(cb){this._cb=cb;}
-  IO.prototype.observe=function(el){var cb=this._cb,self=this;setTimeout(function(){try{cb([{target:el,isIntersecting:true,intersectionRatio:1,boundingClientRect:{top:0,left:0,bottom:0,right:0,width:0,height:0,x:0,y:0},intersectionRect:{top:0,left:0,bottom:0,right:0,width:0,height:0},rootBounds:null,time:0}],self);}catch(e){}},0);};
-  IO.prototype.unobserve=function(){};IO.prototype.disconnect=function(){};IO.prototype.takeRecords=function(){return [];};
-  G.IntersectionObserver=IO;
+  IO.prototype.observe=function(){};IO.prototype.unobserve=function(){};IO.prototype.disconnect=function(){};IO.prototype.takeRecords=function(){return [];};
+  G.IntersectionObserver=IO;IO.prototype.root=null;IO.prototype.rootMargin='0px';IO.prototype.thresholds=[0];
   function RO(cb){this._cb=cb;}RO.prototype.observe=function(){};RO.prototype.unobserve=function(){};RO.prototype.disconnect=function(){};
   G.ResizeObserver=RO;
   function Image(w,h){var e=document.createElement('img');if(w!==undefined)e.width=w;if(h!==undefined)e.height=h;return e;}

@@ -292,6 +292,13 @@ background-filled canvas size so layout at least gets dimensions)."
        (jpeg-size bytes))
       (t nil))))
 
+(defvar *image-fetch-deadline* nil
+  "When set (an internal-real-time), FETCH-IMAGE serves only already-cached images
+   past it — a NEW network fetch is skipped and NIL returned.  A host bounds the
+   time a render spends on images this way, so a page with slow/hung image URLs
+   still paints (the misses simply aren't in this frame) instead of blocking on the
+   slowest fetch.  NIL (the default) never bounds fetching.")
+
 (defun fetch-image (url)
   "Fetch, decode, and cache the network image at URL — returns an IMG or NIL.
    If the pixels can't be decoded (unsupported feature, truncation) but the header
@@ -300,8 +307,12 @@ background-filled canvas size so layout at least gets dimensions)."
    successes and failures in the bounded *IMAGE-STORE*."
   (when (and *image-loader* url (plusp (length url)))
     (multiple-value-bind (hit found) (gethash url *image-store*)
-      (if found
-          (and (not (eq hit :failed)) hit)
+      (cond
+        (found (and (not (eq hit :failed)) hit))
+        ;; past the render's image budget: don't start a new (possibly slow) fetch;
+        ;; leave it uncached so a later render can still try.
+        ((and *image-fetch-deadline* (> (get-internal-real-time) *image-fetch-deadline*)) nil)
+        (t
           (let ((img (handler-case
                          (multiple-value-bind (bytes mime) (funcall *image-loader* url)
                            (and bytes
@@ -311,7 +322,7 @@ background-filled canvas size so layout at least gets dimensions)."
                        (error () nil))))
             (when (>= (hash-table-count *image-store*) *image-store-cap*) (clrhash *image-store*))
             (setf (gethash url *image-store*) (or img :failed))
-            img)))))
+            img))))))
 
 (defun blit-img (cv img x y &optional dw dh src)
   "Paint IMG onto CV at (X,Y), straight-alpha over existing pixels, optionally

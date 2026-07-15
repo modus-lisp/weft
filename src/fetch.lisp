@@ -16,6 +16,8 @@
            #:*http-transport* #:*read-timeout* #:*max-redirects* #:*user-agent*
            #:*progress*
            #:fetch #:fetch-text
+           ;; per-context cookie jar — bind *COOKIE-JAR* to isolate a browsing context
+           #:cookie-jar #:make-cookie-jar #:cookie-jar-cookies #:*cookie-jar* #:*enable-cookies*
            #:get-header #:content-type-charset #:decompress-body #:body-text))
 (in-package #:weft.fetch)
 
@@ -293,8 +295,16 @@ Returns NIL at end of stream with no bytes read."
         while pos do (setf start (1+ pos))))
 
 (defstruct cookie name value domain path secure)
-(defvar *cookies* '() "The session cookie jar (a list of COOKIEs).")
-(defvar *cookie-lock* (sb-thread:make-mutex))
+(defstruct (cookie-jar (:constructor make-cookie-jar))
+  "One browsing context's cookies.  Distinct contexts hold distinct jars — a fresh
+   URL open gets a fresh jar, so a site can't be re-identified across visits — while
+   a tab that follows links (or a popup sharing its opener) keeps using the same one.
+   Each jar carries its own lock, so isolated contexts never contend."
+  (cookies '())
+  (lock (sb-thread:make-mutex)))
+(defvar *cookie-jar* (make-cookie-jar)
+  "The cookie jar of the browsing context this thread is fetching for.  Rebind
+   per context (LET) to isolate identity; the default jar serves standalone use.")
 (defvar *enable-cookies* t)
 
 (defun %domain-match (host domain)
@@ -326,19 +336,20 @@ Returns NIL at end of stream with no bytes read."
                         ((string= k "secure") (setf secure t))
                         ((and (string= k "max-age") v (<= (or (ignore-errors (parse-integer v)) 1) 0))
                          (setf delete t)))))
-              (sb-thread:with-mutex (*cookie-lock*)
-                (setf *cookies* (remove-if (lambda (c) (and (string= (cookie-name c) name)
-                                                            (string-equal (cookie-domain c) domain)
-                                                            (string= (cookie-path c) path)))
-                                           *cookies*))
+              (sb-thread:with-mutex ((cookie-jar-lock *cookie-jar*))
+                (setf (cookie-jar-cookies *cookie-jar*)
+                      (remove-if (lambda (c) (and (string= (cookie-name c) name)
+                                                  (string-equal (cookie-domain c) domain)
+                                                  (string= (cookie-path c) path)))
+                                 (cookie-jar-cookies *cookie-jar*)))
                 (unless delete
                   (push (make-cookie :name name :value val :domain domain :path path :secure secure)
-                        *cookies*))))))))))
+                        (cookie-jar-cookies *cookie-jar*)))))))))))
 
 (defun cookie-header (host path https)
   "The Cookie header value for cookies matching HOST/PATH/scheme, or NIL."
   (when *enable-cookies*
-    (let ((matches (sb-thread:with-mutex (*cookie-lock*)
+    (let ((matches (sb-thread:with-mutex ((cookie-jar-lock *cookie-jar*))
                      (remove-if-not (lambda (c)
                                       (and (%domain-match host (cookie-domain c))
                                            (let ((cp (cookie-path c)))
@@ -346,7 +357,7 @@ Returns NIL at end of stream with no bytes read."
                                                  (and (>= (length path) (length cp))
                                                       (string= cp (subseq path 0 (length cp))))))
                                            (or (not (cookie-secure c)) https)))
-                                    *cookies*))))
+                                    (cookie-jar-cookies *cookie-jar*)))))
       (when matches
         (format nil "~{~a~^; ~}"
                 (mapcar (lambda (c) (format nil "~a=~a" (cookie-name c) (cookie-value c))) matches))))))

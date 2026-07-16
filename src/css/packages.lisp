@@ -25,6 +25,7 @@
            #:border-edge-painted-p
            #:cstyle-text-decoration #:cstyle-list-style
            #:cstyle-max-width #:cstyle-min-width #:cstyle-margin-left-auto #:cstyle-margin-right-auto
+           #:cstyle-margin-top-auto #:cstyle-margin-bottom-auto
            #:cstyle-float #:cstyle-clear #:cstyle-position #:cstyle-box-sizing #:cstyle-overflow
            #:cstyle-flex-direction #:cstyle-justify-content #:cstyle-align-items #:cstyle-align-content
            #:cstyle-flex-wrap #:cstyle-flex-grow #:cstyle-flex-shrink #:cstyle-flex-basis #:cstyle-order #:cstyle-gap

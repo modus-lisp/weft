@@ -1885,13 +1885,26 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                                        (t lbases)))
                           (used (+ (reduce #'+ sizes) lgap))
                           (extra (max 0 (- content-w used)))
-                          (start (cond ((string= justify "center") (+ cx (/ extra 2)))
+                          ;; auto margins on the main axis absorb positive free space
+                          ;; BEFORE justify-content (CSS Flexbox §8.1): each takes an
+                          ;; equal share, and justify-content then has nothing to do.
+                          (n-mauto (loop for it in litems
+                                         for is = (st styles it)
+                                         sum (+ (if (and is (css:cstyle-margin-left-auto is)) 1 0)
+                                                (if (and is (css:cstyle-margin-right-auto is)) 1 0))))
+                          (mauto (and (> n-mauto 0) (> extra 0)))
+                          (auto-unit (if mauto (/ extra n-mauto) 0))
+                          (start (cond (mauto cx)
+                                       ((string= justify "center") (+ cx (/ extra 2)))
                                        ((string= justify "flex-end") (+ cx extra)) (t cx)))
-                          (between (cond ((and (string= justify "space-between") (> n 1)) (/ extra (1- n)))
+                          (between (cond (mauto 0)
+                                         ((and (string= justify "space-between") (> n 1)) (/ extra (1- n)))
                                          ((string= justify "space-around") (/ extra n)) (t 0)))
-                          (x (if (string= justify "space-around") (+ start (/ between 2)) start))
+                          (x (if (and (not mauto) (string= justify "space-around")) (+ start (/ between 2)) start))
                           (boxes '()) (max-h 0))
-                     (loop for it in litems for w in sizes do
+                     (loop for it in litems for w in sizes
+                           for is = (st styles it) do
+                       (when (and mauto is (css:cstyle-margin-left-auto is)) (incf x auto-unit))
                        (multiple-value-bind (lb adv)
                            (let* ((is (st styles it))
                                   ;; a definite-height row container (FORCED-CROSS) stretches an
@@ -1911,7 +1924,9 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                              (layout-node it styles (round x) ly (round w)))
                          (declare (ignore adv))
                          (when lb (push lb boxes) (setf max-h (max max-h (lbox-h lb))))
-                         (incf x (+ w gap between))))
+                         (incf x w)
+                         (when (and mauto is (css:cstyle-margin-right-auto is)) (incf x auto-unit))
+                         (incf x (+ gap between))))
                      (let ((boxes (nreverse boxes))
                            ;; the line's cross size: a single-line container with a
                            ;; definite height fills it (items stretch to the container,
@@ -1927,10 +1942,17 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                          (let* ((s (lbox-style lb))
                                 (a (let ((as (css:cstyle-align-self s)))
                                      (if (and as (not (string= as "auto"))) as align)))
+                                (mta (css:cstyle-margin-top-auto s))
+                                (mba (css:cstyle-margin-bottom-auto s))
                                 (mt (max 0 (css:cstyle-margin-top s)))
                                 (mb (max 0 (css:cstyle-margin-bottom s)))
                                 (space (- cross mt mb)))
-                           (cond ((string= a "stretch") (setf (lbox-h lb) (max (lbox-h lb) space)))
+                           ;; cross-axis auto margins take the free space before align
+                           ;; (CSS Flexbox §8.1): two autos center, one pushes to a side.
+                           (cond ((and mta mba) (shift-box lb 0 (round (/ (- space (lbox-h lb)) 2))))
+                                 (mta (shift-box lb 0 (round (- space (lbox-h lb)))))
+                                 (mba)                                   ; margin-bottom auto: stay at top
+                                 ((string= a "stretch") (setf (lbox-h lb) (max (lbox-h lb) space)))
                                  ((string= a "center") (shift-box lb 0 (round (/ (- space (lbox-h lb)) 2))))
                                  ((member a '("flex-end" "end") :test #'string=) (shift-box lb 0 (round (- space (lbox-h lb))))))))
                        (values boxes cross)))))

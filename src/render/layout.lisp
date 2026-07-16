@@ -100,6 +100,42 @@ width is its COLUMN model, not its flattened inline content."
        (let ((cs (st styles node)))
          (and cs (member (cdisplay cs) '("table" "inline-table") :test #'string=)))))
 
+(defvar *multicol-measuring* nil
+  "Bound true while re-laying a multi-column element's content in a single column
+to measure it, so the multicol dispatch in %LAYOUT-CORE does not recurse.")
+(defun multicol-p (cs)
+  "True when a box with computed style CS is a multi-column container: a block-level
+box carrying a used column-count or column-width (css3-multicol §3), so its in-flow
+content is fragmented into columns."
+  (and cs
+       (member (cdisplay cs) '("block" "flow-root" "list-item" "inline-block") :test #'string=)
+       (or (and (css:cstyle-column-count cs) (plusp (css:cstyle-column-count cs)))
+           (and (css:cstyle-column-width cs) (plusp (css:cstyle-column-width cs))))))
+(defun multicol-l2-p (cs)
+  "True when CS uses a Multicol Level 2 feature (column-height / column-wrap) that
+the L1 column flow does not implement — so it should decline to fragment."
+  (and cs (or (css:cstyle-column-height cs) (css:cstyle-column-wrap cs))))
+(defun multicol-ancestor-p (node styles)
+  "True when an ancestor element of NODE is itself a multi-column container — a
+nested multicol the L1 column flow does not fragment across, so the inner one
+declines to fragment too."
+  (loop for p = (h:dnode-parent node) then (h:dnode-parent p)
+        while (and p (eq (h:dnode-kind p) :element))
+        thereis (multicol-p (st styles p))))
+(defun multicol-unsupported-descendant-p (node styles)
+  "True when NODE's subtree holds a construct the L1 column flow cannot place — a
+column spanner (column-span:all) or a nested multi-column container — so it declines
+to fragment and leaves the content in one column rather than mis-placing it."
+  (labels ((scan (n)
+             (some (lambda (c)
+                     (and (eq (h:dnode-kind c) :element)
+                          (let ((cs (st styles c)))
+                            (and cs (or (string= (css:cstyle-column-span cs) "all")
+                                        (multicol-p cs)
+                                        (scan c))))))
+                   (h:dnode-children n))))
+    (scan node)))
+
 ;;; ---- inline content: styled word runs -> line boxes --------------------
 (defun collect-words (nodes styles default-style content-w)
   "Walk the inline content of NODES (a list of sibling inline-level nodes laid out
@@ -1259,6 +1295,19 @@ Returns (values lbox advance-height)."
                  (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                                 :kind :block :children boxes)))
             (return-from %layout-core (values lb (+ mt box-h mb) mt mb)))))
+      ;; multi-column container: fragment the in-flow content into columns
+      ;; (css3-multicol).  Gated on *MULTICOL-MEASURING* so the single-column
+      ;; measuring pass inside LAYOUT-MULTICOL lays the content out normally.
+      (when (and (not *multicol-measuring*) (multicol-p cs)
+                 (not (multicol-l2-p cs))
+                 (not (multicol-ancestor-p node styles))
+                 (not (multicol-unsupported-descendant-p node styles)))
+        (multiple-value-bind (boxes ch)
+            (layout-multicol node styles box-x box-y cx cy content-w cs (or child-avail-h ar-h))
+          (let* ((box-h (+ (if (numberp exp-h) exp-h (if ar-h (max ar-h ch) ch)) pt pb bt bb))
+                 (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
+                                :kind :block :children boxes)))
+            (return-from %layout-core (values lb (+ mt box-h mb) mt mb)))))
       ;; classify children: anonymous-group consecutive inline-level nodes.
       ;; ::before / ::after generated boxes bracket the real children.
       ;; YY tracks the border-bottom edge of the last in-flow block placed (or
@@ -1503,6 +1552,51 @@ Returns (values lbox advance-height)."
       ;; the structural intrinsic pass (flex rows sum, block stacks take the widest,
       ;; out-of-flow is skipped) rather than the crude inline-flatten estimate.
       (t (min content-w (pref-content-width item styles content-w))))))
+
+(defun multicol-used-count (base-cs content-w gap)
+  "Used number of columns (css3-multicol §3.4, simplified) for content width
+CONTENT-W: from column-count, or derived from column-width, or their combination."
+  (let ((cc (css:cstyle-column-count base-cs))
+        (cw (and (css:cstyle-column-width base-cs) (float (css:cstyle-column-width base-cs) 1.0))))
+    (cond ((and cc cw) (max 1 (min cc (floor (+ content-w gap) (+ (max 1.0 cw) gap)))))
+          (cc (max 1 cc))
+          (cw (max 1 (floor (+ content-w gap) (+ (max 1.0 cw) gap))))
+          (t 1))))
+
+(defun layout-multicol (node styles box-x box-y cx cy content-w base-cs avail-h)
+  "Fragment NODE's in-flow content into equal-width columns (css3-multicol).  The
+content is first laid out in one column of the used column width — reusing the
+normal block flow, so text breaks into line boxes and blocks keep their margins —
+then those boxes are distributed left-to-right across the used number of columns,
+balanced to roughly equal height (column-fill: balance; auto fills each column to
+the content before moving on).  Returns (values column-boxes content-height)."
+  (let* ((gap (max 0.0 (float (css:cstyle-column-gap base-cs) 1.0)))
+         (k (multicol-used-count base-cs content-w gap))
+         (colw (max 0.0 (/ (- content-w (* (1- k) gap)) k))))
+    (if (<= k 1)
+        (multiple-value-bind (lb ch) (let ((*multicol-measuring* t))
+                                       (%layout-core node styles box-x box-y content-w avail-h))
+          (values (and lb (copy-list (lbox-children lb))) (max 0.0 (float ch 1.0))))
+        (multiple-value-bind (lb ch)
+            (let ((*multicol-measuring* t)) (%layout-core node styles box-x box-y colw avail-h))
+          (declare (ignore ch))
+          (let ((kids (and lb (remove-if-not (lambda (c) (typep c 'lbox)) (lbox-children lb)))))
+            (if (null kids)
+                (values nil 0.0)
+                (let* ((total (- (reduce #'max kids :key (lambda (c) (+ (lbox-y c) (lbox-h c))))
+                                 cy))
+                       (balance (string= (css:cstyle-column-fill base-cs) "balance"))
+                       (target (if (and balance (> total 0)) (/ total k) most-positive-single-float))
+                       (col 0) (col-top (lbox-y (first kids))) (maxh 0.0))
+                  (dolist (c kids)
+                    (let ((c-bot (+ (lbox-y c) (lbox-h c))))
+                      (when (and (< col (1- k))
+                                 (> (lbox-y c) col-top)
+                                 (> (- c-bot col-top) target))
+                        (incf col) (setf col-top (lbox-y c)))
+                      (shift-box c (* col (+ colw gap)) (- cy col-top))
+                      (setf maxh (max maxh (- (+ (lbox-y c) (lbox-h c)) cy)))))
+                  (values kids maxh))))))))
 
 (defun layout-flex (node styles cx cy content-w base-cs &optional avail-h)
   "Single-line flexbox layout.  Returns (values child-lboxes content-height).  AVAIL-H

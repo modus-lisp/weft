@@ -2029,23 +2029,42 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                               ((and (numberp avail-h) (< hfree 0) (> sum-hscaled 0))
                                (mapcar (lambda (h sc) (max 0 (+ h (* hfree (/ sc sum-hscaled))))) heights hscaled))
                               (t heights)))
+                   ;; main-axis (vertical) auto margins absorb positive free space
+                   ;; before justify-content (CSS Flexbox §8.1): margin-top:auto pushes
+                   ;; an item down, margin:auto centers it in the column.
+                   (used (+ (reduce #'+ tgt) total-gap))
+                   (free (if (numberp avail-h) (max 0 (- avail-h used)) 0))
+                   (n-mauto (loop for it in items for is = (st styles it)
+                                  sum (+ (if (and is (css:cstyle-margin-top-auto is)) 1 0)
+                                         (if (and is (css:cstyle-margin-bottom-auto is)) 1 0))))
+                   (auto-unit (if (and (> n-mauto 0) (> free 0)) (/ free n-mauto) 0))
                    (y cy))
-              (loop for lb in boxes for h in tgt do
+              (loop for lb in boxes for h in tgt for it in items
+                    for is = (st styles it) do
+                (when (and (> auto-unit 0) is (css:cstyle-margin-top-auto is)) (incf y auto-unit))
                 (when lb
                   (shift-box lb 0 (round (- y (lbox-y lb))))   ; stack at the running main-axis offset
+                  ;; reset to the content-left: the item was laid out across the full
+                  ;; container width, so block-level margin:auto centering may already
+                  ;; have shifted it — flex cross-alignment below is the authority.
+                  (shift-box lb (round (- cx (lbox-x lb))) 0)
                   (setf (lbox-h lb) (round h))
-                  ;; cross-axis (horizontal) alignment; per-item align-self (CSS 9.6)
-                  ;; overrides the container's align-items.  stretch only grows an
-                  ;; item whose cross size (width) is auto — a definite width wins.
+                  ;; cross-axis (horizontal) alignment: auto margins first (CSS §8.1),
+                  ;; then align-self / align-items.  stretch only grows an auto-width item.
                   (let* ((s (lbox-style lb))
+                         (mla (css:cstyle-margin-left-auto s)) (mra (css:cstyle-margin-right-auto s))
                          (a (let ((as (css:cstyle-align-self s)))
                               (if (and as (not (string= as "auto"))) as align))))
-                    (cond ((string= a "center") (shift-box lb (round (/ (- content-w (lbox-w lb)) 2)) 0))
+                    (cond ((and mla mra) (shift-box lb (round (/ (- content-w (lbox-w lb)) 2)) 0))
+                          (mla (shift-box lb (round (- content-w (lbox-w lb))) 0))
+                          (mra)                                  ; margin-right auto: stay at start
+                          ((string= a "center") (shift-box lb (round (/ (- content-w (lbox-w lb)) 2)) 0))
                           ((member a '("flex-end" "end") :test #'string=)
                            (shift-box lb (round (- content-w (lbox-w lb))) 0))
                           ((string= a "stretch")
                            (when (null (css:cstyle-width s)) (setf (lbox-w lb) content-w))))))
-                (incf y (+ h gap)))
+                (incf y (+ h gap))
+                (when (and (> auto-unit 0) is (css:cstyle-margin-bottom-auto is)) (incf y auto-unit)))
               (values (remove nil boxes) (max 0 (- y cy gap)))))))))
 
 (defun cell-like-p (c styles)

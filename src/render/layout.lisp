@@ -987,37 +987,54 @@ shift it to its final top/left."
                    (hh (let ((s (css::resolve-size (css:cstyle-height cs) avail-h))) (if (numberp s) (max 0 s) 150))))
                (make-lbox :x 0 :y 0 :w w :h hh :style cs :node node :kind :block)))))))
 
+(defun establishes-bfc-p (cs)
+  "True when a box with computed style CS establishes a block formatting context
+(CSS 2.1 §9.4.1, CSS Display 3): display:flow-root, an inline-block, a table-cell/
+caption, or a non-visible overflow (the clearfix idiom).  Such a box contains its
+own floats, keeps outside floats from intruding, and does not collapse its margins
+with its children.  Floated and absolutely-positioned boxes establish one too, but
+are handled where they are placed / positioned."
+  (and cs
+       (or (member (cdisplay cs) '("flow-root" "inline-block" "table-cell"
+                                   "inline-table" "table-caption")
+                   :test #'string=)
+           (member (css:cstyle-overflow cs) '("hidden" "scroll" "auto")
+                   :test #'string=))))
+
 (defun %layout-node (node styles x y avail-w &optional avail-h)
   "Establish an absolute containing block for positioned elements, then lay the
 node out.  A positioned element (relative/absolute/fixed) is the containing block
 for its absolutely-positioned descendants; we collect those during subtree layout
 and resolve them once this box's geometry is known (then a later unit-shift of
-this box, if any, carries them along correctly)."
-  (let ((cs (st styles node)))
-    (if (and cs (member (css:cstyle-position cs) '("relative" "absolute" "fixed") :test #'string=))
-        (let ((*abs-pending* nil)
-              ;; Absolutely-positioned and fixed boxes establish a new block
-              ;; formatting context (CSS 2.1 9.4.1): floats inside them must not
-              ;; interact with floats in the surrounding BFC, and vice versa.
-              ;; Rebind *FLOATS* to NIL so e.g. the float inside Acid2's absolute
-              ;; .eyes box does not shove the .nose float sideways in the picture.
-              (*floats* (if (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)
-                            nil *floats*)))
+this box, if any, carries them along correctly).  A box establishing a BFC (see
+ESTABLISHES-BFC-P) isolates and contains its floats the same way an abs/fixed box
+does, though it is not a containing block for positioned descendants."
+  (let* ((cs (st styles node))
+         (pos (and cs (css:cstyle-position cs)))
+         (positioned (and pos (member pos '("relative" "absolute" "fixed") :test #'string=)))
+         ;; a box isolates floats when it establishes a BFC: abs/fixed always do,
+         ;; and so do flow-root / overflow-clip / inline-block / table-cell boxes.
+         (bfc (and cs (or (member pos '("absolute" "fixed") :test #'string=)
+                          (establishes-bfc-p cs)))))
+    (if (or positioned bfc)
+        (let ((*abs-pending* (if positioned nil *abs-pending*))
+              ;; Rebind *FLOATS* to NIL for a BFC so floats inside it do not
+              ;; interact with the surrounding context (e.g. the float in Acid2's
+              ;; absolute .eyes box must not shove the .nose float sideways).
+              (*floats* (if bfc nil *floats*)))
           (multiple-value-bind (lb adv mt-eff mb-eff mneg) (%layout-core node styles x y avail-w avail-h)
-            ;; A box establishing a BFC contains its floats: with auto height it
-            ;; grows so its bottom border edge sits below the lowest float's bottom
-            ;; margin edge (CSS 2.1 10.6.7).  Acid2's `.first.one` is an absolute
-            ;; auto-height block whose only content is a float — its height is that
-            ;; float's 12px, not 0.  (Only the abs/fixed case rebinds *FLOATS*, so
-            ;; here every entry was generated inside this box.)
-            (when (and lb *floats*
-                       (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)
+            ;; A BFC box contains its floats: with auto height it grows so its
+            ;; bottom border edge sits below the lowest float's bottom margin edge
+            ;; (CSS 2.1 10.6.7).  Acid2's `.first.one` is an absolute auto-height
+            ;; block whose only content is a float — its height is that float's
+            ;; 12px, not 0.  Every *FLOATS* entry was generated inside this box.
+            (when (and lb bfc *floats*
                        (null (css::resolve-height (css:cstyle-height cs) avail-h)))
               (let ((mfb (loop for f in *floats* maximize (fifth f)))
                     (bot (+ (lbox-y lb) (lbox-h lb))))
                 (when (> mfb bot)
                   (setf (lbox-h lb) (- (+ mfb (used-border cs :b)) (lbox-y lb))))))
-            (when (and lb *abs-pending*)
+            (when (and lb positioned *abs-pending*)
               (let ((cb (pad-box lb cs)))
                 (dolist (p *abs-pending*) (finalize-positioned p cb styles))))
             (values lb adv mt-eff mb-eff mneg)))
@@ -1341,6 +1358,7 @@ Returns (values lbox advance-height)."
                                 ;; browsers place the body — Acid3's body{margin:-0.2em}).
                                 (top-collapse (and (not content-started)
                                                    (zerop bt) (zerop pt)
+                                                   (not (establishes-bfc-p cs))  ; a BFC seals its top margin
                                                    (let ((p (h:dnode-parent node)))
                                                      (and p (eq (h:dnode-kind p) :element)))))
                                 (gap (cond (prev-mb (+ (max (car prev-mb) (max 0 cmt))
@@ -1399,7 +1417,7 @@ Returns (values lbox advance-height)."
           (when prev-mb
             (let ((height-auto (not (numberp exp-h)))
                   (pm (+ (car prev-mb) (cdr prev-mb))))
-              (if (and height-auto (zerop bb) (zerop pb))
+              (if (and height-auto (zerop bb) (zerop pb) (not (establishes-bfc-p cs)))
                   (setf mb-eff (collapse-margins mb (car prev-mb) (cdr prev-mb)))
                   (incf content-h pm))))
           ;; parent/first-child collapse: first child's top margin bubbled up.

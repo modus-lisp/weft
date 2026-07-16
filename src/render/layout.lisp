@@ -1666,26 +1666,105 @@ cell per CSS 17.2.1."
                      "table-footer-group" "table-column" "table-column-group"
                      "table-caption" "none")
                  :test #'string=))))
+(defun ws-only-text-p (n)
+  "True when N is a text node of only white space — ignored by the anonymous-cell
+fixup, so it never forces an empty anonymous cell between real cells."
+  (and (eq (h:dnode-kind n) :text)
+       (every (lambda (c) (member c '(#\Space #\Tab #\Newline #\Return #\Page)))
+              (h:dnode-data n))))
+
+(defun anon-table-cell (kids ref styles)
+  "A synthetic table-cell wrapping a run of promoted non-cell content KIDS — the
+anonymous cell a table row's fixup requires (CSS 2.1 17.2.1) when display:contents
+cells (or stray content) leave inline/block runs directly in a row.  It generates
+no box of its own (no margin/border/padding/background); inheritable style is taken
+from REF's box."
+  (let ((cs (let ((c (css::copy-cstyle (or (st styles ref) (css::make-cstyle)))))
+              (setf (css:cstyle-display c) "table-cell"
+                    (css:cstyle-width c) :auto (css:cstyle-height c) :auto
+                    (css:cstyle-float c) "none" (css:cstyle-position c) "static"
+                    (css:cstyle-background c) nil (css:cstyle-bg-image c) nil (css:cstyle-bg-gradient c) nil
+                    (css:cstyle-margin-top c) 0.0 (css:cstyle-margin-right c) 0.0
+                    (css:cstyle-margin-bottom c) 0.0 (css:cstyle-margin-left c) 0.0
+                    (css:cstyle-padding-top c) 0.0 (css:cstyle-padding-right c) 0.0
+                    (css:cstyle-padding-bottom c) 0.0 (css:cstyle-padding-left c) 0.0
+                    (css:cstyle-border-top-width c) 0.0 (css:cstyle-border-right-width c) 0.0
+                    (css:cstyle-border-bottom-width c) 0.0 (css:cstyle-border-left-width c) 0.0)
+              c))
+        (v (make-array 4 :adjustable t :fill-pointer 0)))
+    (dolist (k kids) (vector-push-extend k v))
+    (let ((el (h::%dnode :kind :element :name "td" :children v)))
+      (setf (gethash el styles) cs)
+      el)))
+
+(defun cell-like-node-p (c styles)
+  "As CELL-LIKE-P, but also treats a non-white-space text node (promoted out of a
+display:contents cell) as cell-like content the row must wrap."
+  (cond ((ws-only-text-p c) nil)
+        ((eq (h:dnode-kind c) :text) t)
+        (t (cell-like-p c styles))))
+
+(defun flat-children (node styles)
+  "NODE's in-flow children with display:contents wrappers flattened away, keeping
+both elements and text — the sequence the table fixups actually consume."
+  (flatten-contents (coerce (h:dnode-children node) 'list) styles))
+
 (defun table-rows (node styles)
-  "Collect <tr> rows directly under NODE or within row-groups.  When the table
-has no explicit row boxes but does carry cell-like children, CSS 17.2.1 wraps
-them in an anonymous table-row — represented here by the table NODE itself."
+  "Collect <tr> rows directly under NODE or within row-groups, flattening any
+display:contents wrapper (CSS Display 3) so a contents row / row-group still yields
+its rows.  A container (the table, or a row-group) that ends up holding bare
+cell-like content but no row box acts as an anonymous table-row (CSS 2.1 17.2.1) —
+represented here by that container node itself."
   (let ((rows '()))
-    (dolist (c (child-elements node))
+    (dolist (c (effective-child-elements node styles))
       (let ((d (cdisplay (st styles c))))
         (cond ((string= d "table-row") (push c rows))
               ((member d '("table-row-group" "table-header-group" "table-footer-group")
                        :test #'string=)
-               (dolist (r (child-elements c)) (when (string= (cdisplay (st styles r)) "table-row") (push r rows)))))))
+               (let ((grouprows '()) (bare nil))
+                 (dolist (r (flat-children c styles))
+                   (cond ((and (eq (h:dnode-kind r) :element)
+                               (string= (cdisplay (st styles r)) "table-row"))
+                          (push r grouprows))
+                         ((cell-like-node-p r styles) (setf bare t))))
+                 (cond (grouprows (dolist (r (nreverse grouprows)) (push r rows)))
+                       (bare (push c rows))))))))          ; group of bare cells = anon row
     (or (nreverse rows)
-        (when (some (lambda (c) (cell-like-p c styles)) (child-elements node))
+        (when (some (lambda (c) (cell-like-node-p c styles)) (flat-children node styles))
           (list node)))))
+(defun anon-row-p (row styles)
+  "True when ROW is not a real table-row box but stands in for one (the table or a
+row-group holding bare cell-like content)."
+  (let ((cs (st styles row))) (not (and cs (string= (css:cstyle-display cs) "table-row")))))
 (defun row-cells (row styles &optional table)
-  "Cells of ROW.  A real <tr> contributes its table-cell children; an anonymous
-row (ROW eq the TABLE node) wraps every cell-like child as a cell."
-  (if (and table (eq row table))
-      (remove-if (lambda (c) (not (cell-like-p c styles))) (child-elements row))
-      (remove-if-not (lambda (c) (string= (cdisplay (st styles c)) "table-cell")) (child-elements row))))
+  "Cells of ROW.  A real <tr> contributes its table-cell children directly; a run of
+promoted non-cell content — text/inline left behind by display:contents cells (CSS
+Display 3), or a stray block — is gathered into one anonymous cell (CSS 2.1 17.2.1).
+An anonymous row (the table or a row-group standing in for a row) keeps each cell-like
+element as its own cell, but still wraps promoted text in an anonymous cell.  Both
+paths flatten display:contents wrappers first."
+  (declare (ignore table))
+  (let ((anon (anon-row-p row styles)) (out '()) (run '()))
+    (flet ((flush ()
+             (when run
+               (push (anon-table-cell (nreverse run) row styles) out)
+               (setf run '()))))
+      (dolist (c (flat-children row styles))
+        (cond ((ws-only-text-p c))                              ; inter-cell white space
+              ((and (eq (h:dnode-kind c) :element)
+                    (string= (cdisplay (st styles c)) "table-cell"))
+               (flush) (push c out))                            ; a real cell
+              ((and anon (eq (h:dnode-kind c) :element) (cell-like-p c styles))
+               (flush) (push c out))                            ; anon row: each cell-like box its own cell
+              ((and (eq (h:dnode-kind c) :element)
+                    (member (cdisplay (st styles c))
+                            '("table-row" "table-row-group" "table-header-group"
+                              "table-footer-group" "table-column" "table-column-group"
+                              "table-caption" "none")
+                            :test #'string=)))                   ; internal-table / none: skip
+              (t (push c run))))                                 ; inline/block/text: gather
+      (flush))
+    (nreverse out)))
 
 (defun cell-pad-bord (cs)
   "Left+right padding + border of a cell's box."

@@ -32,6 +32,8 @@
            #:cstyle-grid-auto-flow #:cstyle-grid-column #:cstyle-grid-row
            #:cstyle-grid-area #:cstyle-grid-template-areas
            #:cstyle-row-gap #:cstyle-column-gap
+           #:cstyle-column-count #:cstyle-column-width #:cstyle-column-fill
+           #:cstyle-column-span #:cstyle-column-height #:cstyle-column-wrap
            #:cstyle-justify-items #:cstyle-justify-self #:cstyle-align-self
            #:cstyle-top #:cstyle-left #:cstyle-right #:cstyle-bottom #:cstyle-z-index #:cstyle-bg-gradient
            #:cstyle-min-height #:cstyle-max-height #:cstyle-content #:cstyle-cursor

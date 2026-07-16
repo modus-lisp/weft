@@ -31,6 +31,12 @@
   (grid-auto-flow "row") (grid-column nil) (grid-row nil)
   (grid-area nil) (grid-template-areas nil)   ; item area name; container NAME->(r0 c0 rspan cspan) map
   (row-gap 0.0) (column-gap 0.0)          ; distinct gaps (the `gap` slot mirrors row-gap for flex)
+  ;; CSS Multi-column (css3-multicol): NIL count/width = auto.
+  (column-count nil) (column-width nil) (column-fill "balance")
+  (column-span "none")                    ; none | all (a spanner interrupts the columns)
+  ;; CSS Multicol Level 2 (column-height / column-wrap): stored only to detect that
+  ;; an L2 feature is in play so the L1 column flow can decline to fragment it.
+  (column-height nil) (column-wrap nil)
   (justify-items "stretch") (justify-self "auto") (align-self "auto")
   (top :auto) (left :auto) (right :auto) (bottom :auto) (z-index 0)
   (bg-gradient nil)   ; (dir from-rgba to-rgba), dir :vertical | :horizontal
@@ -756,7 +762,34 @@ passes through unchanged; a multi-keyword form <display-outside> <display-inside
            (when r (setf (cstyle-row-gap cs) r (cstyle-gap cs) r))
            (when c (setf (cstyle-column-gap cs) c))))
         ((string= prop "row-gap") (let ((v (len))) (when v (setf (cstyle-row-gap cs) v (cstyle-gap cs) v))))
-        ((string= prop "column-gap") (let ((v (len))) (when v (setf (cstyle-column-gap cs) v (cstyle-gap cs) v))))
+        ((string= prop "column-gap")
+         (let ((v (string-downcase (string-trim '(#\Space) value))))
+           (cond ((string= v "normal") (setf (cstyle-column-gap cs) fs))   ; multicol normal gap = 1em
+                 ((len) (setf (cstyle-column-gap cs) (len) (cstyle-gap cs) (len))))))
+        ((string= prop "column-count")
+         (let ((v (string-downcase (string-trim '(#\Space) value))))
+           (setf (cstyle-column-count cs)
+                 (if (string= v "auto") nil (ignore-errors (parse-integer v :junk-allowed t))))))
+        ((string= prop "column-width")
+         (let ((v (string-downcase (string-trim '(#\Space) value))))
+           (setf (cstyle-column-width cs) (if (string= v "auto") nil (resolve-len v fs)))))
+        ((string= prop "column-fill")
+         (let ((v (string-downcase (string-trim '(#\Space) value))))
+           (when (member v '("balance" "auto") :test #'string=) (setf (cstyle-column-fill cs) v))))
+        ((string= prop "columns")   ; shorthand: <column-width> || <column-count>
+         (let ((parts (remove "" (split-ws (string-downcase (string-trim '(#\Space) value))) :test #'string=)))
+           (dolist (p parts)
+             (cond ((string= p "auto"))
+                   ((every #'digit-char-p p) (setf (cstyle-column-count cs) (parse-integer p)))
+                   ((resolve-len p fs) (setf (cstyle-column-width cs) (resolve-len p fs)))))))
+        ((string= prop "column-span")
+         (setf (cstyle-column-span cs)
+               (if (string-equal (string-trim '(#\Space) value) "all") "all" "none")))
+        ;; Multicol Level 2 — stored (non-NIL) only so the L1 flow can detect them.
+        ((string= prop "column-height") (setf (cstyle-column-height cs) value))
+        ((string= prop "column-wrap")
+         (let ((v (string-downcase (string-trim '(#\Space) value))))
+           (setf (cstyle-column-wrap cs) (if (string= v "nowrap") nil v))))
         ((string= prop "flex-grow") (let ((v (ignore-errors (read-from-string value)))) (when (numberp v) (setf (cstyle-flex-grow cs) (float v)))))
         ((string= prop "flex-shrink") (let ((v (ignore-errors (read-from-string value)))) (when (numberp v) (setf (cstyle-flex-shrink cs) (float v)))))
         ((string= prop "order") (let ((v (ignore-errors (parse-integer (string-trim '(#\Space) value))))) (when (integerp v) (setf (cstyle-order cs) v))))

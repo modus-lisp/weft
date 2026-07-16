@@ -2016,9 +2016,18 @@ column distributes grow/shrink into; NIL means auto (size to content)."
           ;; flex-grow / flex-shrink (weighted by shrink*height) along the vertical axis.
           (let ((boxes '()) (heights '()) (max-w 0))
             (dolist (it items)
-              (multiple-value-bind (lb adv) (layout-node it styles cx cy content-w)
-                (push lb boxes) (push (if lb adv 0) heights)
-                (when lb (setf max-w (max max-w (lbox-w lb))))))
+              ;; cross size (width): a non-stretch item with an auto cross size
+              ;; shrink-wraps to fit-content (CSS Flexbox §7.5); stretch or a definite
+              ;; width fills / uses its own.
+              (let* ((is (st styles it))
+                     (a (let ((as (and is (css:cstyle-align-self is))))
+                          (if (and as (not (string= as "auto"))) as align)))
+                     (cw (if (and is (member (css:cstyle-width is) '(nil :auto)) (not (string= a "stretch")))
+                             (min content-w (max 0 (pref-border-width it styles content-w 0)))
+                             content-w)))
+                (multiple-value-bind (lb adv) (layout-node it styles cx cy (round cw))
+                  (push lb boxes) (push (if lb adv 0) heights)
+                  (when lb (setf max-w (max max-w (lbox-w lb)))))))
             (setf boxes (nreverse boxes) heights (nreverse heights))
             (let* ((base-sum (+ (reduce #'+ heights) total-gap))
                    (hfree (if (numberp avail-h) (- avail-h base-sum) 0))

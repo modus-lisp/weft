@@ -520,12 +520,36 @@ Ignores the system-font keywords (caption/icon/...)."
                    box)
           map)))))
 
+(defun normalize-display (value)
+  "Map a CSS Display 3 (§2.1) display value to weft's single-keyword model.  A
+single legacy keyword (block, inline-block, flex, none, table-cell, contents, …)
+passes through unchanged; a multi-keyword form <display-outside> <display-inside>
+[|| list-item] is folded to the nearest legacy keyword — e.g. `inline flow-root`
+-> inline-block, `block flex` -> flex, `inline table` -> inline-table, and any
+`… list-item` -> list-item."
+  (let ((toks (remove "" (split-ws (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value)))
+                      :test #'string=)))
+    (cond
+      ((null toks) "inline")
+      ((null (cdr toks)) (first toks))                     ; single keyword: unchanged
+      ((member "list-item" toks :test #'string=) "list-item")
+      (t (let ((inline (member "inline" toks :test #'string=))
+               (inside (cond ((member "flow-root" toks :test #'string=) "flow-root")
+                             ((member "flex" toks :test #'string=) "flex")
+                             ((member "grid" toks :test #'string=) "grid")
+                             ((member "table" toks :test #'string=) "table")
+                             (t "flow"))))
+           (cond ((string= inside "flow")      (if inline "inline" "block"))
+                 ((string= inside "flow-root") (if inline "inline-block" "flow-root"))
+                 (inline (concatenate 'string "inline-" inside))
+                 (t inside)))))))
+
 (defun apply-decl (cs prop value parent-cs)
   "Apply one declaration to CSTYLE CS (best-effort)."
   (let ((fs (cstyle-font-size cs)))
     (macrolet ((len (&optional auto) `(resolve-len value fs ,auto)))
       (cond
-        ((string= prop "display") (setf (cstyle-display cs) (string-downcase (string-trim '(#\Space) value))))
+        ((string= prop "display") (setf (cstyle-display cs) (normalize-display value)))
         ((string= prop "content") (setf (cstyle-content cs) (parse-content value)))
         ((string= prop "color")
          (if (string-equal (string-trim '(#\Space) value) "inherit")

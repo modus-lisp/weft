@@ -57,6 +57,9 @@
   (text-indent 0.0)   ; first-line indent px (inherited)
   (overflow-wrap "normal") ; normal | break-word | anywhere (inherited)
   (word-break "normal")    ; normal | break-all | keep-all (inherited)
+  ;; CSS Transforms: TRANSFORM is a list of (fn arg...) (e.g. ("translate" "10px" "5px")),
+  ;; NIL = none.  TRANSFORM-ORIGIN is ((val unit) (val unit)) or NIL (= 50% 50%).
+  (transform nil) (transform-origin nil)
   (content nil))      ; generated-content string for ::before/::after (NIL = no box)
 
 ;;; ---- UA defaults --------------------------------------------------------
@@ -782,6 +785,13 @@ passes through unchanged; a multi-keyword form <display-outside> <display-inside
              (cond ((string= p "auto"))
                    ((every #'digit-char-p p) (setf (cstyle-column-count cs) (parse-integer p)))
                    ((resolve-len p fs) (setf (cstyle-column-width cs) (resolve-len p fs)))))))
+        ((string= prop "transform")
+         (let ((tl (parse-value "transform" value)))
+           (setf (cstyle-transform cs)
+                 (if (and (listp tl) (not (equal tl '("none")))) tl nil))))
+        ((string= prop "transform-origin")
+         (let ((toks (remove "" (split-ws (string-downcase (string-trim '(#\Space) value))) :test #'string=)))
+           (setf (cstyle-transform-origin cs) (and toks (subseq toks 0 (min 2 (length toks)))))))
         ((string= prop "column-span")
          (setf (cstyle-column-span cs)
                (if (string-equal (string-trim '(#\Space) value) "all") "all" "none")))

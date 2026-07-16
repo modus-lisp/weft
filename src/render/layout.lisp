@@ -1534,6 +1534,117 @@ Returns (values lbox advance-height)."
         (dolist (c (lbox-children lb)) (shift-box c dx dy)))))
 
 
+;;; ---- CSS transforms ----------------------------------------------------
+;;; A transform is applied after layout as a visual/geometry effect (it does not
+;;; change the flow of siblings, CSS Transforms 1 §3).  Pure translations shift the
+;;; box and its whole subtree (text frags included) exactly; scale/rotate/matrix
+;;; replace the box with the axis-aligned bounds of its transformed corners — the
+;;; rectangle getBoundingClientRect reports, which the audit harness measures.
+(defun tf-num (s) (or (ignore-errors (float (read-from-string (string-trim '(#\Space) s)) 1.0)) 0.0))
+(defun tf-len (s fs ref)
+  "A transform length argument -> px; a percentage resolves against REF (a box side)."
+  (let* ((s (string-trim '(#\Space) s)) (n (length s)))
+    (flet ((pre (k) (or (ignore-errors (float (read-from-string (subseq s 0 (- n k))) 1.0)) 0.0)))
+      (cond ((zerop n) 0.0)
+            ((char= (char s (1- n)) #\%) (* (/ (pre 1) 100.0) ref))
+            ((and (>= n 3) (string-equal (subseq s (- n 2)) "px")) (pre 2))
+            ((and (>= n 3) (string-equal (subseq s (- n 2)) "em")) (* (pre 2) fs))
+            ((and (>= n 4) (string-equal (subseq s (- n 3)) "rem")) (* (pre 3) 16.0))
+            (t (tf-num s))))))
+(defun tf-angle (s)
+  "A transform angle argument -> radians."
+  (let* ((s (string-downcase (string-trim '(#\Space) s))) (n (length s)))
+    (flet ((pre (k) (or (ignore-errors (float (read-from-string (subseq s 0 (- n k))) 1.0)) 0.0)))
+      (cond ((zerop n) 0.0)
+            ((and (>= n 4) (string-equal (subseq s (- n 3)) "deg")) (* (pre 3) (/ pi 180.0)))
+            ((and (>= n 4) (string-equal (subseq s (- n 3)) "rad")) (pre 3))
+            ((and (>= n 5) (string-equal (subseq s (- n 4)) "grad")) (* (pre 4) (/ pi 200.0)))
+            ((and (>= n 5) (string-equal (subseq s (- n 4)) "turn")) (* (pre 4) (* 2 pi)))
+            (t (* (tf-num s) (/ pi 180.0)))))))
+(defun mat* (m1 m2)
+  "Compose two affine matrices (a b c d e f): (MAT* M1 M2) applies M2 then M1."
+  (destructuring-bind (a1 b1 c1 d1 e1 f1) m1
+    (destructuring-bind (a2 b2 c2 d2 e2 f2) m2
+      (list (+ (* a1 a2) (* c1 b2)) (+ (* b1 a2) (* d1 b2))
+            (+ (* a1 c2) (* c1 d2)) (+ (* b1 c2) (* d1 d2))
+            (+ (* a1 e2) (* c1 f2) e1) (+ (* b1 e2) (* d1 f2) f1)))))
+(defun mat-pt (m x y)
+  (destructuring-bind (a b c d e f) m
+    (values (+ (* a x) (* c y) e) (+ (* b x) (* d y) f))))
+(defun tf-fn-matrix (fn args fs bw bh)
+  "The affine matrix for one transform function around the local origin."
+  (flet ((len (s ref) (tf-len s fs ref)) (num (s) (tf-num s)) (ang (s) (tf-angle s)))
+    (cond
+      ((string= fn "translate") (list 1.0 0.0 0.0 1.0 (len (first args) bw) (if (second args) (len (second args) bh) 0.0)))
+      ((string= fn "translatex") (list 1.0 0.0 0.0 1.0 (len (first args) bw) 0.0))
+      ((string= fn "translatey") (list 1.0 0.0 0.0 1.0 0.0 (len (first args) bh)))
+      ((string= fn "scale") (let ((sx (num (first args)))) (list sx 0.0 0.0 (if (second args) (num (second args)) sx) 0.0 0.0)))
+      ((string= fn "scalex") (list (num (first args)) 0.0 0.0 1.0 0.0 0.0))
+      ((string= fn "scaley") (list 1.0 0.0 0.0 (num (first args)) 0.0 0.0))
+      ((string= fn "rotate") (let* ((r (ang (first args))) (c (cos r)) (s (sin r))) (list c s (- s) c 0.0 0.0)))
+      ((string= fn "skewx") (list 1.0 0.0 (tan (ang (first args))) 1.0 0.0 0.0))
+      ((string= fn "skewy") (list 1.0 (tan (ang (first args))) 0.0 1.0 0.0 0.0))
+      ((string= fn "matrix") (let ((a (mapcar #'num args))) (if (= (length a) 6) a '(1.0 0.0 0.0 1.0 0.0 0.0))))
+      (t '(1.0 0.0 0.0 1.0 0.0 0.0)))))          ; unknown / 3D function: identity
+(defun tf-origin-xy (origin fs bw bh)
+  "Resolve TRANSFORM-ORIGIN tokens to (values ox oy) offsets within a BW x BH box
+(default 50% 50%)."
+  (flet ((axis (tok ref)
+           (cond ((null tok) (* 0.5 ref))
+                 ((member tok '("left" "top") :test #'string=) 0.0)
+                 ((string= tok "center") (* 0.5 ref))
+                 ((member tok '("right" "bottom") :test #'string=) (float ref 1.0))
+                 (t (tf-len tok fs ref)))))
+    (values (axis (first origin) bw) (axis (second origin) bh))))
+(defun box-transform-matrix (cs box-x box-y bw bh)
+  "The absolute affine matrix for CS's transform on a border box at (BOX-X,BOX-Y) of
+size BW x BH, taken around its transform-origin — or NIL when there is no transform."
+  (let ((tl (css:cstyle-transform cs)))
+    (when (and tl (not (equal tl '("none"))))
+      (let ((fs (css:cstyle-font-size cs)))
+        (multiple-value-bind (ox oy) (tf-origin-xy (css:cstyle-transform-origin cs) fs bw bh)
+          (let* ((oax (+ box-x ox)) (oay (+ box-y oy))
+                 (mc (reduce (lambda (acc f) (mat* acc (tf-fn-matrix (first f) (rest f) fs bw bh)))
+                             tl :initial-value '(1.0 0.0 0.0 1.0 0.0 0.0))))
+            (mat* (mat* (list 1.0 0.0 0.0 1.0 oax oay) mc)
+                  (list 1.0 0.0 0.0 1.0 (- oax) (- oay)))))))))
+(defun tf-aabb (m x y w h)
+  "Axis-aligned bounds (values x y w h) of the box (X,Y,W,H) transformed by M."
+  (let ((xs '()) (ys '()))
+    (dolist (p (list (cons x y) (cons (+ x w) y) (cons x (+ y h)) (cons (+ x w) (+ y h))))
+      (multiple-value-bind (px py) (mat-pt m (car p) (cdr p)) (push px xs) (push py ys)))
+    (let ((minx (reduce #'min xs)) (maxx (reduce #'max xs))
+          (miny (reduce #'min ys)) (maxy (reduce #'max ys)))
+      (values minx miny (- maxx minx) (- maxy miny)))))
+(defun tf-pure-translate (tl fs bw bh)
+  "If every function in TL is a translation, return (values tx ty); else NIL."
+  (let ((tx 0.0) (ty 0.0))
+    (dolist (f tl (values tx ty))
+      (let ((fn (first f)) (a (rest f)))
+        (cond ((string= fn "translate") (incf tx (tf-len (first a) fs bw))
+                                        (when (second a) (incf ty (tf-len (second a) fs bh))))
+              ((string= fn "translatex") (incf tx (tf-len (first a) fs bw)))
+              ((string= fn "translatey") (incf ty (tf-len (first a) fs bh)))
+              (t (return nil)))))))
+(defun apply-transforms (box)
+  "Post-layout pass: apply each element's CSS transform to its box.  Children are
+processed first so an ancestor's translation shifts an already-transformed subtree
+(effective = ancestor . descendant, CSS Transforms 1 §3)."
+  (when (typep box 'lbox)
+    (dolist (c (lbox-children box)) (when (typep c 'lbox) (apply-transforms c)))
+    (let ((cs (lbox-style box)))
+      (when (and cs (css:cstyle-transform cs) (not (equal (css:cstyle-transform cs) '("none"))))
+        (let* ((tl (css:cstyle-transform cs)) (fs (css:cstyle-font-size cs))
+               (bw (lbox-w box)) (bh (lbox-h box)))
+          (multiple-value-bind (tx ty) (tf-pure-translate tl fs bw bh)
+            (if tx
+                (shift-box box (round tx) (round ty))       ; exact; moves text frags too
+                (let ((m (box-transform-matrix cs (lbox-x box) (lbox-y box) bw bh)))
+                  (when m
+                    (multiple-value-bind (nx ny nw nh) (tf-aabb m (lbox-x box) (lbox-y box) bw bh)
+                      (setf (lbox-x box) (round nx) (lbox-y box) (round ny)
+                            (lbox-w box) (round nw) (lbox-h box) (round nh))))))))))))
+
 (defun item-base (item styles content-w)
   "The flex base size of ITEM: its flex-basis (a length), else its used width, else
    — flex-basis auto/content — its content (max-content) size.  flex-grow only adds
@@ -2359,7 +2470,11 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
           (dolist (p *fixed-pending*) (finalize-positioned p vp styles))
           ;; Apply the scroll: shift the whole painted tree up so the anchor
           ;; (and fixed boxes, already placed at scroll-y+offset) land in view.
-          (when (and root (plusp scroll-y)) (shift-box root 0 (- scroll-y))))
+          (when (and root (plusp scroll-y)) (shift-box root 0 (- scroll-y)))
+          ;; CSS transforms are a post-layout visual/geometry effect — applied last,
+          ;; over the final (scrolled, positioned) tree, matching viewport-space
+          ;; getBoundingClientRect (CSS Transforms 1 §3).
+          (when root (apply-transforms root)))
         (values root adv)))))
 
 (defun root-clips-p (doc styles)

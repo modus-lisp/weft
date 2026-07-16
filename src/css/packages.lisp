@@ -34,6 +34,7 @@
            #:cstyle-row-gap #:cstyle-column-gap
            #:cstyle-column-count #:cstyle-column-width #:cstyle-column-fill
            #:cstyle-column-span #:cstyle-column-height #:cstyle-column-wrap
+           #:cstyle-transform #:cstyle-transform-origin
            #:cstyle-justify-items #:cstyle-justify-self #:cstyle-align-self
            #:cstyle-top #:cstyle-left #:cstyle-right #:cstyle-bottom #:cstyle-z-index #:cstyle-bg-gradient
            #:cstyle-min-height #:cstyle-max-height #:cstyle-content #:cstyle-cursor

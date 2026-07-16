@@ -8,7 +8,7 @@
             (loop while (and (< i n) (member (char tt i) '(#\Space #\Tab #\Newline))) do (incf i))
             (when (< i n)
               (let ((name-start i))
-                (loop while (and (< i n) (alpha-char-p (char tt i))) do (incf i))
+                (loop while (and (< i n) (alphanumericp (char tt i))) do (incf i))
                 (if (and (< i n) (char= (char tt i) #\() (> i name-start))
                     (let ((fn (subseq tt name-start i)) (arg-start (1+ i)))
                       (incf i)

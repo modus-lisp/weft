@@ -1650,6 +1650,22 @@ Returns (values lbox advance-height)."
 (defun mat-pt (m x y)
   (destructuring-bind (a b c d e f) m
     (values (+ (* a x) (* c y) e) (+ (* b x) (* d y) f))))
+(defun tf-rotate3d (args)
+  "The orthographic 2D projection of rotate3d(x,y,z,angle): the top-left 2x2 of the
+3x3 Rodrigues rotation matrix (a point in the z=0 plane, projected by dropping z)."
+  (if (< (length args) 4)
+      '(1.0 0.0 0.0 1.0 0.0 0.0)
+      (let* ((ax (tf-num (first args))) (ay (tf-num (second args))) (az (tf-num (third args)))
+             (th (tf-angle (fourth args)))
+             (len (sqrt (+ (* ax ax) (* ay ay) (* az az)))))
+        (if (zerop len)
+            '(1.0 0.0 0.0 1.0 0.0 0.0)
+            (let* ((x (/ ax len)) (y (/ ay len)) (z (/ az len))
+                   (c (cos th)) (s (sin th)) (c1 (- 1.0 c))
+                   (r00 (+ c (* x x c1)))        (r01 (- (* x y c1) (* z s)))
+                   (r10 (+ (* y x c1) (* z s)))  (r11 (+ c (* y y c1))))
+              ;; 2D affine (a b c d e f): a=r00 b=r10 c=r01 d=r11
+              (list r00 r10 r01 r11 0.0 0.0))))))
 (defun tf-fn-matrix (fn args fs bw bh)
   "The affine matrix for one transform function around the local origin."
   (flet ((len (s ref) (tf-len s fs ref)) (num (s) (tf-num s)) (ang (s) (tf-angle s)))
@@ -1663,8 +1679,27 @@ Returns (values lbox advance-height)."
       ((string= fn "rotate") (let* ((r (ang (first args))) (c (cos r)) (s (sin r))) (list c s (- s) c 0.0 0.0)))
       ((string= fn "skewx") (list 1.0 0.0 (tan (ang (first args))) 1.0 0.0 0.0))
       ((string= fn "skewy") (list 1.0 (tan (ang (first args))) 0.0 1.0 0.0 0.0))
+      ((string= fn "skew") (list 1.0 (if (second args) (tan (ang (second args))) 0.0)
+                                 (tan (ang (first args))) 1.0 0.0 0.0))
       ((string= fn "matrix") (let ((a (mapcar #'num args))) (if (= (length a) 6) a '(1.0 0.0 0.0 1.0 0.0 0.0))))
-      (t '(1.0 0.0 0.0 1.0 0.0 0.0)))))          ; unknown / 3D function: identity
+      ;; 3D transforms projected orthographically (no perspective): rotateX/Y
+      ;; foreshorten one axis by cos θ, rotateZ is the in-plane 2D rotation, and a
+      ;; z-translation / scale has no 2D projection.  This matches getBoundingClientRect
+      ;; whenever no perspective is in effect (CSS Transforms 2 §orthographic).
+      ((string= fn "rotatez") (let* ((r (ang (first args))) (c (cos r)) (s (sin r))) (list c s (- s) c 0.0 0.0)))
+      ((string= fn "rotatex") (list 1.0 0.0 0.0 (cos (ang (first args))) 0.0 0.0))
+      ((string= fn "rotatey") (list (cos (ang (first args))) 0.0 0.0 1.0 0.0 0.0))
+      ((string= fn "rotate3d") (tf-rotate3d args))
+      ((string= fn "translatez") '(1.0 0.0 0.0 1.0 0.0 0.0))
+      ((string= fn "translate3d") (list 1.0 0.0 0.0 1.0 (len (first args) bw) (if (second args) (len (second args) bh) 0.0)))
+      ((string= fn "scale3d") (list (num (first args)) 0.0 0.0 (if (second args) (num (second args)) 1.0) 0.0 0.0))
+      ((string= fn "perspective") '(1.0 0.0 0.0 1.0 0.0 0.0))   ; orthographic approximation
+      ((string= fn "matrix3d")                                   ; column-major 4x4 -> 2D projection
+       (let ((a (mapcar #'num args)))
+         (if (= (length a) 16)
+             (list (nth 0 a) (nth 1 a) (nth 4 a) (nth 5 a) (nth 12 a) (nth 13 a))
+             '(1.0 0.0 0.0 1.0 0.0 0.0))))
+      (t '(1.0 0.0 0.0 1.0 0.0 0.0)))))          ; unknown function: identity
 (defun tf-origin-xy (origin fs bw bh)
   "Resolve TRANSFORM-ORIGIN tokens to (values ox oy) offsets within a BW x BH box
 (default 50% 50%)."
@@ -1675,11 +1710,25 @@ Returns (values lbox advance-height)."
                  ((member tok '("right" "bottom") :test #'string=) (float ref 1.0))
                  (t (tf-len tok fs ref)))))
     (values (axis (first origin) bw) (axis (second origin) bh))))
+(defun compound-3d-p (tl)
+  "True when TL composes two or more out-of-plane 3D rotations (rotateX/Y, or a
+rotate3d off the Z axis).  Projecting each orthographically and multiplying the 2D
+results is only valid for a single such rotation; a compound one needs a full 3D
+matrix, so the flow declines to project it (falls back to the untransformed box)."
+  (>= (count-if (lambda (f)
+                  (let ((fn (first f)))
+                    (or (member fn '("rotatex" "rotatey") :test #'string=)
+                        (and (string= fn "rotate3d")
+                             ;; off-Z axis (some x or y component)
+                             (or (/= 0 (tf-num (or (first (rest f)) "0")))
+                                 (/= 0 (tf-num (or (second (rest f)) "0"))))))))
+                tl)
+      2))
 (defun box-transform-matrix (cs box-x box-y bw bh)
   "The absolute affine matrix for CS's transform on a border box at (BOX-X,BOX-Y) of
 size BW x BH, taken around its transform-origin — or NIL when there is no transform."
   (let ((tl (css:cstyle-transform cs)))
-    (when (and tl (not (equal tl '("none"))))
+    (when (and tl (not (equal tl '("none"))) (not (compound-3d-p tl)))
       (let ((fs (css:cstyle-font-size cs)))
         (multiple-value-bind (ox oy) (tf-origin-xy (css:cstyle-transform-origin cs) fs bw bh)
           (let* ((oax (+ box-x ox)) (oay (+ box-y oy))
@@ -1704,6 +1753,9 @@ size BW x BH, taken around its transform-origin — or NIL when there is no tran
                                         (when (second a) (incf ty (tf-len (second a) fs bh))))
               ((string= fn "translatex") (incf tx (tf-len (first a) fs bw)))
               ((string= fn "translatey") (incf ty (tf-len (first a) fs bh)))
+              ((string= fn "translate3d") (incf tx (tf-len (first a) fs bw))    ; z has no 2D effect
+                                          (when (second a) (incf ty (tf-len (second a) fs bh))))
+              ((string= fn "translatez"))                                        ; no 2D effect
               (t (return nil)))))))
 (defun apply-transforms (box)
   "Post-layout pass: apply each element's CSS transform to its box.  Children are

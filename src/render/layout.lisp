@@ -1039,6 +1039,79 @@ shift it to its final top/left."
                    (hh (let ((s (css::resolve-size (css:cstyle-height cs) avail-h))) (if (numberp s) (max 0 s) 150))))
                (make-lbox :x 0 :y 0 :w w :h hh :style cs :node node :kind :block)))))))
 
+;;; ---- vertical writing modes (CSS Writing Modes 3) ----------------------
+;;; A vertical box's subtree is laid out in a transposed "logical" frame — physical
+;;; width/height, margins, padding and borders swapped — with the normal horizontal
+;;; engine, then the resulting boxes are transposed back to physical coordinates
+;;; (swap x<->y and w<->h; mirror the block axis for vertical-rl).  This gives the
+;;; right box geometry for block children and text lines; orthogonal children
+;;; (a horizontal box inside the vertical one) are left approximate.
+(defun vertical-wm-p (cs)
+  (and cs (member (css:cstyle-writing-mode cs) '("vertical-rl" "vertical-lr") :test #'string=)))
+(defun has-abs-descendant-p (node styles)
+  "True when NODE's subtree contains an absolutely/fixed-positioned box — a case the
+transposed vertical flow does not yet place correctly, so it declines to transpose."
+  (labels ((scan (n)
+             (some (lambda (c)
+                     (and (eq (h:dnode-kind c) :element)
+                          (let ((cs (st styles c)))
+                            (or (and cs (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=))
+                                (scan c)))))
+                   (h:dnode-children n))))
+    (scan node)))
+(defun swap-cstyle (cs)
+  "A copy of CS with its physical box dimensions swapped, so the horizontal engine
+lays it out in the vertical box's logical frame; writing-mode is reset so the swapped
+subtree is not transposed again."
+  (let ((c (css::copy-cstyle cs)))
+    (rotatef (css:cstyle-width c) (css:cstyle-height c))
+    (rotatef (css:cstyle-min-width c) (css:cstyle-min-height c))
+    (rotatef (css:cstyle-max-width c) (css:cstyle-max-height c))
+    (rotatef (css:cstyle-margin-left c) (css:cstyle-margin-top c))
+    (rotatef (css:cstyle-margin-right c) (css:cstyle-margin-bottom c))
+    (rotatef (css:cstyle-padding-left c) (css:cstyle-padding-top c))
+    (rotatef (css:cstyle-padding-right c) (css:cstyle-padding-bottom c))
+    (rotatef (css:cstyle-border-left-width c) (css:cstyle-border-top-width c))
+    (rotatef (css:cstyle-border-right-width c) (css:cstyle-border-bottom-width c))
+    ;; absolute insets are logical too: block-start/inline-start map across axes.
+    (rotatef (css:cstyle-top c) (css:cstyle-left c))
+    (rotatef (css:cstyle-bottom c) (css:cstyle-right c))
+    (setf (css:cstyle-writing-mode c) "horizontal-tb")
+    c))
+(defun swap-all-styles (styles)
+  "STYLES with every cstyle value replaced by its dimension-swapped copy."
+  (let ((into (make-hash-table :test (hash-table-test styles))))
+    (maphash (lambda (k v) (setf (gethash k into) (if (typep v 'css:cstyle) (swap-cstyle v) v))) styles)
+    into))
+(defun transpose-tree (box block-extent rl)
+  "Transpose a logical box subtree to physical vertical coordinates in place: swap
+x<->y and w<->h of every lbox; for vertical-rl mirror the block axis within
+BLOCK-EXTENT (the physical width)."
+  (when (typep box 'lbox)
+    (let ((lx (lbox-x box)) (ly (lbox-y box)) (lw (lbox-w box)) (lh (lbox-h box)))
+      (setf (lbox-x box) (if rl (- block-extent ly lh) ly)
+            (lbox-y box) lx (lbox-w box) lh (lbox-h box) lw))
+    (dolist (c (lbox-children box))
+      (when (typep c 'lbox) (transpose-tree c block-extent rl)))))
+(defun layout-vertical (node styles x y avail-w avail-h)
+  "Lay out a vertical writing-mode NODE (its parent is horizontal).  Returns the
+same (values lbox advance mt mb mneg) as %LAYOUT-NODE."
+  (let* ((cs (st styles node))
+         (rl (string= (css:cstyle-writing-mode cs) "vertical-rl"))
+         (swapped (swap-all-styles styles))
+         ;; logical inline available = the physical vertical space (so text wraps at
+         ;; the box's height); fall back to the block-axis space.
+         (logical-avail (or avail-h avail-w 0)))
+    (multiple-value-bind (lb adv mt mb mneg)
+        (%layout-node node swapped 0 0 logical-avail avail-w)
+      (declare (ignore adv mt mb mneg))
+      (if (null lb)
+          (values nil 0 0 0 0)
+          (let ((block-extent (lbox-h lb)))          ; logical height = physical width
+            (transpose-tree lb block-extent rl)
+            (shift-box lb (round x) (round y))
+            (values lb (lbox-h lb) 0 (lbox-h lb) 0))))))
+
 (defun establishes-bfc-p (cs)
   "True when a box with computed style CS establishes a block formatting context
 (CSS 2.1 §9.4.1, CSS Display 3): display:flow-root, an inline-block, a table-cell/
@@ -1068,7 +1141,13 @@ does, though it is not a containing block for positioned descendants."
          ;; and so do flow-root / overflow-clip / inline-block / table-cell boxes.
          (bfc (and cs (or (member pos '("absolute" "fixed") :test #'string=)
                           (establishes-bfc-p cs)))))
-    (if (or positioned bfc)
+    (cond
+     ;; a vertical writing-mode box lays its subtree out transposed (§ above),
+     ;; unless it holds an out-of-flow descendant it cannot yet place — then it
+     ;; falls back to normal flow rather than mis-transposing it.
+     ((and cs (vertical-wm-p cs) (not (has-abs-descendant-p node styles)))
+      (layout-vertical node styles x y avail-w avail-h))
+     ((or positioned bfc)
         (let ((*abs-pending* (if positioned nil *abs-pending*))
               ;; Rebind *FLOATS* to NIL for a BFC so floats inside it do not
               ;; interact with the surrounding context (e.g. the float in Acid2's
@@ -1089,8 +1168,8 @@ does, though it is not a containing block for positioned descendants."
             (when (and lb positioned *abs-pending*)
               (let ((cb (pad-box lb cs)))
                 (dolist (p *abs-pending*) (finalize-positioned p cb styles))))
-            (values lb adv mt-eff mb-eff mneg)))
-        (%layout-core node styles x y avail-w avail-h))))
+            (values lb adv mt-eff mb-eff mneg))))
+     (t (%layout-core node styles x y avail-w avail-h)))))
 
 (defun collapse-margins (&rest ms)
   "CSS 2.1 8.3.1 collapsed margin of MS: sum of the largest positive and the

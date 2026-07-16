@@ -905,7 +905,19 @@ CB=(px py pw ph) using top/left/right/bottom from CS.  When top (or left) is
              ;; case already carries the margin in LBOX-X/Y, so leave it alone).
              (mt (css:cstyle-margin-top cs)) (mb (css:cstyle-margin-bottom cs))
              (ml (css:cstyle-margin-left cs)) (mr (css:cstyle-margin-right cs))
-             (nx (cond ((numberp left)  (+ px left ml))
+             ;; CSS 2.1 §10.3.7: definite left AND right with an auto margin — the
+             ;; auto margin(s) absorb the leftover space; two autos center the box
+             ;; (the `position:fixed; inset:0; margin:auto` centering idiom).
+             (h-auto (and (numberp left) (numberp right)
+                          (or (css:cstyle-margin-left-auto cs) (css:cstyle-margin-right-auto cs))))
+             (nx (cond (h-auto
+                        (let ((space (- pw (lbox-w lb) left right))
+                              (mla (css:cstyle-margin-left-auto cs))
+                              (mra (css:cstyle-margin-right-auto cs)))
+                          (+ px left (cond ((and mla mra) (/ (max 0 space) 2.0))
+                                           (mla (max 0 space))
+                                           (t 0)))))
+                       ((numberp left)  (+ px left ml))
                        ((numberp right) (+ px (- pw (lbox-w lb) right mr)))
                        (t (lbox-x lb))))
              (ny (cond ((numberp top)    (+ py top mt))
@@ -949,7 +961,11 @@ shift it to its final top/left."
         ;; CSS 2.1 10.3.7 / 10.6.4: an out-of-flow box with an auto width (height)
         ;; but definite left+right (top+bottom) fills the gap between the offsets —
         ;; its used border-box size is cb minus those offsets and its own margins.
-        (let* ((auto-w (member (css:cstyle-width cs) '(nil :auto)))
+        (let* (;; a table box sizes to its own column model (shrink-to-fit), not the
+               ;; left/right gap — so it is not an auto-width fill candidate (§17.5.2
+               ;; overrides §10.3.7), letting auto margins then center it.
+               (auto-w (and (member (css:cstyle-width cs) '(nil :auto))
+                            (not (member (cdisplay cs) '("table" "inline-table") :test #'string=))))
                (auto-h (member (css:cstyle-height cs) '(nil :auto)))
                (l (css:cstyle-left cs)) (r (css:cstyle-right cs))
                (tp (css:cstyle-top cs)) (bt (css:cstyle-bottom cs))

@@ -817,11 +817,16 @@ passes through unchanged; a multi-keyword form <display-outside> <display-inside
         ((string= prop "order") (let ((v (ignore-errors (parse-integer (string-trim '(#\Space) value))))) (when (integerp v) (setf (cstyle-order cs) v))))
         ((string= prop "flex-basis") (setf (cstyle-flex-basis cs) (string-downcase (string-trim '(#\Space) value))))
         ((member prop '("top" "left" "right" "bottom") :test #'string=)
-         (let* ((v (if (string-equal (string-trim '(#\Space) value) "auto") :auto (len)))
-                (slot (cond ((string= prop "top") '(setf cstyle-top)) ((string= prop "left") '(setf cstyle-left))
-                            ((string= prop "right") '(setf cstyle-right)) (t '(setf cstyle-bottom)))))
-           (declare (ignore slot))
-           (when (or (eq v :auto) (numberp v))
+         ;; a <percentage> inset (top:100%) is kept as (:percent N) — it resolves
+         ;; against the containing block only where an inset consumer knows that box
+         ;; (position:sticky); numeric consumers ignore the form as they did :auto.
+         (let* ((tv (string-trim '(#\Space) value))
+                (v (cond ((string-equal tv "auto") :auto)
+                         ((and (> (length tv) 1) (char= (char tv (1- (length tv))) #\%))
+                          (let ((n (ignore-errors (read-from-string (subseq tv 0 (1- (length tv)))))))
+                            (if (numberp n) (list :percent (float n)) (len))))
+                         (t (len)))))
+           (when (or (eq v :auto) (numberp v) (and (consp v) (eq (car v) :percent)))
              (cond ((string= prop "top") (setf (cstyle-top cs) v)) ((string= prop "left") (setf (cstyle-left cs) v))
                    ((string= prop "right") (setf (cstyle-right cs) v)) (t (setf (cstyle-bottom cs) v))))))
         ;; the `inset` shorthand (CSS Position 3) sets top/right/bottom/left with the

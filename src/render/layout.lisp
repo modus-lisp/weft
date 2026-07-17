@@ -2744,8 +2744,14 @@ CB-RECT (its containing block).  Rects are (x y w h) in tree coordinates."
          (spl (first scroll-rect))  (spr (+ (first scroll-rect) (third scroll-rect)))
          (bt (lbox-y lb)) (bb (+ (lbox-y lb) (lbox-h lb)))
          (bl (lbox-x lb)) (br (+ (lbox-x lb) (lbox-w lb)))
-         (cbt (second cb-rect)) (cbb (+ (second cb-rect) (fourth cb-rect)))
-         (cbl (first cb-rect))  (cbr (+ (first cb-rect) (third cb-rect)))
+         ;; The containing block always contains the box's own static position (the
+         ;; box was laid out inside it, possibly in scrollable overflow the clipped
+         ;; border-box excludes).  Expanding the clamp rect to include the box means
+         ;; the CB confinement never pulls a box AWAY from a static position that is
+         ;; already outside the visible scrollport — CSS Position 3: a sticky box
+         ;; whose static position is outside its scrollport is not forced into it.
+         (cbt (min (second cb-rect) bt)) (cbb (max (+ (second cb-rect) (fourth cb-rect)) bb))
+         (cbl (min (first cb-rect) bl))  (cbr (max (+ (first cb-rect) (third cb-rect)) br))
          ;; a <percentage> inset resolves against the containing block (CB height for
          ;; top/bottom, CB width for left/right), as for relative positioning.
          (top (sticky-inset (css:cstyle-top cs) (fourth cb-rect)))

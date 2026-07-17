@@ -836,10 +836,19 @@ text-align.  Returns (values line-boxes total-height)."
                         (shift-box it 0 (- top (round (lbox-y it)))))))
                   (push (make-lbox :x lx :y y :w avail :h lh2 :kind :line :children items) lines)
                   (incf y lh2) (incf h lh2))
-                ;; the common case (no explicit vertical-align): unchanged — atomics
-                ;; sit at the line top, line height is the tallest item.
+                ;; the common case (no explicit vertical-align): baseline-align each
+                ;; atomic.  An atomic inline's own baseline is its bottom margin edge
+                ;; (CSS 2.1 10.8 / 10.8.1: empty inline-block, replaced content, or
+                ;; overflow!=visible), so default vertical-align:baseline drops each
+                ;; box's bottom onto the line's baseline — the bottom of the tallest
+                ;; atomic (LINE-H is seeded from the text strut and grown to the
+                ;; tallest atomic).  Bottom-aligning atomics of unequal height is the
+                ;; primitive: previously they were all top-aligned, mis-placing a short
+                ;; inline-block/img sharing a line with a taller one.
                 (progn
-                  (dolist (it items) (unless (frag-p it) (shift-box it 0 (round y))))
+                  (dolist (it items)
+                    (unless (frag-p it)
+                      (shift-box it 0 (round (+ y (- line-h (lbox-h it)))))))
                   (push (make-lbox :x lx :y y :w avail :h line-h :kind :line :children items) lines)
                   (incf y line-h) (incf h line-h)))))))
     (values (nreverse lines) h)))

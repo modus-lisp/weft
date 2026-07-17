@@ -2711,6 +2711,60 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
         (when (eq (lbox-kind lb) :block)
           (some (lambda (c) (find-lbox-for-node c node)) (lbox-children lb))))))
 
+;;; ---- position: sticky (CSS Position 3 §3.3) -------------------------------
+;;; A sticky box is laid out in normal flow, then shifted the minimum amount to
+;;; keep it within its nearest scroll container's scrollport per its inset edges,
+;;; but never outside its containing block.  weft renders at scroll offset 0 (no
+;;; script), so the shift is non-zero only where the box's flow position already
+;;; sits past an inset edge — e.g. a bottom:0 box below the scrollport fold sticks
+;;; up to the bottom edge, clamped so it cannot leave its containing block.
+(defun sticky-box-p (lb)
+  (let ((cs (and (eq (lbox-kind lb) :block) (lbox-style lb))))
+    (and cs (equal (css:cstyle-position cs) "sticky"))))
+
+(defun scroll-container-box-p (lb)
+  "A box whose overflow is not visible establishes a scrollport for descendant
+sticky boxes (CSS Overflow 3: scroll/auto/hidden/clip all scroll-clip)."
+  (let ((cs (and (eq (lbox-kind lb) :block) (lbox-style lb))))
+    (and cs (member (css:cstyle-overflow cs) '("scroll" "auto" "hidden" "clip")
+                    :test #'string=))))
+
+(defun apply-sticky (lb scroll-rect cb-rect)
+  "Shift sticky box LB within SCROLL-RECT (its scrollport at offset 0), clamped to
+CB-RECT (its containing block).  Rects are (x y w h) in tree coordinates."
+  (let* ((cs (lbox-style lb))
+         (spt (second scroll-rect)) (spb (+ (second scroll-rect) (fourth scroll-rect)))
+         (spl (first scroll-rect))  (spr (+ (first scroll-rect) (third scroll-rect)))
+         (bt (lbox-y lb)) (bb (+ (lbox-y lb) (lbox-h lb)))
+         (bl (lbox-x lb)) (br (+ (lbox-x lb) (lbox-w lb)))
+         (cbt (second cb-rect)) (cbb (+ (second cb-rect) (fourth cb-rect)))
+         (cbl (first cb-rect))  (cbr (+ (first cb-rect) (third cb-rect)))
+         (top (css:cstyle-top cs)) (bottom (css:cstyle-bottom cs))
+         (left (css:cstyle-left cs)) (right (css:cstyle-right cs))
+         (dx 0) (dy 0))
+    (when (numberp top)    (let ((a (+ spt top)))    (when (< bt a) (setf dy (- a bt)))))
+    (when (numberp bottom) (let ((a (- spb bottom))) (when (> (+ bb dy) a) (decf dy (- (+ bb dy) a)))))
+    ;; confine to the containing block (lo may exceed hi if the box is taller than
+    ;; its CB; then MAX wins and pins the box's start edge to the CB start).
+    (setf dy (max (- cbt bt) (min dy (- cbb bb))))
+    (when (numberp left)  (let ((a (+ spl left)))  (when (< bl a) (setf dx (- a bl)))))
+    (when (numberp right) (let ((a (- spr right))) (when (> (+ br dx) a) (decf dx (- (+ br dx) a)))))
+    (setf dx (max (- cbl bl) (min dx (- cbr br))))
+    (when (or (/= dx 0) (/= dy 0)) (shift-box lb (round dx) (round dy)))))
+
+(defun resolve-sticky (root vp-rect)
+  "Walk the laid-out tree and settle every position:sticky box against the nearest
+enclosing scroll container (else the viewport VP-RECT) and its containing block."
+  (labels ((rect (lb) (list (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb)))
+           (walk (lb scroll-rect cb-rect)
+             (when (typep lb 'lbox)
+               (when (sticky-box-p lb) (apply-sticky lb scroll-rect cb-rect))
+               (let ((sr (if (scroll-container-box-p lb) (rect lb) scroll-rect))
+                     (cr (if (eq (lbox-kind lb) :block) (rect lb) cb-rect)))
+                 (dolist (c (lbox-children lb))
+                   (when (typep c 'lbox) (walk c sr cr)))))))
+    (walk root vp-rect vp-rect)))
+
 (defun layout-tree (document styles width &optional viewport-height scroll-to)
   (let* ((*floats* nil) (*abs-pending* nil) (*fixed-pending* nil)
          (*intrinsic-cache* (make-hash-table :test 'equal))
@@ -2751,6 +2805,10 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
           ;; Apply the scroll: shift the whole painted tree up so the anchor
           ;; (and fixed boxes, already placed at scroll-y+offset) land in view.
           (when (and root (plusp scroll-y)) (shift-box root 0 (- scroll-y)))
+          ;; position:sticky settles after scroll/positioning, over final geometry:
+          ;; each sticky box is confined to its scroll container's scrollport (at
+          ;; offset 0) and its containing block (CSS Position 3 §3.3).
+          (when root (resolve-sticky root (list 0 0 width vph)))
           ;; CSS transforms are a post-layout visual/geometry effect — applied last,
           ;; over the final (scrolled, positioned) tree, matching viewport-space
           ;; getBoundingClientRect (CSS Transforms 1 §3).

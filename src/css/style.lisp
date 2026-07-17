@@ -1086,13 +1086,17 @@ Invalid/unparseable components are left as NIL (= fall back to BORDER-COLOR)."
         (t (resolve-len tok fs))))
 
 (defun apply-border (cs prop value fs)
-  (let ((w 0.0) (col nil) (sty nil))
+  (let ((w nil) (col nil) (sty nil))
     (dolist (tok (split-tokens value))
       (let ((px (resolve-len tok fs)))
         (cond ((numberp px) (setf w px))
               ((member tok '("thin" "medium" "thick") :test #'string-equal) (setf w (cond ((string-equal tok "thin") 1.0) ((string-equal tok "thick") 5.0) (t 3.0))))
               ((border-style-token-p tok) (setf sty (string-downcase tok)))
               ((resolve-border-color tok cs) (setf col (resolve-border-color tok cs))))))
+    ;; an omitted width defaults to the initial `medium` (3px) when the border
+    ;; has a visible style (CSS Backgrounds 3 §border-width): `border: solid` is
+    ;; a 3px border, not a 0px one.  A `none`/`hidden` style keeps used width 0.
+    (unless w (setf w (if (or (null sty) (member sty '("none" "hidden") :test #'string=)) 0.0 3.0)))
     ;; the `border` shorthand sets all three sub-properties: an omitted color
     ;; resets border-color to currentColor (the element's color), not the value a
     ;; prior rule left — so `border: 1px solid` over `border: 2em dotted red` is

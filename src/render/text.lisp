@@ -317,7 +317,7 @@ heavier than the old 1.5 — that value had to compensate for the stem hinting w
 gamma carries the weight match; kept as a separate knob.")
 
 (defun draw-text-scribe (cv text x line-top line-h color size
-                         &key bold underline face (letter-spacing 0) underline-end-x)
+                         &key bold underline face (letter-spacing 0) underline-end-x baseline-off)
   "Paint TEXT with scribe glyphs from FACE (defaulting to the generic sans-serif
 face).  X is the left edge; LINE-TOP/LINE-H are the line box's top and height —
 the real font em-box (ascent+descent at SIZE px) is centered within it, so large
@@ -334,11 +334,16 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                    (ppem (float (min 2000 (max 1 size)) 1d0))   ; cap ppem: no real glyph exceeds this, and it bounds rasterization memory
                    (asc-ratio (face-ascent-ratio face))
                    (desc-ratio (face-descent-ratio face))
-                   ;; center the font's em-box (ascent+descent) in the line box,
-                   ;; then the baseline sits ascent px below the box's top.
+                   ;; The run's baseline: when the line supplies one (the per-line
+                   ;; baseline model, CSS 2.1 §10.8), every run on the line shares it,
+                   ;; so mixed sizes and text beside a tall atomic sit on one baseline.
+                   ;; Otherwise fall back to centering the font's em-box (ascent+
+                   ;; descent) in the line box — a single-font line lands identically.
                    (text-h (* (+ asc-ratio desc-ratio) ppem))
-                   (baseline (round (+ line-top (/ (- line-h text-h) 2)
-                                       (* asc-ratio ppem))))
+                   (baseline (round (if baseline-off
+                                        (+ line-top baseline-off)
+                                        (+ line-top (/ (- line-h text-h) 2)
+                                           (* asc-ratio ppem)))))
                    ;; zero-copy view of weft's pixel buffer as a scribe canvas
                    (scv (scribe::%make-canvas :width (canvas-width cv)
                                               :height (canvas-height cv)

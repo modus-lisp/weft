@@ -8,7 +8,7 @@
 ;;;; canvas and saved as PNG.
 (in-package #:weft.render)
 
-(defstruct lbox x y w h style node kind children marker img vpaint)   ; kind :block | :line; img = decoded IMG; vpaint = (cv x y w h) replaced-content painter
+(defstruct lbox x y w h style node kind children marker img vpaint baseline)   ; kind :block | :line; img = decoded IMG; vpaint = (cv x y w h) replaced-content painter; baseline = px offset from a :line box's top to its shared baseline (CSS 2.1 10.8)
 (defstruct frag x w text style node)                       ; a positioned styled text run on a line; node = source DOM element (for hit-testing)
 
 (defvar *floats* nil "Page-scoped float list: each (side left right top bottom).")
@@ -579,6 +579,43 @@ explicit <number>/<length>/<percentage> multiplier is used as-is; `normal`
   "Ascent of CS's font in px (baseline to top of the em box)."
   (* (css:cstyle-font-size cs) (face-ascent-ratio (style-face cs))))
 
+(defun font-descent-px (cs)
+  "Descent of CS's font in px (baseline to bottom of the em box)."
+  (* (css:cstyle-font-size cs) (face-descent-ratio (style-face cs))))
+
+(defun frag-ascent (fr)
+  "The ascent a text run FR contributes ABOVE the line baseline (CSS 2.1 10.8):
+its font ascent plus half its own leading (line-height − em-box, split evenly)."
+  (let* ((cs (frag-style fr)) (face (style-face cs)) (fs (css:cstyle-font-size cs))
+         (fh (* fs (+ (face-ascent-ratio face) (face-descent-ratio face))))
+         (lh (max 1 (floor (used-line-height cs face)))))
+    (+ (* fs (face-ascent-ratio face)) (/ (- lh fh) 2))))
+
+(defun last-line-baseline (lb)
+  "Offset from block box LB's top to the baseline of its LAST in-flow line box
+(descending through block children in document order), or NIL if it has none.
+CSS 2.1 §10.8.1: an inline-block's baseline is its last in-flow line box's."
+  (let ((top (lbox-y lb)) (best nil))
+    (labels ((rec (box)
+               (dolist (c (lbox-children box))
+                 (when (lbox-p c)
+                   (case (lbox-kind c)
+                     (:line (when (lbox-baseline c)
+                              (setf best (- (+ (lbox-y c) (lbox-baseline c)) top))))
+                     (:block (rec c)))))))
+      (rec lb)
+      best)))
+
+(defun atomic-baseline-ascent (lb)
+  "Ascent (top of margin box to baseline) of a baseline-aligned atomic inline LB.
+CSS 2.1 §10.8.1: for an inline-block with in-flow content and overflow:visible the
+baseline is its last in-flow line box's baseline; a replaced box, an empty box, or
+one whose overflow is not visible uses its bottom margin edge (the full height)."
+  (let ((cs (lbox-style lb)))
+    (or (and cs (member (css:cstyle-overflow cs) '(nil "visible") :test #'equal)
+             (last-line-baseline lb))
+        (lbox-h lb))))
+
 (defun va-atomic-extent (lb base-cs)
   "The ascent/descent an atomic inline box LB contributes ABOVE/BELOW the line's
 baseline for its vertical-align (CSS 2.1 10.8), plus a placement KIND.  An inline
@@ -587,9 +624,11 @@ where KIND is :normal (positioned by baseline), :top or :bottom (line-relative).
   (let* ((cs (lbox-style lb)) (h (lbox-h lb))
          (va (and cs (css:cstyle-vertical-align cs)))
          (fs (css:cstyle-font-size (or cs base-cs))))
-    (flet ((shift (raise) (values (+ h raise) (- raise))))   ; raise>0 lifts the box up
+    (flet ((shift (raise) (values (+ h raise) (- raise)))    ; raise>0 lifts the box up
+           (baseline ()                                       ; ascent to the box's own baseline
+             (let ((asc (atomic-baseline-ascent lb))) (values asc (- h asc) :normal))))
       (cond
-        ((null va) (shift 0))                                        ; baseline
+        ((null va) (baseline))                                       ; baseline
         ((and (consp va) (numberp (first va)))                       ; <length>/<percentage>
          (shift (let ((n (first va)) (u (second va)))
                   (cond ((string= u "px") n) ((string= u "em") (* n fs))
@@ -601,7 +640,7 @@ where KIND is :normal (positioned by baseline), :top or :bottom (line-relative).
            (values (+ (/ h 2.0) xh) (- (/ h 2.0) xh) :normal)))
         ((equal va '("top"))    (values h 0 :top))
         ((equal va '("bottom")) (values h 0 :bottom))
-        (t (shift 0))))))
+        (t (baseline))))))
 
 (defun apply-text-transform (word transform)
   "Apply CSS text-transform to WORD (a whitespace-delimited token, so `capitalize`
@@ -795,20 +834,36 @@ text-align.  Returns (values line-boxes total-height)."
                  (used (- lastx lx))
                  (shift (cond ((string= align "center") (max 0 (floor (- avail used) 2)))
                               ((string= align "right") (max 0 (- avail used))) (t 0)))
-                 ;; baseline model (CSS 2.1 10.8): the strut is the block's own font;
-                 ;; each atomic contributes ascent/descent about the baseline per its
-                 ;; vertical-align.  line height = max-ascent + max-descent.  With no
-                 ;; atomics this is just the strut, so a text-only line is unchanged.
-                 (strut-asc (font-ascent-px base-cs))
-                 (strut-desc (max 0.0 (- lh strut-asc)))
+                 ;; --- per-line baseline model (CSS 2.1 §10.8) --------------------
+                 ;; The line box has a single baseline.  Every inline box contributes
+                 ;; an ASCENT above it: the block's strut (its font ascent + half its
+                 ;; leading), each text run at its own font, and each atomic per its
+                 ;; vertical-align (an empty inline-block / replaced box by its bottom
+                 ;; margin edge, an inline-block-with-content by its own last-line
+                 ;; baseline).  The line's baseline sits MAX-ASCENT below the top; the
+                 ;; painter drops every text run onto it (LBOX-BASELINE) instead of
+                 ;; centering each run, so text sits ON the baseline next to a tall
+                 ;; atomic rather than floating to the line's vertical middle.  With
+                 ;; one font and no atomics this is just the strut, so a plain text
+                 ;; line's baseline (and paint) is unchanged to the pixel.
+                 (strut-fh (+ (font-ascent-px base-cs) (font-descent-px base-cs)))
+                 (strut-asc (+ (font-ascent-px base-cs) (/ (- lh strut-fh) 2)))
+                 (strut-desc (- lh strut-asc))
                  (metrics (loop for it in items unless (frag-p it)
                                 collect (multiple-value-bind (a d k) (va-atomic-extent it base-cs)
                                           (list it a d (or k :normal)))))
+                 ;; LINE-ASC / LINE-DESC drive line-box height + atomic placement and
+                 ;; are kept as before (strut + atomics only) so element geometry is
+                 ;; unchanged.  The paint BASELINE additionally maxes in each text
+                 ;; run's own ascent, so mixed font sizes on a line share one baseline.
                  (line-asc (reduce #'max metrics :initial-value strut-asc
                                    :key (lambda (m) (if (member (fourth m) '(:top :bottom)) (lbox-h (first m)) (second m)))))
                  (line-desc (reduce #'max metrics :initial-value strut-desc
                                     :key (lambda (m) (if (member (fourth m) '(:top :bottom)) 0.0 (third m)))))
-                 (lh2 (max 1 (round (+ line-asc line-desc)))))
+                 (lh2 (max 1 (round (+ line-asc line-desc))))
+                 ;; baseline offset (line top -> baseline) shared by all text runs.
+                 (baseline (round (reduce #'max items :initial-value line-asc
+                                          :key (lambda (it) (if (frag-p it) (frag-ascent it) 0.0))))))
             (when (plusp shift)
               (dolist (it items) (if (frag-p it) (incf (frag-x it) shift) (shift-box it shift 0))))
             (when (and (string= align "justify") (< i n))
@@ -823,8 +878,8 @@ text-align.  Returns (values line-boxes total-height)."
                       thereis (let ((va (css:cstyle-vertical-align (lbox-style (first m)))))
                                 (and (consp va) (numberp (first va)))))   ; a <length>/<percentage> shift
                 ;; a line carrying an explicit vertical-align uses the baseline model:
-                ;; place each atomic at its aligned position; text frags still paint
-                ;; from the line top (line-asc is the strut ascent, so text lines up).
+                ;; place each atomic at its aligned position; text frags paint from the
+                ;; shared line baseline (LINE-ASC), so they line up on it.
                 (progn
                   (dolist (m metrics)
                     (destructuring-bind (it a d k) m
@@ -834,7 +889,8 @@ text-align.  Returns (values line-boxes total-height)."
                                    (:bottom (round (+ y (- lh2 (lbox-h it)))))
                                    (t       (round (+ y (- line-asc a)))))))
                         (shift-box it 0 (- top (round (lbox-y it)))))))
-                  (push (make-lbox :x lx :y y :w avail :h lh2 :kind :line :children items) lines)
+                  (push (make-lbox :x lx :y y :w avail :h lh2 :kind :line
+                                   :children items :baseline baseline) lines)
                   (incf y lh2) (incf h lh2))
                 ;; the common case (no explicit vertical-align): baseline-align each
                 ;; atomic.  An atomic inline's own baseline is its bottom margin edge
@@ -849,7 +905,8 @@ text-align.  Returns (values line-boxes total-height)."
                   (dolist (it items)
                     (unless (frag-p it)
                       (shift-box it 0 (round (+ y (- line-h (lbox-h it)))))))
-                  (push (make-lbox :x lx :y y :w avail :h line-h :kind :line :children items) lines)
+                  (push (make-lbox :x lx :y y :w avail :h line-h :kind :line
+                                   :children items :baseline baseline) lines)
                   (incf y line-h) (incf h line-h)))))))
     (values (nreverse lines) h)))
 
@@ -3112,7 +3169,8 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                                    :bold (>= (css:cstyle-font-weight cs) 600)
                                    :letter-spacing (css:cstyle-letter-spacing cs)
                                    :underline ul
-                                   :underline-end-x uend))))
+                                   :underline-end-x uend
+                                   :baseline-off (lbox-baseline lb)))))
                     (paint-box cv it)))))))   ; atomic inline-block / img box
 
 (defun percent-decode (s)

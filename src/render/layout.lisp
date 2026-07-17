@@ -1464,19 +1464,30 @@ Returns (values lbox advance-height)."
                   ((member (cdisplay cs) '("grid" "inline-grid") :test #'string=)
                    (layout-grid node styles cx cy content-w cs (or child-avail-h ar-h)))
                   (t (layout-table node styles cx cy content-w cs)))
-          (let* ((box-h (+ (cond
-                             ;; a flex/grid container with a definite height USES it —
-                             ;; its items may overflow (an 80+100px column in a 100px
-                             ;; box stays 100, clipping) rather than stretching the box
-                             ;; to content.  A table's height is only a minimum, so it
-                             ;; keeps growing to its content.
-                             ((and child-avail-h
-                                   (member (cdisplay cs) '("flex" "inline-flex" "grid" "inline-grid")
-                                           :test #'string=))
-                              child-avail-h)
-                             (ar-h (max ar-h ch))
-                             (t ch))
-                           pt pb bt bb))
+          (let* ((box-h (let ((bh (+ (cond
+                                       ;; a flex/grid container with a definite height USES
+                                       ;; it — its items may overflow (an 80+100px column in
+                                       ;; a 100px box stays 100, clipping) rather than
+                                       ;; stretching to content.  A table's height is only a
+                                       ;; minimum, so it keeps growing to its content.
+                                       ((and child-avail-h
+                                             (member (cdisplay cs) '("flex" "inline-flex" "grid" "inline-grid")
+                                                     :test #'string=))
+                                        child-avail-h)
+                                       (ar-h (max ar-h ch))
+                                       (t ch))
+                                     pt pb bt bb)))
+                          ;; min/max-height clamp the box (CSS 2.1 §10.7): max first then
+                          ;; min, so min-height wins — a table with min-height:312px and a
+                          ;; 5px cell is still 312px.  For a table these size the BORDER
+                          ;; box (the padding + border are on the table wrapper box, so
+                          ;; min-height:312 targets 312 total); flex/grid size the content
+                          ;; box like a block, so add the padding + border on.
+                          (let ((tbl (member (cdisplay cs) '("table" "inline-table") :test #'string=)))
+                            (when (numberp max-h) (setf bh (min bh (if tbl max-h (+ max-h pt pb bt bb)))))
+                            (when (and (numberp min-h) (> min-h 0))
+                              (setf bh (max bh (if tbl min-h (+ min-h pt pb bt bb))))))
+                          bh))
                  (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                                 :kind :block :children boxes)))
             (return-from %layout-core (values lb (+ mt box-h mb) mt mb)))))

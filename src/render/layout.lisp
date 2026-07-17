@@ -1464,7 +1464,19 @@ Returns (values lbox advance-height)."
                   ((member (cdisplay cs) '("grid" "inline-grid") :test #'string=)
                    (layout-grid node styles cx cy content-w cs (or child-avail-h ar-h)))
                   (t (layout-table node styles cx cy content-w cs)))
-          (let* ((box-h (+ (if ar-h (max ar-h ch) ch) pt pb bt bb))
+          (let* ((box-h (+ (cond
+                             ;; a flex/grid container with a definite height USES it —
+                             ;; its items may overflow (an 80+100px column in a 100px
+                             ;; box stays 100, clipping) rather than stretching the box
+                             ;; to content.  A table's height is only a minimum, so it
+                             ;; keeps growing to its content.
+                             ((and child-avail-h
+                                   (member (cdisplay cs) '("flex" "inline-flex" "grid" "inline-grid")
+                                           :test #'string=))
+                              child-avail-h)
+                             (ar-h (max ar-h ch))
+                             (t ch))
+                           pt pb bt bb))
                  (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                                 :kind :block :children boxes)))
             (return-from %layout-core (values lb (+ mt box-h mb) mt mb)))))
@@ -2128,9 +2140,18 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                           (if (and as (not (string= as "auto"))) as align)))
                      (cw (if (and is (member (css:cstyle-width is) '(nil :auto)) (not (string= a "stretch")))
                              (min content-w (max 0 (pref-border-width it styles content-w 0)))
-                             content-w)))
+                             content-w))
+                     ;; a definite flex-basis is the item's main (height) base — it is
+                     ;; NOT applied to the item's box by layout-node (which sees only
+                     ;; flex-basis, not height), so an empty flex:0 0 80px item would
+                     ;; otherwise report its 0 natural content height (CSS Flexbox §9.2).
+                     (basis (and is (css:cstyle-flex-basis is)))
+                     (def-basis (and (stringp basis)
+                                     (not (member basis '("auto" "content") :test #'string=))
+                                     (let ((v (css::resolve-len basis (css:cstyle-font-size is))))
+                                       (and (numberp v) v)))))
                 (multiple-value-bind (lb adv) (layout-node it styles cx cy (round cw))
-                  (push lb boxes) (push (if lb adv 0) heights)
+                  (push lb boxes) (push (if lb (or def-basis adv) 0) heights)
                   (when lb (setf max-w (max max-w (lbox-w lb)))))))
             (setf boxes (nreverse boxes) heights (nreverse heights))
             (let* ((base-sum (+ (reduce #'+ heights) total-gap))

@@ -560,6 +560,16 @@ passes through unchanged; a multi-keyword form <display-outside> <display-inside
 
 (defun apply-decl (cs prop value parent-cs)
   "Apply one declaration to CSTYLE CS (best-effort)."
+  ;; Logical sizing properties (CSS Logical 1 §4.1) resolve to physical ones in the
+  ;; default horizontal-tb writing mode, which covers effectively all content:
+  ;; inline-size is width, block-size is height (and their min-/max- forms).
+  (setf prop (cond ((string= prop "inline-size") "width")
+                   ((string= prop "block-size") "height")
+                   ((string= prop "min-inline-size") "min-width")
+                   ((string= prop "max-inline-size") "max-width")
+                   ((string= prop "min-block-size") "min-height")
+                   ((string= prop "max-block-size") "max-height")
+                   (t prop)))
   (let ((fs (cstyle-font-size cs)))
     (macrolet ((len (&optional auto) `(resolve-len value fs ,auto)))
       (cond

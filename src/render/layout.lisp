@@ -901,13 +901,21 @@ text-align.  Returns (values line-boxes total-height)."
                 ;; tallest atomic).  Bottom-aligning atomics of unequal height is the
                 ;; primitive: previously they were all top-aligned, mis-placing a short
                 ;; inline-block/img sharing a line with a taller one.
+                ;; Atomics are bottom-aligned on LINE-H (their baseline = the line's,
+                ;; Chrome-verified), but the LINE BOX height is LH2 = line-asc +
+                ;; line-desc: when a tall atomic sets the ascent, the block's strut
+                ;; still contributes its below-baseline DESCENT, so the line (and its
+                ;; container) extend ~font-descent past the atomic's bottom exactly as
+                ;; CSS 2.1 §10.8 requires (an img+text or tall-inline-block line is
+                ;; font-descent taller than the atomic — matches Chrome).  For plain
+                ;; text and sub-strut atomics LH2 == LINE-H, so nothing else moves.
                 (progn
                   (dolist (it items)
                     (unless (frag-p it)
                       (shift-box it 0 (round (+ y (- line-h (lbox-h it)))))))
-                  (push (make-lbox :x lx :y y :w avail :h line-h :kind :line
+                  (push (make-lbox :x lx :y y :w avail :h lh2 :kind :line
                                    :children items :baseline baseline) lines)
-                  (incf y line-h) (incf h line-h)))))))
+                  (incf y lh2) (incf h lh2)))))))
     (values (nreverse lines) h)))
 
 (defun collect-raw (node)

@@ -201,6 +201,13 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                       ((and cs (member (css:cstyle-float cs) '("left" "right") :test #'string=))
                        (push n floats))
                       ((member (h:dnode-name n) '("script" "style") :test #'string=))
+                      ;; <br> is a forced line break (HTML §4.5.27): it ends the
+                      ;; current line box and starts a new one, emitted as the same
+                      ;; :break token a preserved newline produces.  (Out-of-flow /
+                      ;; floated / display:none <br>s are handled by the branches
+                      ;; above and never reach here.)
+                      ((string= (h:dnode-name n) "br")
+                       (push (list :break nil nil 0 n) words))
                       ;; Replaced elements (img, decodable <object>) render at their
                       ;; OWN intrinsic/attr size — checked BEFORE inline-block, because
                       ;; <img> is UA display:inline-block and must not fall into generic
@@ -2418,8 +2425,9 @@ cell (no text baseline of its own) is likewise centered."
 token (word or atomic box)."
   (let ((words (collect-words (coerce (h:dnode-children node) 'list) styles cs content-w)) (w 0))
     (dolist (wd words)
-      (setf w (max w (if (eq (car wd) :atomic) (lbox-w (tok-meta wd))
-                         (word-min-width (car wd) (tok-meta wd) (tok-node wd))))))
+      (unless (eq (car wd) :break)          ; a forced break has no width
+        (setf w (max w (if (eq (car wd) :atomic) (lbox-w (tok-meta wd))
+                           (word-min-width (car wd) (tok-meta wd) (tok-node wd)))))))
     w))
 
 (defun min-content-width (node styles content-w &optional (depth 0) skip-own-width)
@@ -2703,11 +2711,17 @@ a single (unwrapped) line.  Measures NODE's CHILDREN — collecting NODE itself 
 re-wrap an inline-block/atomic node as one atomic box laid out at the full available
 width (an empty icon then reports content-w instead of ~0)."
   (let ((words (collect-words (coerce (h:dnode-children node) 'list) styles cs content-w))
-        (w 0))
+        (w 0) (seg 0))
+    ;; Max-content is the widest run between forced breaks (CSS Sizing 3 §5.1):
+    ;; a <br>/newline (:break) resets the running segment width rather than being
+    ;; summed into one line, so `AAA<br>BBBBB` measures BBBBB, not AAABBBBB.
     (dolist (wd words)
-      (incf w (+ (if (eq (car wd) :atomic) (lbox-w (tok-meta wd)) (word-w (car wd) (tok-meta wd)))
-                 (tok-gap wd)
-                 (if (tok-space wd) (space-w (if (eq (car wd) :atomic) cs (tok-meta wd))) 0))))
+      (if (eq (car wd) :break)
+          (setf seg 0)
+          (incf seg (+ (if (eq (car wd) :atomic) (lbox-w (tok-meta wd)) (word-w (car wd) (tok-meta wd)))
+                       (tok-gap wd)
+                       (if (tok-space wd) (space-w (if (eq (car wd) :atomic) cs (tok-meta wd))) 0))))
+      (setf w (max w seg)))
     w))
 
 (defun pref-content-width (node styles content-w &optional (depth 0))

@@ -1463,7 +1463,13 @@ Returns (values lbox advance-height)."
                    (layout-flex node styles cx cy content-w cs (or child-avail-h ar-h)))
                   ((member (cdisplay cs) '("grid" "inline-grid") :test #'string=)
                    (layout-grid node styles cx cy content-w cs (or child-avail-h ar-h)))
-                  (t (layout-table node styles cx cy content-w cs)))
+                  (t (layout-table node styles cx cy content-w cs
+                                   ;; grid-box height to grow rows into: a definite/min
+                                   ;; height less the wrapper padding+border (table
+                                   ;; heights size the border box), §17.5.3.
+                                   (let ((th (cond ((and (numberp min-h) (> min-h 0)) min-h)
+                                                   ((numberp exp-h) exp-h) (t nil))))
+                                     (and th (max 0 (- th pt pb bt bb)))))))
           (let* ((box-h (let ((bh (+ (cond
                                        ;; a flex/grid container with a definite height USES
                                        ;; it — its items may overflow (an 80+100px column in
@@ -2598,10 +2604,12 @@ is taken proportionally from auto columns' shrink room (fixed columns kept)."
                            ((numberp (css:cstyle-bottom cs)) (- (css:cstyle-bottom cs))) (t 0))))
       (values 0 0)))
 
-(defun layout-table (node styles cx cy content-w base-cs)
+(defun layout-table (node styles cx cy content-w base-cs &optional target-h)
   "Automatic table layout (CSS 2.1 17.5.2): columns sized to their content (or a
-specified width), rows stacked, cells stretched to row height.  Returns
- (values cell-lboxes content-height)."
+specified width), rows stacked, cells stretched to row height.  TARGET-H, when a
+number greater than the natural row total, is the grid-box height the rows are
+grown to fill (from an explicit / min height, §17.5.3).  Returns (values
+cell-lboxes content-height)."
   (let ((rows (table-rows node styles)))
     (when (null rows) (return-from layout-table (values nil 0)))
     (multiple-value-bind (maxs mins specs ncols) (table-column-model node styles content-w)
@@ -2613,56 +2621,73 @@ specified width), rows stacked, cells stretched to row height.  Returns
              (colx (make-array (1+ ncols) :initial-element 0.0))
              (y cy) (boxes '()))
         (loop for i below ncols do (setf (aref colx (1+ i)) (+ (aref colx i) (nth i colw))))
-        (dolist (row rows)
-          (let ((cells (row-cells row styles node)) (rowh 0) (rowboxes '()) (col 0))
-            (dolist (cell cells)
-              (let* ((span (cell-colspan cell))
-                     (x0 (aref colx (min ncols col)))
-                     (x1 (aref colx (min ncols (+ col span))))
-                     (cw (max 1 (round (- x1 x0)))))
-                (multiple-value-bind (lb adv) (layout-node cell styles (round (+ cx x0)) y cw)
-                  (declare (ignore adv))
-                  (when lb (push lb rowboxes) (setf rowh (max rowh (lbox-h lb)))))
-                (incf col span)))
-            ;; Honor an explicit row height (CSS 2.1 17.5.3): the row is at least
-            ;; as tall as its specified height.  This is what materialises HN's
-            ;; empty 5px spacer <tr style="height:5px">, whose row-cells are empty
-            ;; so its height would otherwise collapse to 0 and pack the stories.
-            (let ((rcs (unless (eq row node) (st styles row))))
-              (when rcs
-                (let ((rh (css::resolve-height (css:cstyle-height rcs) nil)))
-                  (when (and (numberp rh) (> rh rowh)) (setf rowh (round rh))))))
-            ;; the baseline group = the single-line text cells; shorter cells align to
-            ;; its tallest.  A row taller than that group (a block or wrapped cell set
-            ;; the height) has no single baseline, so every cell centers instead.
-            (let* ((bref (loop for lb in rowboxes
-                               when (and (not (cell-lbox-valign-top-p lb)) (cell-single-line-text-p lb))
-                               maximize (cell-inline-content-height lb)))
-                   (center-mode (> rowh (+ bref 1))))
-              (dolist (lb rowboxes)
-                (place-cell-content lb rowh (and (plusp bref) bref) center-mode)
-                (setf (lbox-h lb) rowh)))                             ; stretch box to row height
-            ;; position:relative on the row, its row-group, or a cell shifts the box(es)
-            ;; visually (the table box model doesn't otherwise honor relative offsets on
-            ;; table parts).  Row + group offset moves the whole row; a cell adds its own.
-            (multiple-value-bind (rdx rdy) (rel-offset (unless (eq row node) (st styles row)))
-              (let ((grp (h:dnode-parent row)))
-                (when (and grp (eq (h:dnode-kind grp) :element)
-                           (member (string-downcase (h:dnode-name grp)) '("tbody" "thead" "tfoot") :test #'string=))
-                  (multiple-value-bind (gdx gdy) (rel-offset (st styles grp)) (incf rdx gdx) (incf rdy gdy))))
-              (dolist (lb rowboxes)
-                (multiple-value-bind (cdx cdy) (rel-offset (lbox-style lb))
-                  (shift-box lb (+ rdx cdx) (+ rdy cdy)))))
-            ;; A row with no cell boxes but a positive height (an empty spacer row)
-            ;; still occupies its band; give it a box so it advances the flow and is
-            ;; recorded/painted like the browser's tr box.
-            (when (and (null rowboxes) (plusp rowh) (not (eq row node)))
-              (push (make-lbox :x (round cx) :y y :w (round content-w) :h rowh
-                               :style (st styles row) :node row :kind :block)
-                    rowboxes))
-            (setf boxes (nconc boxes (nreverse rowboxes)))
-            (incf y rowh)))
-        (values boxes (- y cy))))))
+        ;; PASS 1: lay each row's cells at the content origin CY and record its
+        ;; natural height; placement is deferred so an over-tall table can grow the
+        ;; rows first (§17.5.3) without re-laying their content.
+        (let ((rowinfo '()) (natural 0))
+          (dolist (row rows)
+            (let ((cells (row-cells row styles node)) (rowh 0) (rowboxes '()) (col 0))
+              (dolist (cell cells)
+                (let* ((span (cell-colspan cell))
+                       (x0 (aref colx (min ncols col)))
+                       (x1 (aref colx (min ncols (+ col span))))
+                       (cw (max 1 (round (- x1 x0)))))
+                  (multiple-value-bind (lb adv) (layout-node cell styles (round (+ cx x0)) cy cw)
+                    (declare (ignore adv))
+                    (when lb (push lb rowboxes) (setf rowh (max rowh (lbox-h lb)))))
+                  (incf col span)))
+              ;; Honor an explicit row height (CSS 2.1 17.5.3): the row is at least
+              ;; as tall as its specified height.  This is what materialises HN's
+              ;; empty 5px spacer <tr style="height:5px">, whose row-cells are empty
+              ;; so its height would otherwise collapse to 0 and pack the stories.
+              (let ((rcs (unless (eq row node) (st styles row))))
+                (when rcs
+                  (let ((rh (css::resolve-height (css:cstyle-height rcs) nil)))
+                    (when (and (numberp rh) (> rh rowh)) (setf rowh (round rh))))))
+              (push (list row (nreverse rowboxes) rowh) rowinfo)
+              (incf natural rowh)))
+          (setf rowinfo (nreverse rowinfo))
+          ;; PASS 2: distribute a table taller than its content across rows in
+          ;; proportion to their heights (§17.5.3); with no surplus SHARE is 0 and
+          ;; every row keeps its natural height, so ordinary tables are unchanged.
+          (let ((surplus (if (and (numberp target-h) (> target-h natural)) (- target-h natural) 0)))
+            (dolist (ri rowinfo)
+              (destructuring-bind (row rowboxes rowh) ri
+                (let* ((share (cond ((<= surplus 0) 0)
+                                    ((> natural 0) (* surplus (/ rowh natural)))
+                                    (t (/ surplus (length rowinfo)))))
+                       (rh2 (round (+ rowh share))))
+                  (dolist (lb rowboxes) (shift-box lb 0 (round (- y (lbox-y lb)))))
+                  ;; the baseline group = the single-line text cells; shorter cells align
+                  ;; to its tallest.  A row taller than that group (a block/wrapped cell,
+                  ;; or a distributed surplus) has no single baseline, so cells center.
+                  (let* ((bref (loop for lb in rowboxes
+                                     when (and (not (cell-lbox-valign-top-p lb)) (cell-single-line-text-p lb))
+                                     maximize (cell-inline-content-height lb)))
+                         (center-mode (> rh2 (+ bref 1))))
+                    (dolist (lb rowboxes)
+                      (place-cell-content lb rh2 (and (plusp bref) bref) center-mode)
+                      (setf (lbox-h lb) rh2)))                          ; stretch box to row height
+                  ;; position:relative on the row, its row-group, or a cell shifts the
+                  ;; box(es) visually (the table box model doesn't otherwise honor
+                  ;; relative offsets on table parts).  Row + group move the whole row.
+                  (multiple-value-bind (rdx rdy) (rel-offset (unless (eq row node) (st styles row)))
+                    (let ((grp (h:dnode-parent row)))
+                      (when (and grp (eq (h:dnode-kind grp) :element)
+                                 (member (string-downcase (h:dnode-name grp)) '("tbody" "thead" "tfoot") :test #'string=))
+                        (multiple-value-bind (gdx gdy) (rel-offset (st styles grp)) (incf rdx gdx) (incf rdy gdy))))
+                    (dolist (lb rowboxes)
+                      (multiple-value-bind (cdx cdy) (rel-offset (lbox-style lb))
+                        (shift-box lb (+ rdx cdx) (+ rdy cdy)))))
+                  ;; A row with no cell boxes but a positive height (an empty spacer row)
+                  ;; still occupies its band; give it a box so it advances the flow and is
+                  ;; recorded/painted like the browser's tr box.
+                  (when (and (null rowboxes) (plusp rh2) (not (eq row node)))
+                    (setf rowboxes (list (make-lbox :x (round cx) :y y :w (round content-w) :h rh2
+                                                    :style (st styles row) :node row :kind :block))))
+                  (setf boxes (nconc boxes rowboxes))
+                  (incf y rh2)))))
+          (values boxes (- y cy)))))))
 
 (defun pref-inline-width (node styles cs content-w)
   "Max-content width of NODE's inline content: word + atomic-box widths summed on

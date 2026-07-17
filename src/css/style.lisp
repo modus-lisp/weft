@@ -231,11 +231,12 @@ operand is subtraction."
     (nreverse toks)))
 
 (defun eval-calc (inner font-size)
-  "Evaluate a flat, unnested calc() interior INNER to a linear length form:
-(values PX PCT), the value being PX plus PCT% of the containing block (PCT 0 for a
-pure length).  Percentages stay symbolic so they resolve at layout against the real
-basis.  A scalar (unitless number) multiplies/divides a length; length*length or
-number+length is invalid (NIL).  * and / bind tighter than + and - (Values §10)."
+  "Evaluate a calc() interior INNER to a linear length form: (values PX PCT), the
+value being PX plus PCT% of the containing block (PCT 0 for a pure length).
+Percentages stay symbolic so they resolve at layout against the real basis.  A
+scalar (unitless number) multiplies/divides a length; length*length or number+length
+is invalid (NIL).  * and / bind tighter than + and - (Values §10), and nested
+parentheses are collapsed innermost-first before the flat passes."
   (labels ((operand (tk)
              ;; a scalar NUMBER, or a length form (PX . PCT), or :bad
              (cond ((and (plusp (length tk)) (char= (char tk (1- (length tk))) #\%))
@@ -253,23 +254,39 @@ number+length is invalid (NIL).  * and / bind tighter than + and - (Values §10)
                             (t :bad)))
            (pls (a b s) (cond ((and (numberp a) (numberp b)) (+ a (* s b)))
                               ((and (consp a) (consp b)) (cons (+ (car a) (* s (car b))) (+ (cdr a) (* s (cdr b)))))
-                              (t :bad))))
-    (let ((seq (mapcar (lambda (tk) (if (member tk '("+" "-" "*" "/") :test #'string=) tk (operand tk)))
+                              (t :bad)))
+           ;; reduce a paren-free token list (values + operator strings) to one value,
+           ;; else :bad.  * and / first, then + and - (left to right within each).
+           (reduce-flat (s)
+             (flet ((pass (s ops fn)
+                      (loop for pos = (position-if (lambda (x) (member x ops :test #'equal)) s)
+                            while (and pos (> pos 0) (< pos (1- (length s)))) do
+                              (let ((r (funcall fn (nth (1- pos) s) (nth pos s) (nth (1+ pos) s))))
+                                (when (eq r :bad) (return-from pass :bad))
+                                (setf s (append (subseq s 0 (1- pos)) (list r) (subseq s (+ pos 2)))))
+                            finally (return s))))
+               (let ((s (pass s '("*" "/") (lambda (a op b) (if (string= op "*") (mul a b) (dvd a b))))))
+                 (if (eq s :bad) :bad
+                     (let ((s (pass s '("+" "-") (lambda (a op b) (pls a b (if (string= op "+") 1 -1))))))
+                       (cond ((eq s :bad) :bad)
+                             ((and s (= 1 (length s))) (first s))
+                             (t :bad))))))))
+    (let ((seq (mapcar (lambda (tk) (if (member tk '("+" "-" "*" "/" "(" ")") :test #'string=) tk (operand tk)))
                        (calc-tokenize inner))))
       (when (and seq (notany (lambda (x) (eq x :bad)) seq))
-        (flet ((pass (s ops fn)
-                 (loop for pos = (position-if (lambda (x) (member x ops :test #'equal)) s)
-                       while (and pos (> pos 0) (< pos (1- (length s)))) do
-                         (let ((r (funcall fn (nth (1- pos) s) (nth pos s) (nth (1+ pos) s))))
-                           (when (eq r :bad) (return-from eval-calc nil))
-                           (setf s (append (subseq s 0 (1- pos)) (list r) (subseq s (+ pos 2)))))
-                       finally (return s))))
-          (let* ((s (pass seq '("*" "/") (lambda (a op b) (if (string= op "*") (mul a b) (dvd a b)))))
-                 (s (pass s '("+" "-") (lambda (a op b) (pls a b (if (string= op "+") 1 -1))))))
-            (when (and s (= 1 (length s)))
-              (let ((v (first s)))
-                (cond ((consp v) (values (float (car v)) (float (cdr v))))
-                      ((numberp v) (values (float v) 0.0)))))))))))
+        ;; collapse the innermost parenthesised group (the last "(" — no "(" lies
+        ;; between it and its ")") until none remain, then reduce what is left.
+        (loop for open = (position "(" seq :test #'equal :from-end t)
+              while open do
+                (let ((close (position ")" seq :test #'equal :start open)))
+                  (unless close (return-from eval-calc nil))
+                  (let ((val (reduce-flat (subseq seq (1+ open) close))))
+                    (when (eq val :bad) (return-from eval-calc nil))
+                    (setf seq (append (subseq seq 0 open) (list val) (subseq seq (1+ close)))))))
+        (let ((v (reduce-flat seq)))
+          (unless (eq v :bad)
+            (cond ((consp v) (values (float (car v)) (float (cdr v))))
+                  ((numberp v) (values (float v) 0.0)))))))))
 
 (defun split-top-commas (s)
   "Split S on commas that sit at paren depth 0 (so nested min()/calc() args stay

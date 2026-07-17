@@ -1112,19 +1112,34 @@ same (values lbox advance mt mb mneg) as %LAYOUT-NODE."
             (shift-box lb (round x) (round y))
             (values lb (lbox-h lb) 0 (lbox-h lb) 0))))))
 
+(defun block-align-content (cs)
+  "For a block-level box, its align-content when set to an explicit *distributing*
+value (CSS Box Alignment 3 §5.3) — center/end/space-*/baseline — which aligns the
+box's content in the block axis and makes it establish an independent formatting
+context.  Returns the value, else NIL (normal/start/stretch are indistinguishable
+from weft's default here, so they do nothing)."
+  (and cs
+       (member (cdisplay cs) '("block" "flow-root" "list-item") :test #'string=)
+       (let ((ac (css:cstyle-align-content cs)))
+         (and (member ac '("center" "end" "flex-end" "space-between" "space-around"
+                           "space-evenly" "baseline")
+                      :test #'string=)
+              ac))))
 (defun establishes-bfc-p (cs)
   "True when a box with computed style CS establishes a block formatting context
 (CSS 2.1 §9.4.1, CSS Display 3): display:flow-root, an inline-block, a table-cell/
-caption, or a non-visible overflow (the clearfix idiom).  Such a box contains its
-own floats, keeps outside floats from intruding, and does not collapse its margins
-with its children.  Floated and absolutely-positioned boxes establish one too, but
-are handled where they are placed / positioned."
+caption, a non-visible overflow (the clearfix idiom), or a non-normal align-content
+(CSS Box Alignment 3).  Such a box contains its own floats, keeps outside floats
+from intruding, and does not collapse its margins with its children.  Floated and
+absolutely-positioned boxes establish one too, but are handled where they are
+placed / positioned."
   (and cs
        (or (member (cdisplay cs) '("flow-root" "inline-block" "table-cell"
                                    "inline-table" "table-caption")
                    :test #'string=)
            (member (css:cstyle-overflow cs) '("hidden" "scroll" "auto")
-                   :test #'string=))))
+                   :test #'string=)
+           (block-align-content cs))))
 
 (defun %layout-node (node styles x y avail-w &optional avail-h)
   "Establish an absolute containing block for positioned elements, then lay the
@@ -1598,9 +1613,19 @@ Returns (values lbox advance-height)."
                       (when (numberp mx) (setf bh (min bh (+ mx pt pb bt bb))))
                       (when (and (numberp mn) (> mn 0)) (setf bh (max bh (+ mn pt pb bt bb))))
                       (max bh (if list-item *font-h* 0))))
-             (lb (make-lbox :x box-x :y box-y :w width :h box-h
+             ;; align-content on a block distributes block-axis free space to its
+             ;; content as one alignment subject (CSS Box Alignment 3 §5.3): shift
+             ;; the whole content down by the aligned offset.
+             (%ac (let ((ac (block-align-content cs)) (free (- content-final content-h)))
+                    (when (and ac (> free 0.5))
+                      (let ((dy (cond ((member ac '("center" "space-around" "space-evenly") :test #'string=) (/ free 2))
+                                      ((member ac '("end" "flex-end") :test #'string=) free)
+                                      (t 0))))
+                        (when (> dy 0.5)
+                          (dolist (c children) (when (typep c 'lbox) (shift-box c 0 (round dy)))))))))
+             (lb (progn %ac (make-lbox :x box-x :y box-y :w width :h box-h
                             :style cs :node node :kind :block :children (nreverse children)
-                            :marker (when list-item (css:cstyle-list-style cs)))))
+                            :marker (when list-item (css:cstyle-list-style cs))))))
         (values lb (+ mt (lbox-h lb) mb) mt-eff mb-eff box-mneg))))))
 
 (defun shift-box (lb dx dy)

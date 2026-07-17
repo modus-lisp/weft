@@ -1597,7 +1597,14 @@ Returns (values lbox advance-height)."
                  ;; when top/left are auto), then defer final placement: collect
                  ;; against the nearest positioned ancestor (absolute) or the
                  ;; viewport (fixed).  Out-of-flow boxes never affect content-h.
-                 (multiple-value-bind (lb adv) (layout-node k styles cx yy content-w child-avail-h)
+                 ;; The static point is where the next in-flow box would go, so it
+                 ;; sits AFTER the preceding block's pending (collapsed) bottom
+                 ;; margin — held in PREV-MB, exactly as a float is placed above.
+                 ;; PREV-MB is preserved (an out-of-flow box does not consume it).
+                 (multiple-value-bind (lb adv)
+                     (layout-node k styles cx
+                                  (+ yy (if prev-mb (+ (max 0 (car prev-mb)) (min 0 (cdr prev-mb))) 0))
+                                  content-w child-avail-h)
                    (declare (ignore adv))
                    (when lb
                      (if (string= pos "fixed")
@@ -2758,11 +2765,17 @@ max-content width.  Bounded by CONTENT-W so it stays resilient."
 (defun pref-border-width (node styles content-w depth)
   "Preferred BORDER-box width (incl. margins) of NODE for shrink-to-fit sizing."
   (let* ((cs (st styles node))
-         (w (and cs (css:cstyle-width cs))))
+         (w (and cs (css:cstyle-width cs)))
+         ;; A definite `box-sizing:border-box` width already includes the padding
+         ;; + border, so they must not be added on top again (CSS Sizing 3); only
+         ;; an auto or content-box width adds them.
+         (border-box-w (and (numberp w) (equal (css:cstyle-box-sizing cs) "border-box"))))
     (if (null cs) 0
         (+ (css:cstyle-margin-left cs) (css:cstyle-margin-right cs)
-           (used-border cs :l) (used-border cs :r)
-           (css::resolve-pad (css:cstyle-padding-left cs) content-w) (css::resolve-pad (css:cstyle-padding-right cs) content-w)
+           (if border-box-w 0
+               (+ (used-border cs :l) (used-border cs :r)
+                  (css::resolve-pad (css:cstyle-padding-left cs) content-w)
+                  (css::resolve-pad (css:cstyle-padding-right cs) content-w)))
            (if (numberp w) w (pref-content-width node styles content-w depth))))))
 
 (defun place-float (node styles cleft cright top content-w)

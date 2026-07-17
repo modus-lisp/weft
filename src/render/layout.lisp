@@ -730,7 +730,15 @@ text-align.  Returns (values line-boxes total-height)."
          ;; a 10px line, not 11 — a per-row 1px that otherwise compounds down the
          ;; 30-story list.  Integer / clean-fraction line-heights are unaffected.
          (lh (max 1 (floor (used-line-height base-cs))))
-         (align (css:cstyle-text-align base-cs))
+         ;; Resolve the logical text-align keywords START/END to physical
+         ;; LEFT/RIGHT against the inline base direction (CSS Text 3 §7.1):
+         ;; start=left, end=right in LTR and the mirror in RTL.  Without this
+         ;; they fell through to the left-align default.
+         (align (let ((a (css:cstyle-text-align base-cs))
+                      (rtl (string= (css:cstyle-direction base-cs) "rtl")))
+                  (cond ((string= a "start") (if rtl "right" "left"))
+                        ((string= a "end")   (if rtl "left" "right"))
+                        (t a))))
          (indent (let ((ti (css:cstyle-text-indent base-cs)))
                    (cond ((and (consp ti) (eq (car ti) :percent)) (* content-w (/ (second ti) 100.0)))
                          ((numberp ti) ti) (t 0))))

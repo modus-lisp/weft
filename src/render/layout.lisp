@@ -2729,6 +2729,13 @@ sticky boxes (CSS Overflow 3: scroll/auto/hidden/clip all scroll-clip)."
     (and cs (member (css:cstyle-overflow cs) '("scroll" "auto" "hidden" "clip")
                     :test #'string=))))
 
+(defun sticky-inset (v cb-size)
+  "Resolve an inset value V (px number, (:percent N), or :auto) to px, or NIL for
+:auto.  Percentages resolve against the containing-block extent CB-SIZE."
+  (cond ((numberp v) v)
+        ((and (consp v) (eq (car v) :percent)) (* (/ (second v) 100.0) cb-size))
+        (t nil)))
+
 (defun apply-sticky (lb scroll-rect cb-rect)
   "Shift sticky box LB within SCROLL-RECT (its scrollport at offset 0), clamped to
 CB-RECT (its containing block).  Rects are (x y w h) in tree coordinates."
@@ -2739,8 +2746,12 @@ CB-RECT (its containing block).  Rects are (x y w h) in tree coordinates."
          (bl (lbox-x lb)) (br (+ (lbox-x lb) (lbox-w lb)))
          (cbt (second cb-rect)) (cbb (+ (second cb-rect) (fourth cb-rect)))
          (cbl (first cb-rect))  (cbr (+ (first cb-rect) (third cb-rect)))
-         (top (css:cstyle-top cs)) (bottom (css:cstyle-bottom cs))
-         (left (css:cstyle-left cs)) (right (css:cstyle-right cs))
+         ;; a <percentage> inset resolves against the containing block (CB height for
+         ;; top/bottom, CB width for left/right), as for relative positioning.
+         (top (sticky-inset (css:cstyle-top cs) (fourth cb-rect)))
+         (bottom (sticky-inset (css:cstyle-bottom cs) (fourth cb-rect)))
+         (left (sticky-inset (css:cstyle-left cs) (third cb-rect)))
+         (right (sticky-inset (css:cstyle-right cs) (third cb-rect)))
          (dx 0) (dy 0))
     (when (numberp top)    (let ((a (+ spt top)))    (when (< bt a) (setf dy (- a bt)))))
     (when (numberp bottom) (let ((a (- spb bottom))) (when (> (+ bb dy) a) (decf dy (- (+ bb dy) a)))))

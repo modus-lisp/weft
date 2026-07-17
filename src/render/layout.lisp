@@ -1377,9 +1377,14 @@ Returns (values lbox advance-height)."
                                                (+ (pref-content-width node styles (- avail-w ml mr))
                                                   pad-bord)))
                                   (table-shrink
+                                   ;; auto table width = max(min-content, min(available,
+                                   ;; max-content)) — it shrinks to fit but never below its
+                                   ;; min-content, overflowing the container instead (CSS 2.1
+                                   ;; §17.5.2): four 50px cells in a 100px scroller stay 200.
                                    (let ((nat (table-natural-width node styles (- avail-w ml mr))))
                                      (if (plusp nat)
-                                         (min (- avail-w ml mr) (+ nat pad-bord))
+                                         (max (+ (table-min-width node styles (- avail-w ml mr)) pad-bord)
+                                              (min (- avail-w ml mr) (+ nat pad-bord)))
                                          (- avail-w ml mr))))
                                   (t (- avail-w ml mr)))))
                     (when (numberp max-w) (setf bw (min bw (if border-box max-w (+ max-w pad-bord)))))
@@ -2371,9 +2376,13 @@ token (word or atomic box)."
                          (word-min-width (car wd) (tok-meta wd) (tok-node wd))))))
     w))
 
-(defun min-content-width (node styles content-w &optional (depth 0))
-  "Min-content CONTENT width of element NODE (widest unbreakable run)."
-  (with-intrinsic-memo (list :min node (round content-w))
+(defun min-content-width (node styles content-w &optional (depth 0) skip-own-width)
+  "Min-content CONTENT width of element NODE (widest unbreakable run).  With
+SKIP-OWN-WIDTH, NODE's own definite width does NOT fix its min-content — used when a
+caller (a table cell) maxes the width in separately and needs the content's
+intrinsic min, which overflowing content can exceed (a width:100px cell with a
+150px word is 150 wide, not 100)."
+  (with-intrinsic-memo (list :min node (round content-w) skip-own-width)
     (let ((cs (st styles node)))
       (cond
         ((or (not (eq (h:dnode-kind node) :element)) (null cs)) 0)
@@ -2381,6 +2390,19 @@ token (word or atomic box)."
         ;; the (memoised) column model — NOT its subtree flattened onto one inline
         ;; line, which would re-lay-out every nested table and blow up.
         ((table-box-p styles node) (min content-w (table-min-width node styles content-w)))
+        ;; A definite width fixes the box's min-content contribution: the box neither
+        ;; shrinks below nor grows past its used width, so its content overflowing (or
+        ;; being empty) does not change it — an empty width:50px div contributes 50,
+        ;; not 0 (CSS Sizing 3 §5.1).  This function returns the CONTENT-box width, so
+        ;; a border-box width has its padding + border stripped off.  (A table cell is
+        ;; the exception: its width is only a floor, content can grow it — SKIP here.)
+        ((and (not skip-own-width) (numberp (css:cstyle-width cs)))
+         (let ((w (css:cstyle-width cs)))
+           (when (equal (css:cstyle-box-sizing cs) "border-box")
+             (decf w (+ (css::resolve-pad (css:cstyle-padding-left cs) content-w)
+                        (css::resolve-pad (css:cstyle-padding-right cs) content-w)
+                        (used-border cs :l) (used-border cs :r))))
+           (min content-w (max 0 w))))
         (t
          (let ((block-kids (remove-if-not (lambda (k) (or (block-level-p styles k) (float-p styles k)))
                                           (child-elements node))))
@@ -2397,7 +2419,7 @@ token (word or atomic box)."
 but never below the cell's unshrinkable min-content."
   (let* ((cs (st styles cell)) (w (and cs (css:cstyle-width cs))))
     (max 0 (+ (cell-pad-bord cs)
-              (if (numberp w) (max w (min-content-width cell styles avail))
+              (if (numberp w) (max w (min-content-width cell styles avail 0 t))
                   (pref-content-width cell styles avail))))))
 
 (defun cell-min-content-width (cell styles avail)
@@ -2407,8 +2429,8 @@ HN's logo cell is width:18px yet holds a 20px (bordered) <img>, so the column
 must be 20, not 18 (matching how the browser widens the column to fit it)."
   (let* ((cs (st styles cell)) (w (and cs (css:cstyle-width cs))))
     (max 0 (+ (cell-pad-bord cs)
-              (if (numberp w) (max w (min-content-width cell styles avail))
-                  (min-content-width cell styles avail))))))
+              (if (numberp w) (max w (min-content-width cell styles avail 0 t))
+                  (min-content-width cell styles avail 0 t))))))
 
 (defun cell-spec-width (cell styles)
   "Specified column width contributed by CELL: NIL, a border-box px number, or
@@ -2528,7 +2550,12 @@ is taken proportionally from auto columns' shrink room (fixed columns kept)."
                      do (decf (aref w i) (* deficit (/ (nth i room) troom))))
                (loop for i below ncols
                      do (setf (aref w i) (* (aref w i) (/ target sum)))))))))
-    (loop for i below ncols collect (max 1.0 (aref w i)))))
+    ;; A column is never squeezed below its min-content: when the target is smaller
+    ;; than the sum of column min-contents (no shrink room, or a deficit exceeding
+    ;; it) the table takes its min-content width and OVERFLOWS its container rather
+    ;; than crushing cells below their content (CSS 2.1 §17.5.2) — e.g. four 50px
+    ;; cells in a 100px overflow-x:auto scroller stay 50 (table 200), not 25.
+    (loop for i below ncols collect (max (float (or (nth i mins) 1.0)) (aref w i) 1.0))))
 
 (defun rel-offset (cs)
   "Visual (dx dy) shift for a position:relative CS (CSS 2.1 9.4.3), else (0 0)."

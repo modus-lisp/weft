@@ -1396,11 +1396,13 @@ Returns (values lbox advance-height)."
                                    ;; max-content)) — it shrinks to fit but never below its
                                    ;; min-content, overflowing the container instead (CSS 2.1
                                    ;; §17.5.2): four 50px cells in a 100px scroller stay 200.
+                                   ;; an empty table (no cells, NAT 0) shrinks to its
+                                   ;; own padding+border box, not the full available
+                                   ;; width (css-tables-3 §computing-the-table-width):
+                                   ;; a display:table with padding:155px is 310 wide.
                                    (let ((nat (table-natural-width node styles (- avail-w ml mr))))
-                                     (if (plusp nat)
-                                         (max (+ (table-min-width node styles (- avail-w ml mr)) pad-bord)
-                                              (min (- avail-w ml mr) (+ nat pad-bord)))
-                                         (- avail-w ml mr))))
+                                     (max (+ (table-min-width node styles (- avail-w ml mr)) pad-bord)
+                                          (min (- avail-w ml mr) (+ nat pad-bord)))))
                                   (t (- avail-w ml mr)))))
                     (when (numberp max-w) (setf bw (min bw (if border-box max-w (+ max-w pad-bord)))))
                     (when (numberp min-w) (setf bw (max bw (if border-box min-w (+ min-w pad-bord)))))
@@ -2545,27 +2547,36 @@ intrinsic min, which overflowing content can exceed (a width:100px cell with a
 
 (defun cell-max-content-width (cell styles avail)
   "Max-content border-box width of a table CELL.  An explicit width is the target,
-but never below the cell's unshrinkable min-content."
-  (let* ((cs (st styles cell)) (w (and cs (css:cstyle-width cs))))
-    (max 0 (+ (cell-pad-bord cs)
-              (if (numberp w) (max w (min-content-width cell styles avail 0 t))
-                  (pref-content-width cell styles avail))))))
+but never below the cell's unshrinkable min-content.  A box-sizing:border-box
+width already includes the cell's padding+border, so it is not added again."
+  (let* ((cs (st styles cell)) (w (and cs (css:cstyle-width cs)))
+         (bb (and cs (string= (css:cstyle-box-sizing cs) "border-box"))))
+    (max 0 (if (numberp w)
+               (let ((cmin (min-content-width cell styles avail 0 t)))
+                 (if bb (max w (+ cmin (cell-pad-bord cs)))
+                     (+ (cell-pad-bord cs) (max w cmin))))
+               (+ (cell-pad-bord cs) (pref-content-width cell styles avail))))))
 
 (defun cell-min-content-width (cell styles avail)
   "Min-content border-box width of a table CELL.  An explicit width is honored as
 a floor, but a cell can never be narrower than its unshrinkable content — e.g.
 HN's logo cell is width:18px yet holds a 20px (bordered) <img>, so the column
-must be 20, not 18 (matching how the browser widens the column to fit it)."
-  (let* ((cs (st styles cell)) (w (and cs (css:cstyle-width cs))))
-    (max 0 (+ (cell-pad-bord cs)
-              (if (numberp w) (max w (min-content-width cell styles avail 0 t))
-                  (min-content-width cell styles avail 0 t))))))
+must be 20, not 18 (matching how the browser widens the column to fit it).  A
+box-sizing:border-box width already includes padding+border."
+  (let* ((cs (st styles cell)) (w (and cs (css:cstyle-width cs)))
+         (bb (and cs (string= (css:cstyle-box-sizing cs) "border-box"))))
+    (max 0 (if (numberp w)
+               (let ((cmin (min-content-width cell styles avail 0 t)))
+                 (if bb (max w (+ cmin (cell-pad-bord cs)))
+                     (+ (cell-pad-bord cs) (max w cmin))))
+               (+ (cell-pad-bord cs) (min-content-width cell styles avail 0 t))))))
 
 (defun cell-spec-width (cell styles)
   "Specified column width contributed by CELL: NIL, a border-box px number, or
-a (:percent P) form."
-  (let* ((cs (st styles cell)) (w (and cs (css:cstyle-width cs))))
-    (cond ((numberp w) (+ w (cell-pad-bord cs)))
+a (:percent P) form.  A box-sizing:border-box width is already border-box."
+  (let* ((cs (st styles cell)) (w (and cs (css:cstyle-width cs)))
+         (bb (and cs (string= (css:cstyle-box-sizing cs) "border-box"))))
+    (cond ((numberp w) (if bb w (+ w (cell-pad-bord cs))))
           ((and (consp w) (eq (car w) :percent)) (list :percent (second w)))
           ;; calc(% + px) mixing a percentage and a length: a deferred (:calc px
           ;; pct) form. calc(50% + 0px) must act as 50% here (csswg-drafts #3482),

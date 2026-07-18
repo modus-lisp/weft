@@ -1408,6 +1408,13 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                         (cs (ua-style tag parent-cs)))
                    ;; legacy presentational attributes (bgcolor, width, ...) — below author CSS
                    (apply-presentational-hints cs n)
+                   ;; UA rule `[popover]:not(:popover-open) { display: none }` (HTML §popover
+                   ;; / CSS Position 4): a popover element is not rendered until it is in the
+                   ;; top layer (showPopover).  Weft does not track the open state, so a
+                   ;; popover defaults to display:none; an author `display` rule still wins
+                   ;; (this is a UA-tier default, applied before the author cascade below).
+                   (when (el-attr n "popover")
+                     (setf (cstyle-display cs) "none"))
                    ;; collect matching author rules, splitting element vs pseudo-element
                    (let ((matched '()) (m-before '()) (m-after '()))
                      (map-candidate-rules

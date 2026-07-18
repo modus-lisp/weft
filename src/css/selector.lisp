@@ -105,6 +105,10 @@ instead of once per rule removes an O(elements x rules) cost on rule-heavy pages
   (if (zerop a) (= index b)
       (let ((q (/ (- index b) a))) (and (integerp q) (>= q 0)))))
 
+(defvar *target-id* nil
+  "The current document's URL fragment (sans '#'), bound by the DOM Selectors API
+so :target can match the element with that id; NIL disables :target (cascade path).")
+
 (defun match-pseudo (n name arg)
   (let ((nm (string-downcase name)))
     (cond
@@ -181,6 +185,11 @@ instead of once per rule removes an O(elements x rules) cost on rule-heavy pages
        (and (member (string-downcase (el-name n)) '("a" "area" "link") :test #'string=)
             (el-attr n "href") t))
       ((string= nm "visited") nil)
+      ;; :target — the element whose id equals the document URL fragment.  The DOM
+      ;; layer binds *TARGET-ID* to that fragment (sans '#') for the matched node's
+      ;; document; NIL (no fragment / cascade path) never matches.
+      ((string= nm "target")
+       (and *target-id* (let ((id (el-attr n "id"))) (and id (string= id *target-id*)))))
       ;; unknown / hover/active/focus/etc — non-matching (no interactive state)
       (t nil))))
 

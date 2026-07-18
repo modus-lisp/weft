@@ -1217,9 +1217,20 @@ shift it to its final top/left."
             ;; fallback children — an unsupported iframe renders as an empty box of
             ;; its own size (default 300x150), not the "FAIL" text between its tags.
             ((string-equal name "iframe")
-             (let ((w (let ((s (css::resolve-size (css:cstyle-width cs) (or avail-w 300)))) (if (numberp s) (max 0 s) 300)))
-                   (hh (let ((s (css::resolve-size (css:cstyle-height cs) avail-h))) (if (numberp s) (max 0 s) 150))))
-               (make-lbox :x 0 :y 0 :w w :h hh :style cs :node node :kind :block)))))))
+             (let* ((w (let ((s (css::resolve-size (css:cstyle-width cs) (or avail-w 300)))) (if (numberp s) (max 0 s) 300)))
+                    (hh (let ((s (css::resolve-size (css:cstyle-height cs) avail-h))) (if (numberp s) (max 0 s) 150)))
+                    ;; W/HH are the CONTENT box (the used width/height, default 300x150);
+                    ;; the box's border-box adds its own padding and borders (CSS 2.1
+                    ;; §10.3 — box-sizing:content-box), so a bordered iframe is sized past
+                    ;; its content the same as any replaced element (cf. OBJECT-BOX).
+                    (bl (used-border cs :l)) (br (used-border cs :r))
+                    (bt (used-border cs :t)) (bb (used-border cs :b))
+                    (pl (max 0 (css::resolve-pad (css:cstyle-padding-left cs) nil)))
+                    (pr (max 0 (css::resolve-pad (css:cstyle-padding-right cs) nil)))
+                    (pt (max 0 (css::resolve-pad (css:cstyle-padding-top cs) nil)))
+                    (pb (max 0 (css::resolve-pad (css:cstyle-padding-bottom cs) nil))))
+               (make-lbox :x 0 :y 0 :w (+ bl pl w pr br) :h (+ bt pt hh pb bb)
+                          :style cs :node node :kind :block)))))))
 
 ;;; ---- vertical writing modes (CSS Writing Modes 3) ----------------------
 ;;; A vertical box's subtree is laid out in a transposed "logical" frame — physical

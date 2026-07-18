@@ -2139,7 +2139,19 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                                                        (if (css:cstyle-margin-right-auto is) 0 (css:cstyle-margin-right is))))))
                                             litems))
                           (lmargin-sum (reduce #'+ lmargins))
-                          (lfree (- content-w (+ (reduce #'+ lbases) lgap lmargin-sum)))
+                          ;; LBASES are content-box (flex base) sizes; an item's OUTER
+                          ;; main size also includes its main-axis padding+border (CSS
+                          ;; Flexbox §9.2/§9.5).  Reserve that here so free space and
+                          ;; justify-content spacing don't overrun by each item's padding.
+                          (lpbm (mapcar (lambda (it)
+                                          (let ((is (st styles it)))
+                                            (if (null is) 0
+                                                (+ (css::resolve-pad (css:cstyle-padding-left is) content-w)
+                                                   (css::resolve-pad (css:cstyle-padding-right is) content-w)
+                                                   (used-border is :l) (used-border is :r)))))
+                                        litems))
+                          (lpbm-sum (reduce #'+ lpbm))
+                          (lfree (- content-w (+ (reduce #'+ lbases) lpbm-sum lgap lmargin-sum)))
                           (lsum-grow (reduce #'+ lgrows))
                           (scaled (mapcar #'* lshrinks lbases))
                           (sum-scaled (reduce #'+ scaled))
@@ -2161,7 +2173,7 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                                              (when (and (numberp mn) (< v mn)) (setf v mn))
                                              v))
                                          sizes0 litems))
-                          (used (+ (reduce #'+ sizes) lgap lmargin-sum))
+                          (used (+ (reduce #'+ sizes) lpbm-sum lgap lmargin-sum))
                           (extra (max 0 (- content-w used)))
                           ;; auto margins on the main axis absorb positive free space
                           ;; BEFORE justify-content (CSS Flexbox §8.1): each takes an
@@ -2180,7 +2192,7 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                                          ((string= justify "space-around") (/ extra n)) (t 0)))
                           (x (if (and (not mauto) (string= justify "space-around")) (+ start (/ between 2)) start))
                           (boxes '()) (max-h 0))
-                     (loop for it in litems for w in sizes
+                     (loop for it in litems for w in sizes for pbm in lpbm
                            for is = (st styles it)
                            ;; fixed leading/trailing main-axis margins (0 when auto)
                            for ml = (if (and is (not (css:cstyle-margin-left-auto is))) (css:cstyle-margin-left is) 0)
@@ -2218,7 +2230,9 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                          ;; layout-node already positioned the border box ML past X;
                          ;; advance past the whole margin box so the next item clears
                          ;; both this item's trailing margin and its own leading one.
-                         (incf x (+ ml w mr))
+                         ;; W is the content-box width, so add the item's main-axis
+                         ;; padding+border (PBM) to clear its full border box.
+                         (incf x (+ ml w pbm mr))
                          (when (and mauto is (css:cstyle-margin-right-auto is)) (incf x auto-unit))
                          (incf x (+ gap between))))
                      (let ((boxes (nreverse boxes))

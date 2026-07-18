@@ -71,27 +71,51 @@
                     (replace (make-array (length idat) :element-type '(unsigned-byte 8)) idat)
                     plte trns interlace)))))
 
-(defun only-supported-p (depth ctype) (and (= depth 8) (member ctype '(0 2 3 4 6))))
+(defun only-supported-p (depth ctype)
+  ;; 8-bit for all colour types; plus sub-byte 1/2/4-bit for grayscale (0) and
+  ;; palette (3), the only colour types PNG permits below 8 bits.
+  (or (and (= depth 8) (member ctype '(0 2 3 4 6)))
+      (and (member depth '(1 2 4)) (member ctype '(0 3)))))
 
 (defun channels (ctype) (ecase ctype (0 1) (2 3) (3 1) (4 2) (6 4)))
 
-(defun png-unfilter (raw ri w h ch)
-  "Unfilter H scanlines of W*CH bytes from RAW starting at index RI (each scanline
-prefixed by a PNG filter-type byte).  Returns (values rows next-ri); ROWS is a
-fresh (W*H*CH) octet vector of reconstructed samples."
-  (let* ((stride (* w ch)) (rows (make-array (* h stride) :element-type '(unsigned-byte 8))) (rp 0))
+(defun png-unfilter (raw ri stride h bpp)
+  "Unfilter H scanlines of STRIDE bytes from RAW starting at index RI (each scanline
+prefixed by a PNG filter-type byte).  BPP is the filter back-reference distance in
+bytes (bytes-per-pixel, rounded up to 1 for sub-byte depths).  Returns (values rows
+next-ri); ROWS is a fresh (STRIDE*H) octet vector of reconstructed bytes."
+  (let* ((rows (make-array (* h stride) :element-type '(unsigned-byte 8))) (rp 0))
     (dotimes (y h)
       (let ((ft (aref raw ri))) (incf ri)
         (dotimes (xb stride)
           (let* ((rawb (aref raw ri))
-                 (a (if (>= xb ch) (aref rows (- rp ch)) 0))
+                 (a (if (>= xb bpp) (aref rows (- rp bpp)) 0))
                  (b (if (> y 0) (aref rows (- rp stride)) 0))
-                 (c (if (and (> y 0) (>= xb ch)) (aref rows (- rp stride ch)) 0))
+                 (c (if (and (> y 0) (>= xb bpp)) (aref rows (- rp stride bpp)) 0))
                  (val (ecase ft
                         (0 rawb) (1 (+ rawb a)) (2 (+ rawb b)) (3 (+ rawb (floor (+ a b) 2)))
                         (4 (+ rawb (paeth a b c))))))
             (setf (aref rows rp) (logand val #xff)) (incf rp) (incf ri)))))
     (values rows ri)))
+
+(defun png-unpack-bits (packed w h depth ctype)
+  "Expand PACKED sub-byte (DEPTH 1/2/4) scanlines to one sample per byte (W*H
+vector).  Grayscale (ctype 0) samples are scaled to the 0-255 range; palette
+indices (ctype 3) are kept as-is."
+  (let* ((stride (ceiling (* w depth) 8))
+         (out (make-array (* w h) :element-type '(unsigned-byte 8)))
+         (maxv (1- (ash 1 depth)))
+         (gray (= ctype 0)) (op 0))
+    (dotimes (y h)
+      (let ((rowbase (* y stride)) (bitpos 0))
+        (dotimes (x w)
+          (declare (ignore x))
+          (let* ((byteidx (+ rowbase (floor bitpos 8)))
+                 (shift (- 8 depth (mod bitpos 8)))
+                 (sample (logand (ash (aref packed byteidx) (- shift)) maxv)))
+            (setf (aref out op) (if gray (round (* sample 255) maxv) sample))
+            (incf op) (incf bitpos depth)))))
+    out))
 
 ;; Adam7 interlace passes: (x-start y-start x-step y-step).
 (defparameter +adam7+ '((0 0 8 8) (4 0 8 8) (0 4 4 8) (2 0 4 4) (0 2 2 4) (1 0 2 2) (0 1 1 2)))
@@ -103,7 +127,7 @@ fresh (W*H*CH) octet vector of reconstructed samples."
       (destructuring-bind (sx sy dx dy) pass
         (let ((pw (ceiling (max 0 (- w sx)) dx)) (ph (ceiling (max 0 (- h sy)) dy)))
           (when (and (plusp pw) (plusp ph))
-            (multiple-value-bind (prows nri) (png-unfilter raw ri pw ph ch)
+            (multiple-value-bind (prows nri) (png-unfilter raw ri (* pw ch) ph ch)
               (setf ri nri)
               (let ((pstride (* pw ch)))
                 (dotimes (py ph)
@@ -113,15 +137,18 @@ fresh (W*H*CH) octet vector of reconstructed samples."
                       (dotimes (k ch) (setf (aref rows (+ dstp k)) (aref prows (+ srcp k)))))))))))))))
 
 (defun png-finish (w h depth ctype idat plte trns interlace)
-  (declare (ignore depth))
-  (let* ((ch (channels ctype)) (stride (* w ch))
+  (let* ((ch (channels ctype)) (sub8 (< depth 8))
+         (stride (if sub8 (ceiling (* w depth) 8) (* w ch)))
          (raw (handler-case (chipz:decompress nil 'chipz:zlib idat) (error () nil))))
-    (when (and raw (if (= interlace 1)
-                       (plusp (length raw))
-                       (>= (length raw) (* h (1+ stride)))))
-      (let ((rows (if (= interlace 1)
-                      (png-deinterlace raw w h ch)
-                      (png-unfilter raw 0 w h ch))))
+    ;; sub-byte depths are only supported non-interlaced (Adam7 + <8bpp is rare).
+    (when (and raw (not (and sub8 (= interlace 1)))
+               (if (= interlace 1)
+                   (plusp (length raw))
+                   (>= (length raw) (* h (1+ stride)))))
+      (let* ((prows (if (= interlace 1)
+                        (png-deinterlace raw w h ch)
+                        (png-unfilter raw 0 stride h (if sub8 1 ch))))
+             (rows (if sub8 (png-unpack-bits prows w h depth ctype) prows)))
         ;; expand to RGBA
         (let ((rgba (make-array (* w h 4) :element-type '(unsigned-byte 8))))
           (dotimes (p (* w h))

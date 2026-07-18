@@ -9,7 +9,7 @@
            #:css-decl #:css-decl-prop #:css-decl-value #:css-decl-important
            #:ctok #:ctok-type #:ctok-value #:ctok-unit
            ;; selectors
-           #:parse-selector-list #:selector-matches-p #:specificity
+           #:parse-selector-list #:selector-list-valid-p #:selector-matches-p #:specificity
            #:query-select #:query-select-all
            ;; computed style
            #:compute-styles #:cstyle #:cstyle-display #:cstyle-color #:cstyle-background

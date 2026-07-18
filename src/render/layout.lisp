@@ -2558,6 +2558,11 @@ a (:percent P) form."
   (let* ((cs (st styles cell)) (w (and cs (css:cstyle-width cs))))
     (cond ((numberp w) (+ w (cell-pad-bord cs)))
           ((and (consp w) (eq (car w) :percent)) (list :percent (second w)))
+          ;; calc(% + px) mixing a percentage and a length: a deferred (:calc px
+          ;; pct) form. calc(50% + 0px) must act as 50% here (csswg-drafts #3482),
+          ;; so it becomes a column spec resolved against the table width like a
+          ;; percentage, plus the fixed px part.
+          ((and (consp w) (eq (car w) :calc)) (list :calc (second w) (third w)))
           (t nil))))
 
 (defun spec-combine (a b)
@@ -2570,6 +2575,8 @@ a (:percent P) form."
   "Resolve a column spec (px | (:percent P)) to a border-box px width, or NIL."
   (cond ((numberp sp) sp)
         ((and (consp sp) (eq (car sp) :percent)) (* table-w (/ (second sp) 100.0)))
+        ((and (consp sp) (eq (car sp) :calc))
+         (+ (second sp) (* table-w (/ (third sp) 100.0))))
         (t nil)))
 
 (defun table-column-model (node styles avail)
@@ -2621,12 +2628,34 @@ column, colspans distributed across the columns they span (CSS 2.1 17.5.2)."
 
 (defun table-natural-width (node styles avail)
   "Shrink-to-fit CONTENT width of a display:table NODE: the sum of its column
-max-content (or fixed) widths.  0 when it has no cells."
+max-content (or fixed) widths.  0 when it has no cells.  A percentage column
+width refers to the table's own width (CSS 2.1 §17.5.2): with no explicit table
+width the table grows so the non-percentage columns fit in the remaining
+(100 - Σpct)% — e.g. a 50% column beside a 100px column yields a 200px table."
   (multiple-value-bind (maxs mins specs ncols) (table-column-model node styles avail)
     (declare (ignore mins))
-    (loop for i below ncols
-          sum (let ((sp (aref specs i)))
-                (if (numberp sp) (max sp (aref maxs i)) (aref maxs i))))))
+    (let ((fixed-sum 0.0) (tot-pct 0.0) (pct-need 0.0))
+      (dotimes (i ncols)
+        (let ((sp (aref specs i)) (mx (aref maxs i)))
+          (cond
+            ((numberp sp) (incf fixed-sum (max sp mx)))
+            ((and (consp sp) (eq (car sp) :percent))
+             (incf tot-pct (second sp))
+             (when (plusp (second sp))
+               (setf pct-need (max pct-need (* mx (/ 100.0 (second sp)))))))
+            ((and (consp sp) (eq (car sp) :calc))
+             (incf fixed-sum (max 0.0 (float (second sp))))
+             (if (plusp (third sp))
+                 (progn (incf tot-pct (third sp))
+                        (setf pct-need (max pct-need
+                                            (* (max 0.0 (- mx (float (second sp))))
+                                               (/ 100.0 (third sp))))))
+                 (incf fixed-sum (max 0.0 (- mx (float (second sp)))))))
+            (t (incf fixed-sum mx)))))
+      (if (plusp tot-pct)
+          (let ((fixed-need (/ fixed-sum (- 1.0 (/ (min tot-pct 99.9) 100.0)))))
+            (max fixed-need pct-need (loop for i below ncols sum (aref maxs i))))
+          fixed-sum))))
 
 (defun table-min-width (node styles avail)
   "Min-content CONTENT width of a display:table NODE: the sum of its per-column

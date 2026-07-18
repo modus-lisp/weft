@@ -211,8 +211,12 @@ ex/ch use the right per-face metric (WPT's Ahem: x-height 0.8em, char advance 1.
                        ;; max-width) would otherwise be read as 65px and wrap every word.
                        ;; ch = advance of "0" (~0.55em for weft's Liberation faces),
                        ;; ex = x-height (~0.5em); approximated rather than measured.
-                       ((string= unit "ch") (* num font-size (if (ahem-family-p *resolve-family*) 1.0 0.55)))
-                       ((string= unit "ex") (* num font-size (if (ahem-family-p *resolve-family*) 0.8 0.5)))
+                       ;; use exact rational factors so an Ahem 1ex/1ch lands on an
+                       ;; exact pixel (0.8*20px = 16.0, not 16.00000024): the float
+                       ;; noise otherwise makes a mitered single-side border rasterise
+                       ;; 1px taller than the fill-rect path it must align with.
+                       ((string= unit "ch") (* num font-size (if (ahem-family-p *resolve-family*) 1 11/20)))
+                       ((string= unit "ex") (* num font-size (if (ahem-family-p *resolve-family*) 4/5 1/2)))
                        ((member unit '("" ) :test #'string=) num)
                        (t num)))   ; treat unknown abs units as px-ish
                nil))))))

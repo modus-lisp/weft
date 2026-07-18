@@ -183,7 +183,8 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                (let ((b (make-string-output-stream)) (any nil))
                  (flet ((flush () (when any
                                     (emit1 (apply-text-transform (get-output-stream-string b)
-                                                                 (and style (css:cstyle-text-transform style)))
+                                                                 (and style (css:cstyle-text-transform style))
+                                                                 node)
                                            style node)
                                     (setf any nil b (make-string-output-stream)))))
                    ;; white-space:pre-line / pre-wrap preserve newlines as forced
@@ -695,23 +696,107 @@ line-break semantics handled elsewhere."
   "Remove invisible bidi/format controls from S (see FORMAT-CONTROL-P)."
   (if (find-if #'format-control-p s) (remove-if #'format-control-p s) s))
 
-(defun full-transform (word table simple-fn)
-  "Map each char of WORD to its full Unicode case mapping (a 1->N replacement in
-TABLE, per CSS Text 3 §2.1 / Unicode SpecialCasing), else SIMPLE-FN of the char."
-  (let ((out (make-string-output-stream)))
-    (loop for c across word do
-      (let ((m (gethash (char-code c) table)))
-        (if m (write-string m out) (write-char (funcall simple-fn c) out))))
+(defun lang-prefix-p (lang code)
+  "T if the (already lowercased) LANG is CODE or a CODE-prefixed subtag (e.g.
+\"tr\" matches \"tr\" and \"tr-tr\")."
+  (and lang (let ((n (length code)))
+              (and (>= (length lang) n) (string= lang code :end1 n)
+                   (or (= (length lang) n) (char= (char lang n) #\-))))))
+(defun turkic-lang-p (lang) (or (lang-prefix-p lang "tr") (lang-prefix-p lang "az")))
+(defun lithuanian-lang-p (lang) (lang-prefix-p lang "lt"))
+
+(defun case-ignorable-char-p (c)
+  "Approx Unicode Case_Ignorable: combining marks + a few format/punct chars.
+Enough context for the Final_Sigma rule."
+  (let ((u (char-code c)))
+    (or (<= #x0300 u #x036F) (<= #x1AB0 u #x1AFF) (<= #x1DC0 u #x1DFF)
+        (<= #x20D0 u #x20FF) (<= #xFE20 u #xFE2F)
+        (member u '(#x0027 #x00AD #x00B7 #x02B0 #x02B1 #x2019 #x2027)))))
+(defun cased-char-p (c)
+  "Approx Unicode Cased: a character with a distinct upper/lower form."
+  (let ((u (char-code c)))
+    (or (/= (char-code (char-upcase c)) (char-code (char-downcase c)))
+        (gethash u *full-upcase-map*) (gethash u *full-downcase-map*) nil)))
+(defun above-mark-p (c)
+  "Approx combining class 230 (Above) — the More_Above condition for Lithuanian."
+  (let ((u (char-code c)))
+    (or (<= #x0300 u #x0314) (<= #x033D u #x0344) (= u #x0346)
+        (<= #x034A u #x034C) (<= #x0350 u #x0352) (= u #x0357)
+        (= u #x035B) (<= #x0363 u #x036F))))
+(defun soft-dotted-char-p (c)
+  (member (char-code c) '(#x0069 #x006A #x012F #x0249 #x0268 #x029D #x02B2
+                          #x03F3 #x0456 #x0458 #x1D62 #x1D96 #x1DA4 #x1DA8
+                          #x1E2D #x1ECB #x2071 #x2C7C)))
+(defun final-sigma-p (word i)
+  "The Unicode Final_Sigma condition at index I of WORD: a cased letter precedes
+\(skipping case-ignorables) and no cased letter follows."
+  (and (loop for j from (1- i) downto 0 for cj = (char word j)
+             do (cond ((case-ignorable-char-p cj)) ((cased-char-p cj) (return t))
+                      (t (return nil)))
+             finally (return nil))
+       (loop for j from (1+ i) below (length word) for cj = (char word j)
+             do (cond ((case-ignorable-char-p cj)) ((cased-char-p cj) (return nil))
+                      (t (return t)))
+             finally (return t))))
+
+(defun full-upcase-char (out c)
+  (let ((m (gethash (char-code c) *full-upcase-map*)))
+    (if m (write-string m out) (write-char (char-upcase c) out))))
+(defun full-downcase-char (out c)
+  (let ((m (gethash (char-code c) *full-downcase-map*)))
+    (if m (write-string m out) (write-char (char-downcase c) out))))
+
+(defun transform-lower (word lang)
+  "Full Unicode lowercase of WORD with Greek Final_Sigma and Turkic/Lithuanian
+language tailoring (CSS Text 3 §2.1, Unicode SpecialCasing)."
+  (let* ((out (make-string-output-stream)) (n (length word))
+         (tr (turkic-lang-p lang)) (lt (lithuanian-lang-p lang)))
+    (do ((i 0 (1+ i))) ((>= i n))
+      (let* ((c (char word i)) (u (char-code c))
+             (next (and (< (1+ i) n) (char word (1+ i)))))
+        (cond
+          ((and tr (= u #x0130)) (write-char #\i out))            ; İ -> i
+          ((and tr (= u #x0049))                                  ; I
+           (if (and next (= (char-code next) #x0307))
+               (progn (write-char #\i out) (incf i))              ; I◌̇ -> i (drop dot)
+               (write-char (code-char #x0131) out)))              ; I -> ı
+          ((and lt (= u #x00CC)) (write-char (code-char #x69) out)
+           (write-char (code-char #x307) out) (write-char (code-char #x300) out))
+          ((and lt (= u #x00CD)) (write-char (code-char #x69) out)
+           (write-char (code-char #x307) out) (write-char (code-char #x301) out))
+          ((and lt (= u #x0128)) (write-char (code-char #x69) out)
+           (write-char (code-char #x307) out) (write-char (code-char #x303) out))
+          ((and lt (member u '(#x0049 #x004A #x012E)) next (above-mark-p next))
+           (write-char (code-char (ecase u (#x0049 #x69) (#x004A #x6A) (#x012E #x12F))) out)
+           (write-char (code-char #x0307) out))                   ; More_Above: insert dot
+          ((= u #x03A3)                                           ; Σ final vs medial
+           (write-char (code-char (if (final-sigma-p word i) #x03C2 #x03C3)) out))
+          (t (full-downcase-char out c)))))
     (get-output-stream-string out)))
 
-(defun apply-text-transform (word transform)
+(defun transform-upper (word lang)
+  "Full Unicode uppercase of WORD with Turkic/Lithuanian language tailoring."
+  (let* ((out (make-string-output-stream)) (n (length word))
+         (tr (turkic-lang-p lang)) (lt (lithuanian-lang-p lang)))
+    (do ((i 0 (1+ i))) ((>= i n))
+      (let* ((c (char word i)) (u (char-code c))
+             (next (and (< (1+ i) n) (char word (1+ i)))))
+        (cond
+          ((and tr (= u #x0069)) (write-char (code-char #x0130) out)) ; i -> İ
+          ((and lt (soft-dotted-char-p c) next (= (char-code next) #x0307))
+           (full-upcase-char out c) (incf i))                     ; drop dot after soft-dotted
+          (t (full-upcase-char out c)))))
+    (get-output-stream-string out)))
+
+(defun apply-text-transform (word transform &optional node)
   "Apply CSS text-transform to WORD (a whitespace-delimited token, so `capitalize`
    upper-cases the token's first character).  Uppercase/lowercase use the full
    Unicode case mapping (SBCL's CHAR-UPCASE/DOWNCASE are bijective-only and miss
-   1->N and non-reversible cases such as ss/i-dotless/sharp-s)."
+   1->N and non-reversible cases such as ss/i-dotless/sharp-s), plus Greek
+   Final_Sigma and Turkic/Lithuanian tailoring keyed on NODE's effective lang."
   (cond ((or (null transform) (string= transform "none")) word)
-        ((string= transform "uppercase") (full-transform word *full-upcase-map* #'char-upcase))
-        ((string= transform "lowercase") (full-transform word *full-downcase-map* #'char-downcase))
+        ((string= transform "uppercase") (transform-upper word (and node (node-lang node))))
+        ((string= transform "lowercase") (transform-lower word (and node (node-lang node))))
         ((and (string= transform "capitalize") (plusp (length word)))
          (let ((m (gethash (char-code (char word 0)) *full-upcase-map*)))
            (concatenate 'string (or m (string (char-upcase (char word 0)))) (subseq word 1))))

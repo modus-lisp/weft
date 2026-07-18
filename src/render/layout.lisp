@@ -1017,6 +1017,15 @@ containing block that absolutely-positioned descendants resolve against."
     (list (+ (lbox-x lb) bl) (+ (lbox-y lb) bt)
           (max 0 (- (lbox-w lb) bl br)) (max 0 (- (lbox-h lb) bt bb)))))
 
+(defun resolve-inset (v extent)
+  "Resolve an out-of-flow inset (top/bottom/left/right) V against the containing
+block EXTENT: a length passes through, a percentage resolves against EXTENT, and
+auto (NIL / :auto) returns NIL so the caller keeps the static position."
+  (cond ((numberp v) v)
+        ((and (consp v) (eq (first v) :percent) (numberp extent))
+         (* extent (/ (second v) 100.0)))
+        (t nil)))
+
 (defun resolve-positioned (lb cb cs)
   "Shift out-of-flow box LB to its final position within containing block
 CB=(px py pw ph) using top/left/right/bottom from CS.  When top (or left) is
@@ -1035,11 +1044,13 @@ CB=(px py pw ph) using top/left/right/bottom from CS.  When top (or left) is
              ;; (the `position:fixed; inset:0; margin:auto` centering idiom).
              (h-auto (and (numberp left) (numberp right)
                           (or (css:cstyle-margin-left-auto cs) (css:cstyle-margin-right-auto cs))))
-             ;; CSS 2.1 §10.6.4: definite top AND bottom with an auto block-axis
-             ;; margin — the auto margin(s) absorb the leftover space, two autos
-             ;; center the box (the `position:absolute; inset:0; margin:auto` idiom
-             ;; with a resolved height).
-             (v-auto (and (numberp top) (numberp bottom)
+             ;; CSS 2.1 §10.6.4/§10.6.5: top and bottom position the *margin* edges,
+             ;; resolved (percentages included) against the containing block's block
+             ;; extent.  When both are definite and a block-axis margin is auto, the
+             ;; auto margin(s) absorb the leftover space (two autos split it) — which
+             ;; may be NEGATIVE (top:50%;bottom:0;margin:auto pulls the box up).
+             (rtop (resolve-inset top ph)) (rbot (resolve-inset bottom ph))
+             (v-auto (and rtop rbot
                           (or (css:cstyle-margin-top-auto cs) (css:cstyle-margin-bottom-auto cs))))
              (nx (cond (h-auto
                         (let ((space (- pw (lbox-w lb) left right))
@@ -1052,14 +1063,16 @@ CB=(px py pw ph) using top/left/right/bottom from CS.  When top (or left) is
                        ((numberp right) (+ px (- pw (lbox-w lb) right mr)))
                        (t (lbox-x lb))))
              (ny (cond (v-auto
-                        (let ((space (- ph (lbox-h lb) top bottom))
-                              (mta (css:cstyle-margin-top-auto cs))
-                              (mba (css:cstyle-margin-bottom-auto cs)))
-                          (+ py top (cond ((and mta mba) (/ (max 0 space) 2.0))
-                                          (mta (max 0 space))
-                                          (t 0)))))
-                       ((numberp top)    (+ py top mt))
-                       ((numberp bottom) (+ py (- ph (lbox-h lb) bottom mb)))
+                        (let* ((mta (css:cstyle-margin-top-auto cs))
+                               (mba (css:cstyle-margin-bottom-auto cs))
+                               ;; leftover after the non-auto margins are honored
+                               (space (- ph (lbox-h lb) rtop rbot (if mta 0 mt) (if mba 0 mb)))
+                               (used-mt (cond ((and mta mba) (/ space 2.0))
+                                              (mta space)
+                                              (t mt))))
+                          (+ py rtop used-mt)))
+                       (rtop (+ py rtop mt))
+                       (rbot (+ py (- ph (lbox-h lb) rbot mb)))
                        (t (lbox-y lb)))))
         (shift-box lb (round (- nx (lbox-x lb))) (round (- ny (lbox-y lb))))))))
 
@@ -3107,7 +3120,7 @@ enclosing scroll container (else the viewport VP-RECT) and its containing block.
                ;; true viewport height even in reader mode (where the layout height
                ;; is left indefinite so the page grows to content).
                (icb (list 0 0 width (or abs-vh viewport-height ph)))
-               (vp  (list 0 scroll-y width vph)))
+               (vp  (list 0 scroll-y width (or abs-vh vph))))
           (dolist (p *abs-pending*)   (finalize-positioned p icb styles))
           (dolist (p *fixed-pending*) (finalize-positioned p vp styles))
           ;; Apply the scroll: shift the whole painted tree up so the anchor

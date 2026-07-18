@@ -44,6 +44,7 @@
   (owner-docs (make-hash-table :test 'eq))  ; created node -> its owner document (even while detached)
   (doc-content-types (make-hash-table :test 'eq)) ; document dnode -> its contentType (default text/html)
   (blank-url-docs (make-hash-table :test 'eq)) ; document dnode -> t when its URL is "about:blank" (createHTMLDocument/createDocument)
+  (xml-documents (make-hash-table :test 'eq)) ; document dnode -> t when it is an XMLDocument (createDocument; not a DOMParser result)
   (input-values (make-hash-table :test 'eq)) ; <input> node -> its independent value property
   (on-handlers (make-hash-table :test 'eq))  ; node -> (equal hash "type" -> handler fn)
   (write-buffers (make-hash-table :test 'eq)) ; document node -> pending document.write buffer (open())
@@ -90,9 +91,16 @@
   "The JS prototype for NODE's wrapper.  Element wrappers get their per-tag HTML
    interface prototype (HTMLDivElement.prototype, …); everything else keys off
    PROTO-KEY-FOR."
-  (if (eq (h:dnode-kind node) :element)
-      (element-wrapper-proto ctx node)
-      (proto ctx (proto-key-for node))))
+  (cond ((eq (h:dnode-kind node) :element)
+         (element-wrapper-proto ctx node))
+        ;; An XMLDocument (implementation.createDocument) wrapper gets the
+        ;; XMLDocument.prototype (DOM §XMLDocument); a DOMParser XML document is a
+        ;; plain Document.
+        ((and (eq (h:dnode-kind node) :document)
+              (gethash node (context-xml-documents ctx))
+              (proto ctx :xmldocument))
+         (proto ctx :xmldocument))
+        (t (proto ctx (proto-key-for node)))))
 
 (defun wrap (ctx node)
   "The JS wrapper for weft NODE, memoized (DOM object identity). NIL -> JS null."

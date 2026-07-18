@@ -129,9 +129,16 @@
                                              (or htmlelement-ctor element-ctor)))
             (js:define-global realm name f))))
       ;; Constructable node interfaces (DOM §Document/Text/Comment/DocumentFragment).
-      (iface "Document" :document
-             (lambda (this args) (declare (ignore this args))
-               (wrap ctx (h:make-document))))
+      (let ((doc-iface (iface "Document" :document
+                              (lambda (this args) (declare (ignore this args))
+                                (wrap ctx (h:make-document))))))
+        ;; XMLDocument (DOM §XMLDocument): a non-constructable interface whose
+        ;; prototype inherits Document.prototype and whose interface object
+        ;; inherits Document (so `x instanceof XMLDocument` implies Document).
+        (let ((xdoc-iface (iface "XMLDocument" :xmldocument)))
+          (setf (js:js-object-proto xdoc-iface) doc-iface)
+          (js:put (proto ctx :xmldocument) "constructor" xdoc-iface
+                  :enumerable nil :writable t :configurable t)))
       (iface "Text" :text
              (lambda (this args) (declare (ignore this))
                (new-node ctx docobj
@@ -352,6 +359,7 @@
          (np (js:make-object :proto op))     ; Node.prototype
          (ep (js:make-object :proto np))     ; Element.prototype
          (dp (js:make-object :proto np))     ; Document.prototype
+         (xdp (js:make-object :proto dp))    ; XMLDocument.prototype (<- Document)
          (cp (js:make-object :proto np))     ; CharacterData (Text/Comment)
          (pip (js:make-object :proto cp))    ; ProcessingInstruction.prototype (<- CharacterData)
          (evp (js:make-object :proto op))    ; Event.prototype
@@ -368,7 +376,7 @@
           (list :node np :element ep :document dp :text cp :comment cp :pi pip
                 :fragment fp :event evp :doctype dtp :svg-element svgep :window window
                 :nodelist nlp :htmlcollection hcp :attr ap :namednodemap nnmp
-                :domimplementation dip))
+                :domimplementation dip :xmldocument xdp))
     ;; Per-tag HTML element interface prototypes (HTMLDivElement.prototype, …) so
     ;; that `document.createElement('div') instanceof HTMLDivElement` holds.
     (setf (getf (context-protos ctx) :html-ifaces) (build-html-interfaces ctx ep))

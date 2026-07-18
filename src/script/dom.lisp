@@ -90,6 +90,60 @@
                                  (not (member c '(#\< #\> #\& #\" #\' #\/ #\= #\Space))))))
               name)))
 
+;;; ---- XML Name / QName productions (DOM §"validate and extract") ------------
+;;; The character classes follow XML 1.0 5th-edition NameStartChar / NameChar
+;;; (https://www.w3.org/TR/xml/#NT-Name); browsers accept exactly these for
+;;; createElement/createElementNS/createDocument qualified-name validation.
+;;; The exact NameStartChar / NameChar productions reference broad Unicode ranges;
+;;; browsers only validate ASCII strictly (rejecting digits/punctuation as a
+;;; start, digits/hyphen/period as continuation) and accept any non-ASCII code
+;;; point in either position, matching the WPT createElementNS expectations.
+(defun xml-name-start-char-p (c)
+  (let ((n (char-code c)))
+    (or (char<= #\A c #\Z) (char<= #\a c #\z) (char= c #\_) (char= c #\:)
+        (>= n #x80))))
+(defun xml-name-char-p (c)
+  (or (xml-name-start-char-p c)
+      (char= c #\-) (char= c #\.) (char<= #\0 c #\9)))
+(defun xml-local-name-p (s)
+  "A local part: non-empty, starts with a NameStartChar, then NameChars.  (Colons
+   are permitted as NameChars — the QName's first colon has already been split.)"
+  (and (plusp (length s))
+       (xml-name-start-char-p (char s 0))
+       (every #'xml-name-char-p s)))
+(defun xml-valid-qname-p (qname)
+  "T when QNAME is acceptable to validate (DOM §): with no colon it is a local
+   name; with a colon the prefix is a non-empty run of NameChars and the remainder
+   (after the first colon) is a local name."
+  (let ((colon (position #\: qname)))
+    (if colon
+        (and (plusp colon)
+             (every #'xml-name-char-p (subseq qname 0 colon))
+             (xml-local-name-p (subseq qname (1+ colon))))
+        (xml-local-name-p qname))))
+
+(defparameter +xml-namespace+ "http://www.w3.org/XML/1998/namespace")
+(defparameter +xmlns-namespace+ "http://www.w3.org/2000/xmlns/")
+
+(defun validate-and-extract (ctx namespace qname)
+  "DOM §\"validate and extract\": NAMESPACE is NIL or a URI string, QNAME a string.
+   Returns (values namespace prefix local), throwing InvalidCharacterError for a
+   malformed qualified name and NamespaceError for an inconsistent prefix/ns."
+  (let ((ns (if (and namespace (zerop (length namespace))) nil namespace)))
+    (unless (xml-valid-qname-p qname)
+      (throw-dom ctx "InvalidCharacterError" 5 "malformed qualified name"))
+    (let* ((colon (position #\: qname))
+           (prefix (and colon (subseq qname 0 colon)))
+           (local (if colon (subseq qname (1+ colon)) qname)))
+      (when (or (and prefix (null ns))
+                (and (equal prefix "xml") (not (equal ns +xml-namespace+)))
+                (and (or (equal qname "xmlns") (equal prefix "xmlns"))
+                     (not (equal ns +xmlns-namespace+)))
+                (and (equal ns +xmlns-namespace+)
+                     (not (or (equal qname "xmlns") (equal prefix "xmlns")))))
+        (throw-dom ctx "NamespaceError" 14 "inconsistent prefix and namespace"))
+      (values ns prefix local))))
+
 ;;; ---- structural mutation (weft side) --------------------------------------
 (defun set-text-content (node text)
   "The textContent setter: detach NODE's children and, if TEXT is non-empty,
@@ -2069,10 +2123,17 @@ top document takes it from the base URL."
       (let ((node (n this)) (cls (jstr (arg a 0))))
         (make-collection ctx (lambda () (dom:get-elements-by-class-name node cls)))))
     (defmethod* ctx dp "createElement" 1 (this a)
+      ;; DOM §createElement: HTML documents ASCII-lowercase the local name and put
+      ;; the element in the HTML namespace; XML documents preserve case (null ns).
       (let ((name (jstr (arg a 0))))
         (unless (valid-name-p name)
           (throw-dom ctx "InvalidCharacterError" 5 "invalid element name"))
-        (new-node ctx this (h:make-element (string-downcase name)))))
+        (if (html-doc-p ctx (n this))
+            (new-node ctx this (h:make-element (string-downcase name)))
+            (let ((el (h:make-element name nil :html)))
+              (setf (gethash el (context-ns-info ctx))
+                    (list :ns nil :qname name :prefix nil :local name))
+              (new-node ctx this el)))))
     (defmethod* ctx dp "createElementNS" 2 (this a)
       (let* ((ns (ns-arg (arg a 0))) (name (jstr (arg a 1)))
              (colon (position #\: name)))
@@ -2082,21 +2143,24 @@ top document takes it from the base URL."
                                              (not (member c '(#\< #\> #\& #\" #\' #\/ #\=)))))
                             name))
           (throw-dom ctx "InvalidCharacterError" 5 "invalid element name"))
-        ;; DOM "validate and extract" namespace rules.
+        ;; DOM "validate and extract" namespace rules.  NB: a leading colon here is
+        ;; reported as a NamespaceError (Acid3 test 23), unlike createDocument which
+        ;; reports InvalidCharacterError for the same malformed qualified name (WPT).
         (let ((prefix (and colon (subseq name 0 colon))))
           (when (or (and colon (or (zerop colon) (= colon (1- (length name)))
                                    (position #\: name :start (1+ colon))))
                     (and prefix (null ns))
-                    (and (equal prefix "xml") (not (equal ns "http://www.w3.org/XML/1998/namespace")))
+                    (and (equal prefix "xml") (not (equal ns +xml-namespace+)))
                     (and (or (equal name "xmlns") (equal prefix "xmlns"))
-                         (not (equal ns "http://www.w3.org/2000/xmlns/")))
-                    (and (equal ns "http://www.w3.org/2000/xmlns/")
+                         (not (equal ns +xmlns-namespace+)))
+                    (and (equal ns +xmlns-namespace+)
                          (not (or (equal name "xmlns") (equal prefix "xmlns")))))
             (throw-dom ctx "NamespaceError" 14 "malformed or invalid qualified name")))
         ;; A namespaced element keeps the given case (XML is case-sensitive); only
         ;; the HTML parser lowercases.  Record ns/prefix/localName for reflection.
         (let ((el (h:make-element name nil
-                                  (cond ((and ns (search "svg" ns)) :svg)
+                                  (cond ((equal ns *html-ns*) :html)
+                                        ((and ns (search "svg" ns)) :svg)
                                         ((and ns (search "MathML" ns)) :math) (t :html)))))
           (setf (gethash el (context-ns-info ctx))
                 (list :ns ns :qname name
@@ -2188,25 +2252,47 @@ top document takes it from the base URL."
   (progn
         (defmethod* ctx impl "hasFeature" 2 (this a) js:*true*)
         (defmethod* ctx impl "createDocument" 3 (this a)
+          ;; namespace + qualifiedName are required (WebIDL): too few arguments is
+          ;; a TypeError.  qualifiedName is [LegacyNullToEmptyString], so JS null ->
+          ;; "" but undefined stringifies to "undefined".
+          (when (< (length a) 2)
+            (js:js-throw (js:make-native-error "TypeError" "2 arguments required")))
           (let* ((d (h:make-document)) (qn (arg a 1)) (dt (arg a 2))
-                 (ns (if (nullish (arg a 0)) nil (jstr (arg a 0)))))
+                 (ns (ns-arg (arg a 0)))
+                 (qname (if (eq qn js:*null*) "" (jstr qn))))
+            ;; A supplied doctype must be a DocumentType node (else TypeError).
+            (unless (nullish dt)
+              (let ((dtn (node-of ctx dt)))
+                (unless (and dtn (eq (h:dnode-kind dtn) :doctype))
+                  (js:js-throw (js:make-native-error "TypeError" "doctype is not a DocumentType")))))
             ;; contentType per DOM §createDocument: XHTML/SVG/other-XML.
             (setf (gethash d (context-doc-content-types ctx))
                   (cond ((equal ns *html-ns*) "application/xhtml+xml")
                         ((equal ns "http://www.w3.org/2000/svg") "image/svg+xml")
                         (t "application/xml")))
-            (unless (nullish dt)
-              (let ((dtn (node-of ctx dt)))
-                (when dtn (h:dom-append d dtn)
-                      (setf (gethash dtn (context-owner-docs ctx)) d))))  ; adopt the doctype
+            ;; The produced document is an XMLDocument (DOM §createDocument step 1).
+            (setf (gethash d (context-xml-documents ctx)) t)
             ;; An empty (or absent) qualifiedName yields a document with no
-            ;; document element (DOM §createDocument step "if not the empty string").
-            (unless (or (nullish qn) (zerop (length (jstr qn))))
-              (unless (valid-qname-p (jstr qn))
-                (throw-dom ctx "InvalidCharacterError" 5 "invalid qualified name"))
-              (let ((el (h:make-element (jstr qn))))
-                (h:dom-append d el)
-                (setf (gethash el (context-owner-docs ctx)) d)))
+            ;; document element; otherwise validate-and-extract runs first and may
+            ;; throw (before the doctype is adopted).
+            (let ((root (when (plusp (length qname))
+                          (multiple-value-bind (rns prefix local)
+                              (validate-and-extract ctx ns qname)
+                            (let ((el (h:make-element qname nil
+                                                      (cond ((equal rns *html-ns*) :html)
+                                                            ((and rns (search "svg" rns)) :svg)
+                                                            ((and rns (search "MathML" rns)) :math)
+                                                            (t :html)))))
+                              (setf (gethash el (context-ns-info ctx))
+                                    (list :ns rns :qname qname :prefix prefix :local local))
+                              el)))))
+              (unless (nullish dt)
+                (let ((dtn (node-of ctx dt)))
+                  (when dtn (h:dom-remove dtn) (h:dom-append d dtn)
+                        (setf (gethash dtn (context-owner-docs ctx)) d))))  ; adopt the doctype
+              (when root
+                (h:dom-append d root)
+                (setf (gethash root (context-owner-docs ctx)) d)))
             (setf (gethash d (context-blank-url-docs ctx)) t)
             (wrap ctx d)))
         (defmethod* ctx impl "createHTMLDocument" 1 (this a)

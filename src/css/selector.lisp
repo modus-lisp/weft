@@ -52,6 +52,10 @@ instead of once per rule removes an O(elements x rules) cost on rule-heavy pages
 (defun prev-element (n)
   (let ((p (el-parent n)))
     (when p (let ((sibs (element-children p))) (let ((i (position n sibs))) (when (and i (plusp i)) (nth (1- i) sibs)))))))
+(defun next-element (n)
+  (let ((p (el-parent n)))
+    (when p (let ((sibs (element-children p))) (let ((i (position n sibs)))
+                                                 (when (and i (< (1+ i) (length sibs))) (nth (1+ i) sibs)))))))
 
 ;;; ---- simple-selector AST -----------------------------------------------
 ;;; a compound is a list of simple selectors:
@@ -108,6 +112,41 @@ instead of once per rule removes an O(elements x rules) cost on rule-heavy pages
 (defvar *target-id* nil
   "The current document's URL fragment (sans '#'), bound by the DOM Selectors API
 so :target can match the element with that id; NIL disables :target (cascade path).")
+
+(defvar *scope-elements* nil
+  "The set of :scope elements (scoping roots) for the current matching operation,
+bound by the DOM Selectors API to the context node(s) so :scope (Selectors 4 §8.4)
+matches them.  NIL (cascade path / document-rooted query) makes :scope fall back to
+the root element (CSS Scoping §3.2: an unscoped :scope matches :root).")
+
+(defvar *has-anchor* nil
+  "The element a :has() relative selector is anchored to while its argument is being
+evaluated (Selectors 4 §5).  The internal :has-scope simple matches only this
+element.  Distinct from *scope-elements* so an explicit :scope inside :has() still
+resolves to the outer scoping root, not the :has() anchor.")
+
+(defun map-descendants (n fn)
+  "Call FN on every element descendant of N in tree order."
+  (loop for c across (el-children n) when (el-p c) do (funcall fn c) (map-descendants c fn)))
+
+(defun match-has (rel-list n)
+  "Does N have a match for any relative selector in REL-LIST (Selectors 4 §5)?  Each
+REL-LIST entry is a CX whose first compound is the internal :has-scope anchor; N is
+bound as *has-anchor* and candidate elements (N's subtree for a descendant/child
+anchor; following-sibling subtrees for an adjacent/sibling anchor) are tested with
+the full complex matcher, which verifies the combinator chain back to the anchor."
+  (let ((*has-anchor* n))
+    (dolist (cx rel-list nil)
+      (let ((comb (if (plusp (length (cx-combs cx))) (aref (cx-combs cx) 0) :descendant)))
+        (when (block found
+                (flet ((try (c) (when (match-cx cx c) (return-from found t))))
+                  (ecase comb
+                    ((:descendant :child) (map-descendants n #'try))
+                    ((:adjacent :sibling)
+                     (loop for s = (next-element n) then (next-element s) while s
+                           do (try s) (map-descendants s #'try))))
+                  nil))
+          (return t))))))
 
 (defun match-pseudo (n name arg)
   (let ((nm (string-downcase name)))
@@ -190,6 +229,15 @@ so :target can match the element with that id; NIL disables :target (cascade pat
       ;; document; NIL (no fragment / cascade path) never matches.
       ((string= nm "target")
        (and *target-id* (let ((id (el-attr n "id"))) (and id (string= id *target-id*)))))
+      ;; :scope — the scoping root(s).  The DOM Selectors API binds *SCOPE-ELEMENTS*
+      ;; to the context node(s); an unbound scope (cascade / document-rooted query)
+      ;; matches the root element (CSS Scoping §3.2 — :scope defaults to :root).
+      ((string= nm "scope")
+       (if *scope-elements*
+           (and (member n *scope-elements*) t)
+           (and (el-parent n) (eq (weft.html:dnode-kind (el-parent n)) :document))))
+      ;; :has(relative-selector-list) — N has a relative match (Selectors 4 §5).
+      ((string= nm "has") (match-has arg n))
       ;; unknown / hover/active/focus/etc — non-matching (no interactive state)
       (t nil))))
 
@@ -200,6 +248,9 @@ so :target can match the element with that id; NIL disables :target (cascade pat
     (:class (member (second simple) (el-classes n) :test #'string=))
     (:id (let ((id (el-attr n "id"))) (and id (string= id (second simple)))))
     (:attr (match-attr n (second simple) (third simple) (fourth simple) (fifth simple)))
+    ;; :has-scope — internal anchor for a :has() relative selector; matches only the
+    ;; element :has() is currently anchored to (Selectors 4 §5).
+    (:has-scope (eq n *has-anchor*))
     (:pseudo (match-pseudo n (second simple) (third simple)))))
 
 (defun match-compound (compound n)
@@ -524,9 +575,12 @@ Return (values decoded-string new-i)."
           (loop while (and (< i end) (plusp depth)) do
             (case (char s i) (#\( (incf depth)) (#\) (decf depth))) (incf i))
           (let ((arg (subseq s start (1- i))))
-            (if (member (string-downcase name) '("not" "is" "where" "matches" "any") :test #'string=)
-                (values (list :pseudo name (parse-selector-list arg)) i)
-                (values (list :pseudo name arg) i))))
+            (cond
+              ((member (string-downcase name) '("not" "is" "where" "matches" "any") :test #'string=)
+               (values (list :pseudo name (parse-selector-list arg)) i))
+              ((string= (string-downcase name) "has")
+               (values (list :pseudo name (parse-relative-selector-list arg)) i))
+              (t (values (list :pseudo name arg) i)))))
         (values (list :pseudo name nil) i))))
 
 (defun parse-complex (s)
@@ -579,6 +633,34 @@ the identifier and is kept, so `#\\ ` still selects id=\" \"."
           for cx = (and (plusp (length trimmed)) (parse-complex trimmed))
           ;; drop invalid selectors (parse-complex yields no compounds), e.g. a
           ;; selector containing a stray `;` from a botched preceding rule.
+          when (and cx (plusp (length (cx-compounds cx)))) collect cx)))
+
+(defun parse-relative-complex (s)
+  "Parse one relative selector (Selectors 4 §4.2 — an optional leading combinator
+then a complex selector) into a CX whose first compound is the internal :has-scope
+anchor and whose first combinator is the (implicit descendant) leading combinator."
+  (let ((s (trim-selector s)) (comb :descendant) (i 0))
+    (when (plusp (length s))
+      (case (char s 0)
+        (#\> (setf comb :child i 1))
+        (#\+ (setf comb :adjacent i 1))
+        (#\~ (setf comb :sibling i 1))))
+    (let ((rcx (parse-complex (trim-selector (subseq s i)))))
+      (if (zerop (length (cx-compounds rcx)))
+          (make-cx :compounds #() :combs #())
+          (make-cx :compounds (concatenate 'vector (vector (list '(:has-scope))) (cx-compounds rcx))
+                   :combs (concatenate 'vector (vector comb) (cx-combs rcx)))))))
+
+(defun parse-relative-selector-list (string)
+  "Parse a comma-separated RELATIVE selector list (the argument of :has()) into a
+list of CX, each anchored by a leading :has-scope compound.  Invalid entries drop."
+  (let ((parts '()) (depth 0) (start 0) (n (length string)))
+    (loop for i from 0 below n for c = (char string i) do
+      (case c ((#\( #\[) (incf depth)) ((#\) #\]) (when (plusp depth) (decf depth)))
+        (#\, (when (zerop depth) (push (subseq string start i) parts) (setf start (1+ i))))))
+    (push (subseq string start) parts)
+    (loop for p in (nreverse parts)
+          for cx = (and (plusp (length (trim-selector p))) (parse-relative-complex p))
           when (and cx (plusp (length (cx-compounds cx)))) collect cx)))
 
 ;;; ---- strict validation (Selectors 4 §3.1) ------------------------------
@@ -820,6 +902,20 @@ throw a SyntaxError; the CSS cascade never calls this."
   "Does element N match any complex selector in SELECTOR-LIST?"
   (some (lambda (cx) (match-cx cx n)) selector-list))
 
+(defun spec> (x y)
+  "Is specificity triple X strictly greater than Y (id, then class, then type)?"
+  (or (> (first x) (first y))
+      (and (= (first x) (first y))
+           (or (> (second x) (second y))
+               (and (= (second x) (second y)) (> (third x) (third y)))))))
+
+(defun max-arg-specificity (selector-list)
+  "The specificity of the most specific complex selector in SELECTOR-LIST (Selectors
+4 §16 — the value :is()/:not()/:has() contribute); (0 0 0) for an empty list."
+  (let ((best (list 0 0 0)))
+    (dolist (cx selector-list best)
+      (let ((s (specificity cx))) (when (spec> s best) (setf best s))))))
+
 (defun specificity (cx)
   "(a b c): id count, class/attr/pseudo-class count, type count."
   (let ((a 0) (b 0) (cc 0))
@@ -828,9 +924,17 @@ throw a SyntaxError; the CSS cascade never calls this."
         (case (first simple)
           (:id (incf a))
           ((:class :attr) (incf b))
-          (:pseudo (if (member (string-downcase (second simple))
-                               '("before" "after" "first-line" "first-letter") :test #'string=)
-                       (incf cc) (incf b)))
+          (:pseudo
+           (let ((nm (string-downcase (second simple))))
+             (cond
+               ;; pseudo-elements contribute a type; :where() contributes nothing.
+               ((member nm '("before" "after" "first-line" "first-letter") :test #'string=) (incf cc))
+               ((string= nm "where"))
+               ;; :is()/:not()/:has()/:matches()/:any() take their most specific arg.
+               ((member nm '("is" "not" "has" "matches" "any") :test #'string=)
+                (destructuring-bind (aa bb ccc) (max-arg-specificity (third simple))
+                  (incf a aa) (incf b bb) (incf cc ccc)))
+               (t (incf b)))))
           (:type (incf cc)))))
     (list a b cc)))
 

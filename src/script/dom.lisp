@@ -259,6 +259,33 @@ children; a Text/Comment/CDATA/PI/DocumentType parent throws HierarchyRequestErr
 (defun owner-doc-node (ctx node)
   (or (gethash node (context-owner-docs ctx)) (context-document ctx)))
 
+(defun insert-adjacent (ctx element where node)
+  "DOM §\"insert adjacent\": place NODE relative to ELEMENT per WHERE (ASCII
+   case-insensitive).  Returns NODE, or NIL for a before/after position when
+   ELEMENT has no parent; an unknown WHERE throws SyntaxError."
+  (let ((w (string-downcase where)))
+    (cond
+      ((string= w "beforebegin")
+       (let ((parent (h:dnode-parent element)))
+         (when parent
+           (ensure-pre-insertion-validity ctx node parent element)
+           (insert-into parent node element) node)))
+      ((string= w "afterbegin")
+       (let ((ref (and (plusp (length (h:dnode-children element)))
+                       (aref (h:dnode-children element) 0))))
+         (ensure-pre-insertion-validity ctx node element ref)
+         (insert-into element node ref) node))
+      ((string= w "beforeend")
+       (ensure-pre-insertion-validity ctx node element nil)
+       (insert-into element node nil) node)
+      ((string= w "afterend")
+       (let ((parent (h:dnode-parent element)))
+         (when parent
+           (let ((ref (node-next-sibling element)))
+             (ensure-pre-insertion-validity ctx node parent ref)
+             (insert-into parent node ref) node))))
+      (t (throw-dom ctx "SyntaxError" 12 "invalid insertAdjacent position")))))
+
 (defun args->insertion (ctx doc args)
   "DOM §\"converting nodes into a node\": ARGS (each a DOM node or a string, the
    latter becoming a Text node) collapse to a single node to insert — the lone
@@ -1629,7 +1656,24 @@ of the other)."
                         (if ref (h:dom-insert-before parent c ref) (h:dom-append parent c)))))
             (t (throw-dom ctx "SyntaxError" 12 "invalid insertAdjacentHTML position")))
           (setf (context-dirty ctx) t)))
-      js:*undefined*)))
+      js:*undefined*)
+    ;; DOM §Element.insertAdjacentElement / insertAdjacentText: the "insert
+    ;; adjacent" algorithm shared with insertAdjacentHTML, but moving an existing
+    ;; node / a fresh Text node and honoring pre-insertion validity.
+    (defmethod* ctx ep "insertAdjacentElement" 2 (this a)
+      (let* ((element (n this)) (where (jstr (arg a 0)))
+             (node (node-of ctx (arg a 1))))
+        (unless (and node (eq (h:dnode-kind node) :element))
+          (js:js-throw (js:make-native-error "TypeError" "insertAdjacentElement expects an Element")))
+        (let ((r (insert-adjacent ctx element where node)))
+          (setf (context-dirty ctx) t) (if r (wrap ctx r) js:*null*))))
+    (defmethod* ctx ep "insertAdjacentText" 2 (this a)
+      (let* ((element (n this)) (where (jstr (arg a 0)))
+             (text (h:make-text (jstr (arg a 1)))))
+        (setf (gethash text (context-owner-docs ctx)) (node-document ctx element))
+        (insert-adjacent ctx element where text)
+        (setf (context-dirty ctx) t)
+        js:*undefined*))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; CharacterData (Text, Comment)  (<- Node.prototype)

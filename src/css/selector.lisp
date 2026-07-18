@@ -114,16 +114,22 @@ instead of once per rule removes an O(elements x rules) cost on rule-heavy pages
   (if (zerop a) (= index b)
       (let ((q (/ (- index b) a))) (and (integerp q) (>= q 0)))))
 
+(defun ident-cont-p (c)
+  "Could C continue a CSS identifier (so `of` followed by it is NOT the keyword)?"
+  (or (alphanumericp c) (char= c #\_) (char= c #\-) (char= c #\\) (> (char-code c) 127)))
+
 (defun split-nth-of (arg)
   "Split an nth-child()/nth-last-child() argument on the `of` keyword (Selectors 4
 §6.6.1).  Returns (values nth-part of-part) where OF-PART is the selector-list
-string after a whitespace-delimited `of`, or NIL when absent."
+string after the `of` keyword, or NIL when absent.  The keyword is a standalone
+identifier token: whitespace before, and end/whitespace/a token-starting char
+(e.g. `.`, `[`, `#`, `*`, `:`, `/`) after — so `of.target` splits correctly."
   (let ((n (length arg)) (i 1))
     (loop while (< i n) do
       (if (and (css-ws-p (char arg (1- i)))
                (<= (+ i 2) n)
                (char-equal (char arg i) #\o) (char-equal (char arg (1+ i)) #\f)
-               (or (= (+ i 2) n) (css-ws-p (char arg (+ i 2)))))
+               (or (= (+ i 2) n) (not (ident-cont-p (char arg (+ i 2))))))
           (return-from split-nth-of
             (values (subseq arg 0 i)
                     (string-trim '(#\Space #\Tab #\Newline #\Return) (subseq arg (+ i 2)))))

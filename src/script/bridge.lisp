@@ -436,6 +436,11 @@
     (install-globals ctx)
     (install-window-events ctx)
     (install-mutation-observer ctx)
+    ;; Also set the GLOBAL value of *ctx* (not just the per-entry dynamic binding):
+    ;; shuttle runs async-function bodies on a worker thread that does not inherit
+    ;; the main thread's dynamic binding, so mutation sites reached from an async
+    ;; callback fall back to this global to find the active observer registry.
+    (setf *ctx* ctx)
     ctx))
 
 (defun fire-lifecycle-events (ctx)

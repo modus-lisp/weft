@@ -189,11 +189,17 @@
                 js:*null*)))
         2))
     ;; DOMParser backing: parse an HTML source string into a fresh document
-    ;; (weft's WHATWG tree builder).  XML types fall back to the HTML path.
+    ;; (weft's WHATWG tree builder).  XML types fall back to the HTML path but the
+    ;; document is tagged with the requested content type so that e.g.
+    ;; createCDATASection is permitted on it.
     (js:define-global realm "__weft_parse_document"
       (js:native-function realm "__weft_parse_document"
         (lambda (this args) (declare (ignore this))
-          (wrap ctx (h:parse-html (jstr (arg args 0)))))
+          (let ((doc (h:parse-html (jstr (arg args 0))))
+                (type (if (>= (length args) 2) (jstr (arg args 1)) "text/html")))
+            (unless (or (zerop (length type)) (string-equal type "text/html"))
+              (setf (gethash doc (context-doc-content-types ctx)) type))
+            (wrap ctx doc)))
         2))
     (js:eval-script realm "(function(G){
   function dec(x){try{return decodeURIComponent(String(x).replace(/\\+/g,' '));}catch(e){return x;}}

@@ -376,6 +376,30 @@ replaceChildren + the query surface) plus getElementById (DOM §4.2.7)."
     (loop while (and s (member s argnodes)) do (setf s (node-prev-sibling s)))
     s))
 
+(defun normalize-node (ctx node)
+  "DOM §Node.normalize: drop empty Text descendants and merge each run of
+   contiguous Text siblings into the first."
+  (loop for c across (copy-seq (h:dnode-children node))
+        when (eq (h:dnode-kind c) :element) do (normalize-node ctx c))
+  (let ((i 0))
+    (loop while (< i (length (h:dnode-children node)))
+          do (let ((c (aref (h:dnode-children node) i)))
+               (cond
+                 ((not (eq (h:dnode-kind c) :text)) (incf i))
+                 ;; An empty Text node is dropped (so the first *non-empty* node of
+                 ;; a run is the one that survives and absorbs the rest).
+                 ((zerop (length (or (h:dnode-data c) "")))
+                  (adjust-ranges-for-removal ctx c) (h:dom-remove c))
+                 (t (loop while (and (< (1+ i) (length (h:dnode-children node)))
+                                     (eq (h:dnode-kind (aref (h:dnode-children node) (1+ i))) :text))
+                          do (let ((nx (aref (h:dnode-children node) (1+ i))))
+                               (setf (h:dnode-data c)
+                                     (concatenate 'string (or (h:dnode-data c) "")
+                                                  (or (h:dnode-data nx) "")))
+                               (adjust-ranges-for-removal ctx nx)
+                               (h:dom-remove nx)))
+                    (incf i)))))))
+
 (defun install-child-node-methods (ctx proto)
   "ChildNode mixin (DOM §4.2.7): before / after / replaceWith / remove."
   (macrolet ((n (this) `(require-node ctx ,this)))
@@ -1273,6 +1297,8 @@ of the other)."
         (setf (context-dirty ctx) t)
         (dolist (n2 inserted) (run-inserted-scripts ctx n2))
         (arg a 1)))
+    (defmethod* ctx np "normalize" 0 (this a) (declare (ignore a))
+      (normalize-node ctx (n this)) (setf (context-dirty ctx) t) js:*undefined*)
     (defmethod* ctx np "cloneNode" 1 (this a)
       (wrap ctx (copy-dnode (n this) (truthy (arg a 0)))))
     (defmethod* ctx np "contains" 1 (this a)
@@ -1981,6 +2007,9 @@ of the other)."
       (let ((existing (js:js-get this "__weft_impl")))
         (if (js:js-object-p existing) existing
             (let ((impl (js:make-object :proto (proto ctx :domimplementation))))
+              ;; Remember which document this implementation belongs to, so its
+              ;; factory methods can set the created node's ownerDocument (DOM §).
+              (js:put impl "__weft_doc" this :enumerable nil :configurable t)
               (js:put this "__weft_impl" impl :enumerable nil :configurable t) impl))))))
 
 (defun document-write* (ctx doc source)
@@ -2050,12 +2079,21 @@ of the other)."
             (setf (gethash d (context-blank-url-docs ctx)) t)
             (wrap ctx d)))
         (defmethod* ctx impl "createDocumentType" 3 (this a)
+          ;; QName validation here (InvalidCharacterError for stray chars,
+          ;; NamespaceError for a malformed qualified name) is required by Acid3
+          ;; test 25 (`createDocumentType('a:', …)` must throw NAMESPACE_ERR); the
+          ;; returned doctype's node document is the implementation's document.
           (let ((qname (jstr (arg a 0))))
             (unless (every (lambda (c) (>= (char-code c) #x21)) qname)
               (throw-dom ctx "InvalidCharacterError" 5 "invalid doctype name"))
             (unless (valid-qname-p qname)
               (throw-dom ctx "NamespaceError" 14 "malformed qualified name"))
-            (wrap ctx (h:make-doctype qname (jstr (arg a 1)) (jstr (arg a 2))))))
+            (let ((dt (h:make-doctype qname (jstr (arg a 1)) (jstr (arg a 2))))
+                  (docwrap (js:js-get this "__weft_doc")))
+              (setf (gethash dt (context-owner-docs ctx))
+                    (or (and (js:js-object-p docwrap) (node-of ctx docwrap))
+                        (context-document ctx)))
+              (wrap ctx dt))))
         impl))
 
 (defun dom-write (ctx str)

@@ -2955,16 +2955,22 @@ a single (unwrapped) line.  Measures NODE's CHILDREN — collecting NODE itself 
 re-wrap an inline-block/atomic node as one atomic box laid out at the full available
 width (an empty icon then reports content-w instead of ~0)."
   (let ((words (collect-words (coerce (h:dnode-children node) 'list) styles cs content-w))
-        (w 0) (seg 0))
+        (w 0) (seg 0) (first t))
     ;; Max-content is the widest run between forced breaks (CSS Sizing 3 §5.1):
     ;; a <br>/newline (:break) resets the running segment width rather than being
     ;; summed into one line, so `AAA<br>BBBBB` measures BBBBB, not AAABBBBB.
+    ;; TOK-SPACE marks collapsible white space that PRECEDED a token; for the FIRST
+    ;; token of a segment that leading space sits at the line start and collapses
+    ;; away (CSS 2.1 16.6.1), so it must not widen the measure — only inter-word
+    ;; spaces (a non-first token's leading space) count.
     (dolist (wd words)
       (if (eq (car wd) :break)
-          (setf seg 0)
-          (incf seg (+ (if (eq (car wd) :atomic) (lbox-w (tok-meta wd)) (word-w (car wd) (tok-meta wd)))
-                       (tok-gap wd)
-                       (if (tok-space wd) (space-w (if (eq (car wd) :atomic) cs (tok-meta wd))) 0))))
+          (setf seg 0 first t)
+          (progn
+            (incf seg (+ (if (eq (car wd) :atomic) (lbox-w (tok-meta wd)) (word-w (car wd) (tok-meta wd)))
+                         (tok-gap wd)
+                         (if (and (tok-space wd) (not first)) (space-w (if (eq (car wd) :atomic) cs (tok-meta wd))) 0)))
+            (setf first nil)))
       (setf w (max w seg)))
     w))
 

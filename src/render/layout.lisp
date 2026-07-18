@@ -681,12 +681,13 @@ where KIND is :normal (positioned by baseline), :top or :bottom (line-relative).
         (t (baseline))))))
 
 (defun format-control-p (c)
-  "T if C is a zero-width, invisible bidi/format control (Unicode Default_Ignorable
-of the bidi-control class): it produces no glyph and no advance when rendered
-(CSS Text 3 / Unicode Bidi).  Soft hyphen and ZWSP are excluded — they carry
-line-break semantics handled elsewhere."
+  "T if C is a zero-width, invisible bidi/format/join control (Unicode
+Default_Ignorable): it produces no glyph and no advance when rendered
+(CSS Text 3 / Unicode Bidi).  Soft hyphen is excluded — it carries line-break
+semantics handled elsewhere."
   (let ((u (char-code c)))
-    (or (= u #x200E) (= u #x200F)       ; LRM RLM
+    (or (<= #x200B u #x200D)            ; ZWSP ZWNJ ZWJ
+        (= u #x200E) (= u #x200F)       ; LRM RLM
         (= u #x061C)                    ; ALM
         (<= #x202A u #x202E)            ; LRE RLE PDF LRO RLO
         (<= #x2066 u #x2069)            ; LRI RLI FSI PDI

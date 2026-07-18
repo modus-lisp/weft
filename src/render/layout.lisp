@@ -2806,21 +2806,30 @@ display:contents wrapper (CSS Display 3) so a contents row / row-group still yie
 its rows.  A container (the table, or a row-group) that ends up holding bare
 cell-like content but no row box acts as an anonymous table-row (CSS 2.1 17.2.1) —
 represented here by that container node itself."
-  (let ((rows '()))
-    (dolist (c (effective-child-elements node styles))
-      (let ((d (cdisplay (st styles c))))
-        (cond ((string= d "table-row") (push c rows))
-              ((member d '("table-row-group" "table-header-group" "table-footer-group")
-                       :test #'string=)
-               (let ((grouprows '()) (bare nil))
-                 (dolist (r (flat-children c styles))
-                   (cond ((and (eq (h:dnode-kind r) :element)
-                               (string= (cdisplay (st styles r)) "table-row"))
-                          (push r grouprows))
-                         ((cell-like-node-p r styles) (setf bare t))))
-                 (cond (grouprows (dolist (r (nreverse grouprows)) (push r rows)))
-                       (bare (push c rows))))))))          ; group of bare cells = anon row
-    (or (nreverse rows)
+  (let ((headers '()) (bodies '()) (footers '()))
+    ;; Visual row order (CSS 2.1 §17.2.1): all table-header-group rows come first,
+    ;; then table-row-groups / rows in document order, then table-footer-group rows
+    ;; last — regardless of source position of the thead/tfoot.
+    (flet ((emit (row where)
+             (case where (:header (push row headers)) (:footer (push row footers))
+                   (t (push row bodies)))))
+      (dolist (c (effective-child-elements node styles))
+        (let ((d (cdisplay (st styles c))))
+          (cond ((string= d "table-row") (emit c :body))
+                ((member d '("table-row-group" "table-header-group" "table-footer-group")
+                         :test #'string=)
+                 (let ((where (cond ((string= d "table-header-group") :header)
+                                    ((string= d "table-footer-group") :footer)
+                                    (t :body)))
+                       (grouprows '()) (bare nil))
+                   (dolist (r (flat-children c styles))
+                     (cond ((and (eq (h:dnode-kind r) :element)
+                                 (string= (cdisplay (st styles r)) "table-row"))
+                            (push r grouprows))
+                           ((cell-like-node-p r styles) (setf bare t))))
+                   (cond (grouprows (dolist (r (nreverse grouprows)) (emit r where)))
+                         (bare (emit c where)))))))))       ; group of bare cells = anon row
+    (or (append (nreverse headers) (nreverse bodies) (nreverse footers))
         (when (some (lambda (c) (cell-like-node-p c styles)) (flat-children node styles))
           (list node)))))
 (defun anon-row-p (row styles)
@@ -3280,7 +3289,11 @@ cell-lboxes content-height)."
           ;; PASS 2: distribute a table taller than its content across rows in
           ;; proportion to their heights (§17.5.3); with no surplus SHARE is 0 and
           ;; every row keeps its natural height, so ordinary tables are unchanged.
-          (let ((surplus (if (and (numberp target-h) (> target-h natural)) (- target-h natural) 0)))
+          (let ((surplus (if (and (numberp target-h) (> target-h natural)) (- target-h natural) 0))
+                ;; row-group node -> (top . bottom) px band, so a table-row-group /
+                ;; -header-group / -footer-group with its own background or border
+                ;; paints a box behind its rows (CSS 2.1 §17.5.1 layer 2).
+                (group-band (make-hash-table :test 'eq)))
             (dolist (ri rowinfo)
               (destructuring-bind (row rowboxes rowh) ri
                 (let* ((share (cond ((<= surplus 0) 0)
@@ -3315,8 +3328,36 @@ cell-lboxes content-height)."
                   (when (and (null rowboxes) (plusp rh2) (not (eq row node)))
                     (setf rowboxes (list (make-lbox :x (round cx) :y y :w (round content-w) :h rh2
                                                     :style (st styles row) :node row :kind :block))))
+                  ;; record this row's band under its row-group (if any) so the group
+                  ;; background can span its full row set.
+                  (let ((grp (and (not (eq row node)) (h:dnode-parent row))))
+                    (when (and grp (eq (h:dnode-kind grp) :element)
+                               (let ((gcs (st styles grp)))
+                                 (and gcs (member (cdisplay gcs)
+                                                  '("table-row-group" "table-header-group" "table-footer-group")
+                                                  :test #'string=))))
+                      (let ((cur (gethash grp group-band)))
+                        (setf (gethash grp group-band)
+                              (cons (if cur (min (car cur) y) y)
+                                    (if cur (max (cdr cur) (+ y rh2)) (+ y rh2)))))))
                   (setf boxes (nconc boxes rowboxes))
-                  (incf y rh2)))))
+                  (incf y rh2))))
+            ;; prepend group-background boxes so they paint behind the rows/cells.
+            (let ((gboxes '()) (gw (round (aref colx ncols))))
+              (maphash (lambda (grp band)
+                         (let ((gcs (st styles grp)))
+                           (when (and gcs
+                                      (or (css:cstyle-background gcs) (css:cstyle-bg-image gcs)
+                                          (css:cstyle-bg-gradient gcs)
+                                          (plusp (+ (used-border gcs :t) (used-border gcs :r)
+                                                    (used-border gcs :b) (used-border gcs :l)))))
+                             (multiple-value-bind (gdx gdy) (rel-offset gcs)
+                               (push (make-lbox :x (+ (round cx) gdx) :y (+ (car band) gdy)
+                                                :w gw :h (round (- (cdr band) (car band)))
+                                                :style gcs :node grp :kind :block)
+                                     gboxes)))))
+                       group-band)
+              (when gboxes (setf boxes (nconc gboxes boxes)))))
           (values boxes (- y cy)))))))
 
 (defun pref-inline-width (node styles cs content-w)

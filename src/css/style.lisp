@@ -636,6 +636,19 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
                    ((string= prop "min-block-size") "min-height")
                    ((string= prop "max-block-size") "max-height")
                    (t prop)))
+  ;; Generic `inherit` for the box-size longhands (not otherwise inherited):
+  ;; copy the parent's computed value (CSS 2.1 §6.2.1).
+  (when (and parent-cs
+             (string-equal (string-trim '(#\Space #\Tab #\Newline) value) "inherit")
+             (member prop '("width" "height" "min-width" "max-width" "min-height" "max-height")
+                     :test #'string=))
+    (cond ((string= prop "width")      (setf (cstyle-width cs)      (cstyle-width parent-cs)))
+          ((string= prop "height")     (setf (cstyle-height cs)     (cstyle-height parent-cs)))
+          ((string= prop "min-width")  (setf (cstyle-min-width cs)  (cstyle-min-width parent-cs)))
+          ((string= prop "max-width")  (setf (cstyle-max-width cs)  (cstyle-max-width parent-cs)))
+          ((string= prop "min-height") (setf (cstyle-min-height cs) (cstyle-min-height parent-cs)))
+          ((string= prop "max-height") (setf (cstyle-max-height cs) (cstyle-max-height parent-cs))))
+    (return-from apply-decl))
   (let ((fs (cstyle-font-size cs)))
     (macrolet ((len (&optional auto) `(resolve-len value fs ,auto)))
       (cond

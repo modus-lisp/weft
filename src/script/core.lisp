@@ -59,6 +59,7 @@
   (mo-objs (make-hash-table :test 'eq)) ; MO wrapper object -> its MO struct
   (mo-regs (make-hash-table :test 'eq)) ; node -> list of MO-REG registered observers
   (mo-microtask-queued nil) ; the "mutation observer microtask queued" flag (DOM §4.3.3)
+  (raf-count 0)             ; requestAnimationFrame frames served (budget vs runaway loops)
   (dirty nil))              ; a DOM mutation happened; styles cache is stale
 
 ;;; ---- MutationObserver dynamic state ---------------------------------------

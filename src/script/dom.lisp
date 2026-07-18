@@ -542,6 +542,17 @@ of the other)."
           ((eq (h:dnode-namespace el) :svg) "http://www.w3.org/2000/svg")
           (t nil))))
 
+(defun element-wrapper-proto (ctx el)
+  "The prototype for EL's JS wrapper (DOM §): the per-tag HTML interface for an
+   HTML-namespace element, SVGElement for SVG, else the generic Element."
+  (let ((ns (element-real-ns ctx el)))
+    (cond ((equal ns "http://www.w3.org/2000/svg") (proto ctx :svg-element))
+          ((equal ns *html-ns*)
+           (let ((tbl (proto ctx :html-tag-protos)))
+             (or (and tbl (gethash (h:dnode-name el) tbl))
+                 (proto ctx :html-unknown))))
+          (t (proto ctx :element)))))
+
 (defun element-prefix (ctx el)
   "EL's namespace prefix, or NIL."
   (let ((info (gethash el (context-ns-info ctx))))
@@ -1609,11 +1620,22 @@ of the other)."
     (defget ctx dp "defaultView" (this) (proto ctx :window))
     (defget ctx dp "styleSheets" (this) (make-stylesheet-list ctx (n this)))
     (defget ctx dp "readyState" (this) "complete")
-    (defget ctx dp "URL" (this) (context-base ctx))
-    (defget ctx dp "documentURI" (this) (context-base ctx))
+    ;; A document created by createHTMLDocument/createDocument has no browsing
+    ;; context: its URL is "about:blank".  A DOMParser document and the primary
+    ;; document both carry the page URL (DOM §Document url).
+    (flet ((doc-url (this) (if (gethash (n this) (context-blank-url-docs ctx))
+                               "about:blank" (context-base ctx))))
+      (defget ctx dp "URL" (this) (doc-url this))
+      (defget ctx dp "documentURI" (this) (doc-url this))
+      (defget ctx dp "baseURI" (this) (doc-url this)))
+    ;; The primary document carries an own `location` property (set in
+    ;; install-globals) that shadows this; every other document has none.
+    (defget ctx dp "location" (this) (declare (ignore this)) js:*null*)
     (defget ctx dp "characterSet" (this) "UTF-8")
     (defget ctx dp "charset" (this) "UTF-8")
-    (defget ctx dp "compatMode" (this) "CSS1Compat")
+    (defget ctx dp "inputEncoding" (this) "UTF-8")
+    (defget ctx dp "compatMode" (this)
+      (if (eq (h:dnode-mode (n this)) :quirks) "BackCompat" "CSS1Compat"))
     (defget ctx dp "contentType" (this)
       (or (gethash (n this) (context-doc-content-types ctx)) "text/html"))
     (defget ctx dp "hidden" (this) js:*false*)
@@ -1784,6 +1806,7 @@ of the other)."
               (let ((el (h:make-element (jstr qn))))
                 (h:dom-append d el)
                 (setf (gethash el (context-owner-docs ctx)) d)))
+            (setf (gethash d (context-blank-url-docs ctx)) t)
             (wrap ctx d)))
         (defmethod* ctx impl "createHTMLDocument" 1 (this a)
           ;; DOM §createHTMLDocument appends a `html` doctype first, then the
@@ -1801,6 +1824,7 @@ of the other)."
                 (h:dom-append head title)
                 (h:dom-append title (h:make-text (jstr (arg a 0))))))
             (h:dom-append html body)
+            (setf (gethash d (context-blank-url-docs ctx)) t)
             (wrap ctx d)))
         (defmethod* ctx impl "createDocumentType" 3 (this a)
           (let ((qname (jstr (arg a 0))))

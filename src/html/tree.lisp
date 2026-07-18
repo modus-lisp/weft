@@ -867,6 +867,9 @@ whose children are the fragment nodes."
                     (t))))
                ((eq ty :eof) (return)))))
           (unless reconsume (incf i)))))
+    ;; Record the document's mode so Document.compatMode can report quirks
+    ;; (HTML §"quirks mode"); LIMITED-QUIRKS folds into no-quirks for compatMode.
+    (setf (dnode-mode doc) (if quirks :quirks :no-quirks))
     doc)))
 
 (defun parse-fragment (input context-name)

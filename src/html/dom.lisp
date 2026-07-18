@@ -11,6 +11,7 @@
   data                                  ; text / comment string
   public system                        ; doctype ids
   (namespace :html)                     ; :html :svg :math
+  (mode :no-quirks)                     ; document only: :no-quirks :limited-quirks :quirks
   (children (make-array 0 :adjustable t :fill-pointer 0))
   parent)
 

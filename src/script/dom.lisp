@@ -882,6 +882,9 @@ of the other)."
     (defget ctx np "nodeName" (this) (node-name-of (n this) ctx))
     (defget ctx np "localName" (this) js:*null*)   ; Element overrides; null elsewhere
     (defget ctx np "parentNode" (this) (wrap ctx (h:dnode-parent (n this))))
+    ;; isConnected: the node's shadow-including root is a document (DOM §Node).
+    (defget ctx np "isConnected" (this)
+      (jbool (eq (h:dnode-kind (tree-root (n this))) :document)))
     (defget ctx np "parentElement" (this)
       (let ((p (h:dnode-parent (n this))))
         (wrap ctx (and p (eq (h:dnode-kind p) :element) p))))

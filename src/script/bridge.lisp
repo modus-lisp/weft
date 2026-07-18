@@ -103,6 +103,8 @@
       (iface "Element" :element)
       (iface "CharacterData" :text)
       (iface "DocumentType" :doctype)
+      (iface "Attr" :attr)
+      (iface "NamedNodeMap" :namednodemap)
       ;; Constructable node interfaces (DOM §Document/Text/Comment/DocumentFragment).
       (iface "Document" :document
              (lambda (this args) (declare (ignore this args))
@@ -254,16 +256,20 @@
          (svgep (js:make-object :proto ep))  ; SVGElement.prototype (inherits Element)
          (nlp (js:make-object :proto op))    ; NodeList.prototype
          (hcp (js:make-object :proto op))    ; HTMLCollection.prototype
+         (ap (js:make-object :proto np))     ; Attr.prototype (inherits Node)
+         (nnmp (js:make-object :proto op))   ; NamedNodeMap.prototype
          (window (js:eval-script realm "globalThis")))
     (setf (context-protos ctx)
           (list :node np :element ep :document dp :text cp :comment cp
                 :fragment fp :event evp :doctype dtp :svg-element svgep :window window
-                :nodelist nlp :htmlcollection hcp))
+                :nodelist nlp :htmlcollection hcp :attr ap :namednodemap nnmp))
     (install-node-proto ctx np)
     (install-element-proto ctx ep)
     (install-svg-element-proto ctx svgep)
     (install-document-proto ctx dp)
     (install-doctype-proto ctx dtp)
+    (install-attr-proto ctx ap)
+    (install-namednodemap-proto ctx nnmp)
     (install-chardata-proto ctx cp)
     ;; ParentNode (DOM §4.2.6) on Element + Document; ChildNode (§4.2.7) on
     ;; Element, CharacterData (Text/Comment/…) and DocumentType.  (DocumentFragment

@@ -471,8 +471,281 @@ of the other)."
         (setf (h:dnode-attrs node)
               (append (h:dnode-attrs node) (list (cons n v)))))))
 (defun remove-attr (node name)
+  ;; removeAttribute removes the FIRST attribute whose qualified name matches
+  ;; (DOM §remove-an-attribute-by-name); :count 1 keeps any same-qname twins.
   (setf (h:dnode-attrs node)
-        (remove (attr-name name) (h:dnode-attrs node) :key #'car :test #'string=)))
+        (remove (attr-name name) (h:dnode-attrs node) :key #'car :test #'string= :count 1)))
+
+;;; ---- namespaced attributes + Attr / NamedNodeMap (DOM §4.9/§Attr) ----------
+;;; An attribute's value + qualified name live in a (qname . value) cons inside the
+;;; owner element's H:DNODE-ATTRS list (the store the parser/CSS/render already
+;;; read).  Namespace metadata (and standalone/owner-less Attr identity) hangs off
+;;; that cons in the per-context ATTR-RECS side table — mirroring how CONTEXT-NS-INFO
+;;; records createElementNS namespaces.  Duplicate qualified names (setAttributeNS
+;;; with differing namespaces) are distinct conses, so nothing collides.
+(defstruct attr-rec
+  cell                                  ; the (qname . value) cons (in the owner's list, or free)
+  (ns nil)                              ; namespaceURI, or NIL
+  (prefix nil)                          ; prefix, or NIL
+  local                                 ; localName
+  (owner nil))                          ; owning element dnode, or NIL when detached
+
+(defun ns-arg (v) "JS null/undefined/empty-string namespace -> NIL."
+  (if (or (nullish v) (and (stringp v) (string= v ""))) nil (jstr v)))
+
+(defun attr-rec-of (ctx cell &optional owner)
+  "The ATTR-REC for attribute CELL, lazily synthesizing a null-namespace record
+   (localName = qualified name) for a plain attribute first reflected as an Attr."
+  (let ((rec (or (gethash cell (context-attr-recs ctx))
+                 (setf (gethash cell (context-attr-recs ctx))
+                       (make-attr-rec :cell cell :local (car cell) :owner owner)))))
+    (when (and owner (null (attr-rec-owner rec))) (setf (attr-rec-owner rec) owner))
+    rec))
+
+(defun cell-ns/local (ctx cell)
+  "(values namespace localName) for attribute CELL (defaults: null ns, qname)."
+  (let ((rec (gethash cell (context-attr-recs ctx))))
+    (if rec (values (attr-rec-ns rec) (attr-rec-local rec))
+        (values nil (car cell)))))
+
+(defun find-attr-ns (ctx el ns local)
+  "First attribute cons of EL matching NS (may be NIL) and localName LOCAL."
+  (loop for cell in (h:dnode-attrs el)
+        do (multiple-value-bind (cns cl) (cell-ns/local ctx cell)
+             (when (and (equal cns ns) (equal cl local)) (return cell)))))
+
+(defun find-attr-qname (el qname)
+  "First attribute cons of EL whose qualified name is QNAME (case-sensitive)."
+  (assoc qname (h:dnode-attrs el) :test #'string=))
+
+(defun html-doc-p (ctx doc)
+  "T if DOC is an HTML document (contentType text/html) — governs createAttribute
+   ASCII-lowercasing (DOM §)."
+  (equal (or (gethash doc (context-doc-content-types ctx)) "text/html") "text/html"))
+
+(defun node-document (ctx node)
+  "The node document of NODE — its recorded owner (created-but-detached) or the
+   :document root of its tree."
+  (or (gethash node (context-owner-docs ctx))
+      (loop for a = node then (h:dnode-parent a)
+            when (or (null a) (eq (h:dnode-kind a) :document)) return a)))
+
+(defun element-real-ns (ctx el)
+  "EL's real namespace URI (from createElementNS ns-info, else the coarse kind)."
+  (let ((info (gethash el (context-ns-info ctx))))
+    (cond (info (getf info :ns))
+          ((eq (h:dnode-namespace el) :html) *html-ns*)
+          ((eq (h:dnode-namespace el) :svg) "http://www.w3.org/2000/svg")
+          (t nil))))
+
+(defun html-attr-el-p (ctx el)
+  "T if EL is an HTML-namespace element in an HTML document — the case where
+   setAttribute/getAttribute/hasAttribute ASCII-lowercase the qualified name and
+   the NamedNodeMap omits mixed-case supported property names (DOM §)."
+  (and (equal (element-real-ns ctx el) *html-ns*)
+       (html-doc-p ctx (node-document ctx el))))
+
+(defun adjust-qname (ctx el name)
+  "The lookup/store qualified name: ASCII-lowercased for an HTML element, else
+   verbatim (XML/SVG attribute names are case-sensitive)."
+  (let ((name (jstr name)))
+    (if (html-attr-el-p ctx el) (string-downcase name) name)))
+
+(defun some-upper-ascii-p (s) (some (lambda (c) (char<= #\A c #\Z)) s))
+
+(defun supported-attr-names (ctx el)
+  "NamedNodeMap supported property names (DOM §): the qualified names in order,
+   de-duplicated, with mixed-case names omitted for an HTML element."
+  (let ((html (html-attr-el-p ctx el)) (seen '()) (out '()))
+    (dolist (c (h:dnode-attrs el) (nreverse out))
+      (let ((q (car c)))
+        (unless (or (member q seen :test #'string=) (and html (some-upper-ascii-p q)))
+          (push q seen) (push q out))))))
+
+(defun validate-extract (ctx ns qname)
+  "DOM 'validate and extract' (§validate-and-extract): (values namespace prefix
+   localName) for QNAME in NS.  A qualified name that does not match the QName
+   production throws InvalidCharacterError; a namespace-well-formedness violation
+   throws NamespaceError."
+  (let* ((ns (ns-arg ns)) (qname (jstr qname))
+         (colon (position #\: qname)))
+    ;; QName production (structural): non-empty, no leading/trailing colon, one colon.
+    (when (or (zerop (length qname))
+              (and colon (or (zerop colon) (= colon (1- (length qname)))
+                             (position #\: qname :start (1+ colon)))))
+      (throw-dom ctx "InvalidCharacterError" 5 "not a valid qualified name"))
+    (let ((prefix (and colon (subseq qname 0 colon)))
+          (local (if colon (subseq qname (1+ colon)) qname)))
+      (when (or (and prefix (null ns))
+                (and (equal prefix "xml") (not (equal ns "http://www.w3.org/XML/1998/namespace")))
+                (and (or (equal qname "xmlns") (equal prefix "xmlns"))
+                     (not (equal ns "http://www.w3.org/2000/xmlns/")))
+                (and (equal ns "http://www.w3.org/2000/xmlns/")
+                     (not (or (equal qname "xmlns") (equal prefix "xmlns")))))
+        (throw-dom ctx "NamespaceError" 14 "namespace well-formedness violation"))
+      (values ns prefix local))))
+
+(defun set-attr-ns (ctx el ns qname value)
+  "The setAttributeNS core: validate+extract, then set the (ns,local) attribute's
+   value — updating in place or appending a new cons (DOM §setAttributeNS)."
+  (multiple-value-bind (ns prefix local) (validate-extract ctx ns qname)
+    (let ((cell (find-attr-ns ctx el ns local)))
+      (if cell
+          (setf (cdr cell) (jstr value))
+          (let ((c (cons (jstr qname) (jstr value))))
+            (setf (h:dnode-attrs el) (append (h:dnode-attrs el) (list c)))
+            (setf (gethash c (context-attr-recs ctx))
+                  (make-attr-rec :cell c :ns ns :prefix prefix :local local :owner el))))
+      (setf (context-dirty ctx) t))))
+
+(defun detach-attr-cell (ctx el cell)
+  "Remove attribute CELL from EL, clearing its Attr wrapper's owner."
+  (setf (h:dnode-attrs el) (remove cell (h:dnode-attrs el) :test #'eq))
+  (let ((rec (gethash cell (context-attr-recs ctx))))
+    (when rec (setf (attr-rec-owner rec) nil)))
+  (setf (context-dirty ctx) t))
+
+;;; ---- Attr wrapper + prototype ---------------------------------------------
+(defun wrap-attr (ctx cell &optional owner)
+  "The JS Attr wrapper for attribute CELL, memoized on the cons (Attr identity)."
+  (let ((rec (attr-rec-of ctx cell owner)))
+    (or (gethash cell (context-attr-objs ctx))
+        (let ((o (js:make-object :proto (proto ctx :attr))))
+          (setf (gethash cell (context-attr-objs ctx)) o
+                (gethash o (context-attr-of ctx)) rec)
+          o))))
+
+(defun attr-rec-arg (ctx this)
+  (or (gethash this (context-attr-of ctx))
+      (js:js-throw (js:make-native-error "TypeError" "not an Attr"))))
+
+(defun install-attr-proto (ctx ap)
+  (macrolet ((rec (this) `(attr-rec-arg ctx ,this)))
+    (defget ctx ap "nodeType" (this) (declare (ignore this)) (num 2))
+    (flet ((qname (r) (car (attr-rec-cell r))))
+      (defget ctx ap "name" (this) (qname (rec this)))
+      (defget ctx ap "nodeName" (this) (qname (rec this))))
+    (defget ctx ap "localName" (this) (attr-rec-local (rec this)))
+    (defget ctx ap "prefix" (this) (opt (attr-rec-prefix (rec this))))
+    (defget ctx ap "namespaceURI" (this) (opt (attr-rec-ns (rec this))))
+    (defget ctx ap "specified" (this) (declare (ignore this)) js:*true*)
+    (defget ctx ap "ownerElement" (this) (wrap ctx (attr-rec-owner (rec this))))
+    (defget ctx ap "ownerDocument" (this)
+      (let ((o (attr-rec-owner (rec this))))
+        (wrap ctx (and o (or (gethash o (context-owner-docs ctx)) (context-document ctx))))))
+    (flet ((getv (this) (cdr (attr-rec-cell (rec this))))
+           (setv (this v) (let ((r (rec this)))
+                            (setf (cdr (attr-rec-cell r)) (jstr v))
+                            (when (attr-rec-owner r) (setf (context-dirty ctx) t)))))
+      (defgetset ctx ap "value" (this) (getv this) (v) (setv this v))
+      (defgetset ctx ap "nodeValue" (this) (getv this) (v) (setv this v))
+      (defgetset ctx ap "textContent" (this) (getv this) (v) (setv this v)))))
+
+;;; ---- NamedNodeMap (element.attributes) ------------------------------------
+(defun make-attr-map (ctx el)
+  "A live NamedNodeMap over EL's attributes (DOM §NamedNodeMap): indexed Attr
+   access, .length, and named access to an Attr by qualified name (shadowed by any
+   prototype member — item/getNamedItem/… live on NamedNodeMap.prototype so
+   `map.item === NamedNodeMap.prototype.item`).  The map -> element link rides
+   CONTEXT-OBJ-NODES so the shared prototype methods recover EL from `this`."
+  (let ((m (js:make-host-object (context-realm ctx)
+             :proto (proto ctx :namednodemap)
+             :get (lambda (o key rcv) (declare (ignore rcv))
+                    (let ((key (js:to-property-key key)))
+                      (cond
+                        ((and (stringp key) (string= key "length"))
+                         (num (length (h:dnode-attrs el))))
+                        ;; any member on the prototype chain shadows named access
+                        ((and (stringp key) (js:js-has (js:js-object-proto o) key))
+                         (js:js-get (js:js-object-proto o) key o))
+                        ((index-string-p key)
+                         (let ((l (h:dnode-attrs el)) (i (parse-integer key)))
+                           (if (< i (length l)) (wrap-attr ctx (nth i l) el) js:*undefined*)))
+                        ((and (stringp key) (find-attr-qname el key))
+                         (wrap-attr ctx (find-attr-qname el key) el))
+                        (t (js:js-get (js:js-object-proto o) key o)))))
+             :has (lambda (o key)
+                    (let ((key (js:to-property-key key)))
+                      (or (and (stringp key) (string= key "length"))
+                          (and (index-string-p key) (< (parse-integer key) (length (h:dnode-attrs el))))
+                          (and (stringp key) (find-attr-qname el key) t)
+                          (js:js-has (js:js-object-proto o) key))))
+             ;; own keys: the indices, then the supported property names (DOM §)
+             :own-keys (lambda (o) (declare (ignore o))
+                         (append (loop for i from 0 below (length (h:dnode-attrs el))
+                                       collect (princ-to-string i))
+                                 (supported-attr-names ctx el))))))
+    ;; [[GetOwnProperty]]: indices are enumerable data props; supported named
+    ;; properties are non-enumerable (NamedNodeMap has [LegacyUnenumerableNamedProperties]).
+    (setf (getf (js::js-object-internal m) :get-own-property)
+          (lambda (o key) (declare (ignore o))
+            (let ((l (h:dnode-attrs el)))
+              (cond
+                ((and (index-string-p key) (< (parse-integer key) (length l)))
+                 (js::make-prop :value (wrap-attr ctx (nth (parse-integer key) l) el)
+                                :enumerable t :configurable t :writable nil))
+                ((and (stringp key) (member key (supported-attr-names ctx el) :test #'string=))
+                 (js::make-prop :value (wrap-attr ctx (find-attr-qname el key) el)
+                                :enumerable nil :configurable t :writable nil))
+                (t nil)))))
+    (setf (gethash m (context-obj-nodes ctx)) el)   ; map -> element, for the prototype methods
+    m))
+
+(defun install-namednodemap-proto (ctx np)
+  (macrolet ((el (this) `(require-node ctx ,this)))
+    (defmethod* ctx np "item" 1 (this a)
+      (let ((l (h:dnode-attrs (el this))) (i (int-arg a 0)))
+        (if (< -1 i (length l)) (wrap-attr ctx (nth i l) (el this)) js:*null*)))
+    (defmethod* ctx np "getNamedItem" 1 (this a)
+      (let ((c (find-attr-qname (el this) (jstr (arg a 0)))))
+        (if c (wrap-attr ctx c (el this)) js:*null*)))
+    (defmethod* ctx np "getNamedItemNS" 2 (this a)
+      (let ((c (find-attr-ns ctx (el this) (ns-arg (arg a 0)) (jstr (arg a 1)))))
+        (if c (wrap-attr ctx c (el this)) js:*null*)))
+    (defmethod* ctx np "setNamedItem" 1 (this a) (attr-map-set ctx (el this) (arg a 0)))
+    (defmethod* ctx np "setNamedItemNS" 1 (this a) (attr-map-set ctx (el this) (arg a 0)))
+    (defmethod* ctx np "removeNamedItem" 1 (this a)
+      (let* ((e (el this)) (c (find-attr-qname e (jstr (arg a 0)))))
+        (unless c (throw-dom ctx "NotFoundError" 8 "no such attribute"))
+        (let ((w (wrap-attr ctx c e))) (detach-attr-cell ctx e c) w)))
+    (defmethod* ctx np "removeNamedItemNS" 2 (this a)
+      (let* ((e (el this)) (c (find-attr-ns ctx e (ns-arg (arg a 0)) (jstr (arg a 1)))))
+        (unless c (throw-dom ctx "NotFoundError" 8 "no such attribute"))
+        (let ((w (wrap-attr ctx c e))) (detach-attr-cell ctx e c) w)))))
+
+(defun attr-map-set (ctx el attr-obj)
+  "NamedNodeMap.setNamedItem / Element.setAttributeNode: attach ATTR-OBJ to EL,
+   replacing a same-(namespace,localName) attribute and returning the old Attr
+   (or null)."
+  (let ((rec (gethash attr-obj (context-attr-of ctx))))
+    (unless rec (js:js-throw (js:make-native-error "TypeError" "not an Attr")))
+    (when (and (attr-rec-owner rec) (not (eq (attr-rec-owner rec) el)))
+      (throw-dom ctx "InUseAttributeError" 10 "attribute in use"))
+    (let* ((cell (attr-rec-cell rec))
+           (old (find-attr-ns ctx el (attr-rec-ns rec) (attr-rec-local rec))))
+      (cond ((eq old cell) (wrap-attr ctx cell el))  ; already set — no-op
+            (old ;; replace OLD in place (setAttributeNode keeps attribute order)
+             (let ((w (wrap-attr ctx old el)) (tail (member old (h:dnode-attrs el) :test #'eq)))
+               (setf (car tail) cell)                 ; splice CELL into OLD's slot
+               (let ((r (gethash old (context-attr-recs ctx))))
+                 (when r (setf (attr-rec-owner r) nil)))
+               (setf (attr-rec-owner rec) el (context-dirty ctx) t)
+               w))
+            (t (setf (h:dnode-attrs el) (append (h:dnode-attrs el) (list cell)))
+               (setf (attr-rec-owner rec) el (context-dirty ctx) t)
+               js:*null*)))))
+
+(defun make-standalone-attr (ctx ns qname)
+  "document.createAttribute[NS]: a detached Attr (owner NIL)."
+  (multiple-value-bind (ns prefix local)
+      (if ns (validate-extract ctx ns qname)
+          (progn (when (zerop (length (jstr qname)))
+                   (throw-dom ctx "InvalidCharacterError" 5 "empty attribute name"))
+                 (values nil nil (jstr qname))))
+    (let ((c (cons (jstr qname) "")))
+      (setf (gethash c (context-attr-recs ctx))
+            (make-attr-rec :cell c :ns ns :prefix prefix :local local :owner nil))
+      (wrap-attr ctx c))))
 
 ;;; ---- checkbox/radio checkedness -------------------------------------------
 ;;; Live checkedness is tracked in a reserved `weft-checked` attribute (so the
@@ -840,25 +1113,82 @@ of the other)."
             js:*null*)))
 
     (defmethod* ctx ep "getAttribute" 1 (this a)
-      (let ((name (jstr (arg a 0))))
-        (if (internal-attr-p name) js:*null* (opt (get-attr (n this) name)))))
+      (let* ((el (n this)) (name (adjust-qname ctx el (arg a 0))))
+        (if (internal-attr-p name) js:*null* (opt (dom:get-attribute el name)))))
     (defmethod* ctx ep "setAttribute" 2 (this a)
-      (let ((name (jstr (arg a 0))))
+      (let* ((el (n this)) (raw (jstr (arg a 0))) (name (adjust-qname ctx el raw)))
+        (when (zerop (length raw))
+          (throw-dom ctx "InvalidCharacterError" 5 "empty attribute name"))
         (unless (internal-attr-p name)
-          (set-attr (n this) name (arg a 1)) (setf (context-dirty ctx) t)
+          (let ((cell (find-attr-qname el name)) (v (jstr (arg a 1))))
+            (if cell (setf (cdr cell) v)
+                (setf (h:dnode-attrs el) (append (h:dnode-attrs el) (list (cons name v))))))
+          (setf (context-dirty ctx) t)
           (when (on-event-attr-p name)
-            (register-inline-handler ctx (n this) name (jstr (arg a 1))))))
+            (register-inline-handler ctx el name (jstr (arg a 1))))))
       js:*undefined*)
     (defmethod* ctx ep "removeAttribute" 1 (this a)
-      (let ((name (jstr (arg a 0))))
+      (let* ((el (n this)) (name (adjust-qname ctx el (arg a 0))))
         (unless (internal-attr-p name)
-          (remove-attr (n this) name) (setf (context-dirty ctx) t)))
+          (let ((cell (find-attr-qname el name)))
+            (when cell (detach-attr-cell ctx el cell)))))
       js:*undefined*)
+    (defmethod* ctx ep "toggleAttribute" 2 (this a)
+      ;; DOM §toggleAttribute: add/remove a null-namespace attribute; the optional
+      ;; FORCE pins the direction.  Returns whether the attribute is present after.
+      (let* ((el (n this)) (raw (jstr (arg a 0))) (lname (adjust-qname ctx el raw))
+             (has (nthcdr 1 a)) (force (and has (truthy (arg a 1)))))
+        (when (zerop (length raw))
+          (throw-dom ctx "InvalidCharacterError" 5 "empty attribute name"))
+        (if (internal-attr-p lname)
+            js:*false*
+            (let ((cell (find-attr-qname el lname)))
+              (cond (cell (cond ((and has force) js:*true*)
+                                (t (detach-attr-cell ctx el cell) js:*false*)))
+                    ((and has (not force)) js:*false*)
+                    (t (setf (h:dnode-attrs el) (append (h:dnode-attrs el) (list (cons lname ""))))
+                       (setf (context-dirty ctx) t) js:*true*))))))
     (defmethod* ctx ep "hasAttribute" 1 (this a)
-      (let ((name (attr-name (arg a 0))))
-        (jbool (and (not (internal-attr-p name)) (dom:has-attribute (n this) name)))))
+      (let* ((el (n this)) (name (adjust-qname ctx el (arg a 0))))
+        (jbool (and (not (internal-attr-p name)) (dom:has-attribute el name)))))
     (defmethod* ctx ep "hasAttributes" 0 (this a)
       (jbool (and (h:dnode-attrs (n this)) t)))
+    (defget ctx ep "attributes" (this)
+      (let ((existing (js:js-get this "__weft_attrs")))
+        (if (js:js-object-p existing) existing
+            (let ((m (make-attr-map ctx (n this))))
+              (js:put this "__weft_attrs" m :enumerable nil :configurable t) m))))
+    (defmethod* ctx ep "getAttributeNames" 0 (this a)
+      (js::make-array-object (loop for c in (h:dnode-attrs (n this)) collect (car c))))
+    (defmethod* ctx ep "getAttributeNS" 2 (this a)
+      (let ((c (find-attr-ns ctx (n this) (ns-arg (arg a 0)) (jstr (arg a 1)))))
+        (if c (opt (cdr c)) js:*null*)))
+    (defmethod* ctx ep "setAttributeNS" 3 (this a)
+      (let ((el (n this)))
+        (set-attr-ns ctx el (arg a 0) (jstr (arg a 1)) (arg a 2))
+        (when (on-event-attr-p (jstr (arg a 1)))
+          (register-inline-handler ctx el (jstr (arg a 1)) (jstr (arg a 2)))))
+      js:*undefined*)
+    (defmethod* ctx ep "hasAttributeNS" 2 (this a)
+      (jbool (find-attr-ns ctx (n this) (ns-arg (arg a 0)) (jstr (arg a 1)))))
+    (defmethod* ctx ep "removeAttributeNS" 2 (this a)
+      (let ((c (find-attr-ns ctx (n this) (ns-arg (arg a 0)) (jstr (arg a 1)))))
+        (when c (detach-attr-cell ctx (n this) c)))
+      js:*undefined*)
+    (defmethod* ctx ep "getAttributeNode" 1 (this a)
+      (let ((c (find-attr-qname (n this) (attr-name (arg a 0)))))
+        (if c (wrap-attr ctx c (n this)) js:*null*)))
+    (defmethod* ctx ep "getAttributeNodeNS" 2 (this a)
+      (let ((c (find-attr-ns ctx (n this) (ns-arg (arg a 0)) (jstr (arg a 1)))))
+        (if c (wrap-attr ctx c (n this)) js:*null*)))
+    (defmethod* ctx ep "setAttributeNode" 1 (this a) (attr-map-set ctx (n this) (arg a 0)))
+    (defmethod* ctx ep "setAttributeNodeNS" 1 (this a) (attr-map-set ctx (n this) (arg a 0)))
+    (defmethod* ctx ep "removeAttributeNode" 1 (this a)
+      (let* ((el (n this)) (rec (gethash (arg a 0) (context-attr-of ctx)))
+             (cell (and rec (attr-rec-cell rec))))
+        (unless (and cell (member cell (h:dnode-attrs el) :test #'eq))
+          (throw-dom ctx "NotFoundError" 8 "attribute not found"))
+        (let ((w (wrap-attr ctx cell el))) (detach-attr-cell ctx el cell) w)))
     (defmethod* ctx ep "getElementsByTagName" 1 (this a)
       (let ((node (n this)) (tag (string-downcase (jstr (arg a 0)))))
         (make-collection ctx (lambda ()
@@ -1162,6 +1492,13 @@ of the other)."
           (new-node ctx this el))))
     (defmethod* ctx dp "createTextNode" 1 (this a) (new-node ctx this (h:make-text (jstr (arg a 0))))) 
     (defmethod* ctx dp "createComment" 1 (this a) (new-node ctx this (h:make-comment (jstr (arg a 0)))))
+    (defmethod* ctx dp "createAttribute" 1 (this a)
+      (let ((name (jstr (arg a 0))))
+        (when (zerop (length name))
+          (throw-dom ctx "InvalidCharacterError" 5 "empty attribute name"))
+        (make-standalone-attr ctx nil (if (html-doc-p ctx (n this)) (string-downcase name) name))))
+    (defmethod* ctx dp "createAttributeNS" 2 (this a)
+      (make-standalone-attr ctx (arg a 0) (jstr (arg a 1))))
     (defmethod* ctx dp "createCDATASection" 1 (this a)
       ;; DOM §Document: HTML documents cannot hold CDATA sections.
       (let ((s (jstr (arg a 0))))
@@ -1241,7 +1578,9 @@ of the other)."
               (let ((dtn (node-of ctx dt)))
                 (when dtn (h:dom-append d dtn)
                       (setf (gethash dtn (context-owner-docs ctx)) d))))  ; adopt the doctype
-            (unless (nullish qn)
+            ;; An empty (or absent) qualifiedName yields a document with no
+            ;; document element (DOM §createDocument step "if not the empty string").
+            (unless (or (nullish qn) (zerop (length (jstr qn))))
               (unless (valid-qname-p (jstr qn))
                 (throw-dom ctx "InvalidCharacterError" 5 "invalid qualified name"))
               (let ((el (h:make-element (jstr qn))))

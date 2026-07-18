@@ -37,6 +37,9 @@
   (traversal (make-hash-table :test 'eq))   ; NodeIterator/TreeWalker wrapper -> its state
   (ranges (make-hash-table :test 'eq))      ; Range wrapper -> its RG struct
   (ns-info (make-hash-table :test 'eq))     ; element dnode -> (:ns uri :prefix p :local l) for createElementNS
+  (attr-recs (make-hash-table :test 'eq))   ; attribute cons-cell (qname . value) -> ATTR-REC (namespace/owner metadata)
+  (attr-objs (make-hash-table :test 'eq))   ; attribute cons-cell -> its JS Attr wrapper (identity)
+  (attr-of (make-hash-table :test 'eq))     ; JS Attr wrapper -> its ATTR-REC
   (owner-docs (make-hash-table :test 'eq))  ; created node -> its owner document (even while detached)
   (doc-content-types (make-hash-table :test 'eq)) ; document dnode -> its contentType (default text/html)
   (input-values (make-hash-table :test 'eq)) ; <input> node -> its independent value property

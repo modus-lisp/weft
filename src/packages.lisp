@@ -30,6 +30,7 @@
            #:dnode-public #:dnode-system
            ;; node constructors + mutation kernel (the DOM-scripting seam)
            #:make-element #:make-text #:make-comment #:make-fragment #:make-doctype
+           #:make-cdata #:make-processing-instruction
            #:dom-append #:dom-insert-before #:dom-remove
            #:dom-last-child #:dom-prev-sibling))
 

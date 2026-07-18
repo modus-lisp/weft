@@ -61,6 +61,9 @@ If REF is NIL, append.  Used for foster parenting."
   (%dnode :kind :element :name name :attrs attrs :namespace ns))
 (defun make-text (data) (%dnode :kind :text :data data))
 (defun make-comment (data) (%dnode :kind :comment :data data))
+(defun make-cdata (data) (%dnode :kind :cdata :data data))
+(defun make-processing-instruction (target data)
+  (%dnode :kind :processing-instruction :name target :data data))
 (defun make-fragment () (%dnode :kind :fragment))
 (defun make-doctype (name &optional public system)
   (%dnode :kind :doctype :name name :public public :system system))
@@ -80,6 +83,11 @@ If REF is NIL, append.  Used for foster parenting."
          (format out " \"~a\" \"~a\"" (or (dnode-public node) "") (or (dnode-system node) "")))
        (format out ">~%"))
       (:comment (format out "| ~a<!-- ~a -->~%" pad (or (dnode-data node) "")))
+      (:cdata (format out "| ~a<![CDATA[~a]]>~%" pad (or (dnode-data node) "")))
+      (:processing-instruction
+       (format out "| ~a<?~a ~a>~%" pad (or (dnode-name node) "") (or (dnode-data node) "")))
+      (:fragment
+       (loop for ch across (dnode-children node) do (serialize-node ch depth out)))
       (:text (format out "| ~a\"~a\"~%" pad (or (dnode-data node) "")))   ; raw (no escaping)
       (:element
        (format out "| ~a<~a~a>~%" pad (%ns-prefix (dnode-namespace node)) (dnode-name node))

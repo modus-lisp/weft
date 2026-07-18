@@ -76,8 +76,9 @@
 (defun proto-key-for (node)
   (case (h:dnode-kind node)
     (:element (if (eq (h:dnode-namespace node) :svg) :svg-element :element))
-    (:document :document) (:text :text)
-    (:comment :comment) (:fragment :fragment) (:doctype :doctype) (t :node)))
+    (:document :document) (:text :text) (:cdata :text)
+    (:comment :comment) (:processing-instruction :text)
+    (:fragment :fragment) (:doctype :doctype) (t :node)))
 
 (defun wrap (ctx node)
   "The JS wrapper for weft NODE, memoized (DOM object identity). NIL -> JS null."

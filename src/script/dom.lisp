@@ -225,6 +225,93 @@
       (walk root))
     (nreverse out)))
 
+;;; ---- DOMTokenList (classList) ---------------------------------------------
+(defun ascii-ws-p (c) (member c '(#\Space #\Tab #\Newline #\Return #\Page)))
+
+(defun split-tokens (string)
+  "Split STRING on ASCII whitespace into a list of non-empty tokens (order kept)."
+  (when string
+    (loop with n = (length string) with i = 0 with out = '()
+          while (< i n)
+          do (loop while (and (< i n) (ascii-ws-p (char string i))) do (incf i))
+             (let ((start i))
+               (loop while (and (< i n) (not (ascii-ws-p (char string i)))) do (incf i))
+               (when (> i start) (push (subseq string start i) out)))
+          finally (return (nreverse out)))))
+
+(defun ordered-set (tokens)
+  "The ordered set: TOKENS deduped, first occurrence kept (DOM §ordered sets)."
+  (let ((seen (make-hash-table :test 'equal)) (out '()))
+    (dolist (tk tokens (nreverse out))
+      (unless (gethash tk seen) (setf (gethash tk seen) t) (push tk out)))))
+
+(defun make-class-list (ctx node)
+  "A live DOMTokenList over NODE's class attribute (DOM §DOMTokenList): reads and
+   writes the attribute on every operation so it always reflects the current value."
+  (let* ((realm (context-realm ctx))
+         (op (js:eval-script realm "Object.prototype"))
+         (tl (js:make-object :proto op)))
+    (labels ((toks () (ordered-set (split-tokens (get-attr node "class"))))
+             (store (list)
+               (set-attr node "class" (format nil "~{~a~^ ~}" list))
+               (setf (context-dirty ctx) t))
+             (check (tk)
+               (when (zerop (length tk))
+                 (throw-dom ctx "SyntaxError" 12 "empty token"))
+               (when (some #'ascii-ws-p tk)
+                 (throw-dom ctx "InvalidCharacterError" 5 "token contains whitespace"))
+               tk)
+             (meth (name arity fn) (js:put tl name (js:native-function realm name fn arity)
+                                           :enumerable nil)))
+      (js:put-accessor tl "length"
+        :get (js:native-function realm "get length"
+               (lambda (this ig) (declare (ignore this ig)) (num (length (toks)))) 0)
+        :enumerable t :configurable t)
+      (js:put-accessor tl "value"
+        :get (js:native-function realm "get value"
+               (lambda (this ig) (declare (ignore this ig)) (or (get-attr node "class") "")) 0)
+        :set (js:native-function realm "set value"
+               (lambda (this a) (declare (ignore this)) (set-attr node "class" (jstr (arg a 0)))
+                 (setf (context-dirty ctx) t) js:*undefined*) 1)
+        :enumerable t :configurable t)
+      (meth "item" 1 (lambda (this a) (declare (ignore this))
+                       (let* ((i (truncate (js:to-number (arg a 0)))) (ts (toks)))
+                         (if (and (>= i 0) (< i (length ts))) (nth i ts) js:*null*))))
+      (meth "contains" 1 (lambda (this a) (declare (ignore this))
+                           (jbool (member (jstr (arg a 0)) (toks) :test #'string=))))
+      (meth "add" 1 (lambda (this a) (declare (ignore this))
+                      (let ((ts (toks)))
+                        (dolist (x a) (let ((tk (check (jstr x))))
+                                        (unless (member tk ts :test #'string=)
+                                          (setf ts (append ts (list tk))))))
+                        (store ts) js:*undefined*)))
+      (meth "remove" 1 (lambda (this a) (declare (ignore this))
+                         (let ((ts (toks)))
+                           (dolist (x a) (setf ts (remove (check (jstr x)) ts :test #'string=)))
+                           (store ts) js:*undefined*)))
+      (meth "toggle" 2 (lambda (this a) (declare (ignore this))
+                         (let* ((tk (check (jstr (arg a 0)))) (ts (toks))
+                                (present (member tk ts :test #'string=))
+                                (force-given (> (length a) 1)) (force (js:js-truthy (arg a 1))))
+                           (cond ((and present (or (not force-given) (not force)))
+                                  (store (remove tk ts :test #'string=)) js:*false*)
+                                 ((and (not present) (or (not force-given) force))
+                                  (store (append ts (list tk))) js:*true*)
+                                 (t (jbool present))))))
+      (meth "replace" 2 (lambda (this a) (declare (ignore this))
+                          (let* ((old (check (jstr (arg a 0)))) (new (check (jstr (arg a 1))))
+                                 (ts (toks)))
+                            (if (member old ts :test #'string=)
+                                (progn (store (ordered-set (substitute new old ts :test #'string=)))
+                                       js:*true*)
+                                js:*false*))))
+      (meth "toString" 0 (lambda (this a) (declare (ignore this a)) (or (get-attr node "class") "")))
+      (meth "forEach" 1 (lambda (this a) (declare (ignore this))
+                          (let ((cb (arg a 0)) (i 0))
+                            (dolist (tk (toks)) (js:js-call cb (arg a 1) (list tk (num i) tl)) (incf i)))
+                          js:*undefined*))
+      tl)))
+
 ;;; ---- attributes -----------------------------------------------------------
 (defun attr-name (name) (string-downcase (jstr name)))
 (defun get-attr (node name) (dom:get-attribute node (attr-name name)))
@@ -446,6 +533,14 @@
       (v) (progn (set-attr (n this) "id" v) (setf (context-dirty ctx) t)))
     (defgetset ctx ep "className" (this) (or (get-attr (n this) "class") "")
       (v) (progn (set-attr (n this) "class" v) (setf (context-dirty ctx) t)))
+    ;; classList: a live DOMTokenList (DOM §Element), memoized on the wrapper so
+    ;; el.classList === el.classList (SameObject) holds.
+    (defget ctx ep "classList" (this)
+      (let ((existing (js:js-get this "__weft_classList")))
+        (if (js:js-object-p existing) existing
+            (let ((tl (make-class-list ctx (n this))))
+              (js:put this "__weft_classList" tl :enumerable nil :configurable t)
+              tl))))
     ;; Reflected IDL attributes whose property name differs from the content
     ;; attribute (DOM2 HTML): htmlFor<->for, httpEquiv<->http-equiv.
     (defgetset ctx ep "name" (this) (or (get-attr (n this) "name") "")

@@ -110,6 +110,24 @@
       (iface "Attr" :attr)
       (iface "NamedNodeMap" :namednodemap)
       (iface "DOMImplementation" :domimplementation)
+      ;; HTMLElement / HTMLUnknownElement / per-tag interfaces (HTML §): abstract
+      ;; constructors whose .prototype links the wrapper chain so instanceof works.
+      ;; HTMLElement's constructor inherits Element's; each specific one inherits
+      ;; HTMLElement's, matching WebIDL interface-object inheritance.
+      (let ((element-ctor (js:eval-script realm "Element"))
+            (htmlelement-ctor nil))
+        (dolist (pair (getf (context-protos ctx) :html-ifaces))
+          (let* ((name (car pair)) (protoobj (cdr pair))
+                 (f (js:native-function realm name
+                      (lambda (this args) (declare (ignore this args))
+                        (js:js-throw (js:make-native-error "TypeError" "Illegal constructor")))
+                      0)))
+            (js:put f "prototype" protoobj :enumerable nil :writable nil :configurable nil)
+            (js:put protoobj "constructor" f :enumerable nil :writable t :configurable t)
+            (when (string= name "HTMLElement") (setf htmlelement-ctor f))
+            (setf (js:js-object-proto f) (if (string= name "HTMLElement") element-ctor
+                                             (or htmlelement-ctor element-ctor)))
+            (js:define-global realm name f))))
       ;; Constructable node interfaces (DOM §Document/Text/Comment/DocumentFragment).
       (iface "Document" :document
              (lambda (this args) (declare (ignore this args))
@@ -254,7 +272,11 @@
   function fetch(u,o){return Promise.reject(new TypeError('Failed to fetch (static render)'));}
   G.fetch=fetch;
   function DOMParser(){}
-  DOMParser.prototype.parseFromString=function(str,type){return __weft_parse_document(String(str),String(type==null?'text/html':type));};
+  var DP_TYPES={'text/html':1,'text/xml':1,'application/xml':1,'application/xhtml+xml':1,'image/svg+xml':1};
+  DOMParser.prototype.parseFromString=function(str,type){
+    var t=String(type);
+    if(!DP_TYPES[t])throw new TypeError('The provided value is not a valid enum value of type SupportedType.');
+    return __weft_parse_document(String(str),t);};
   G.DOMParser=DOMParser;
   // DOMException (WebIDL): a real interface so `e instanceof DOMException` and
   // testharness's `e.constructor === DOMException` (assert_throws_dom) hold.
@@ -273,6 +295,63 @@
    'Document','Text','Comment','DocumentFragment'].forEach(function(nm){if(typeof G[nm]==='function')G[nm]=mkctor(G[nm]);});
 })(globalThis);")
     docobj))
+
+;;; The HTML element interface map (HTML §"Elements in the DOM"): each specific
+;;; interface owns a set of tag names; every other known tag uses HTMLElement and
+;;; unknown/custom tags use HTMLUnknownElement.
+(defparameter *html-tag-interfaces*
+  '(("HTMLHtmlElement" "html") ("HTMLHeadElement" "head") ("HTMLTitleElement" "title")
+    ("HTMLBaseElement" "base") ("HTMLLinkElement" "link") ("HTMLMetaElement" "meta")
+    ("HTMLStyleElement" "style") ("HTMLBodyElement" "body")
+    ("HTMLHeadingElement" "h1" "h2" "h3" "h4" "h5" "h6")
+    ("HTMLParagraphElement" "p") ("HTMLHRElement" "hr")
+    ("HTMLPreElement" "pre" "listing" "xmp") ("HTMLQuoteElement" "blockquote" "q")
+    ("HTMLOListElement" "ol") ("HTMLUListElement" "ul") ("HTMLLIElement" "li")
+    ("HTMLDListElement" "dl") ("HTMLDivElement" "div") ("HTMLAnchorElement" "a")
+    ("HTMLDataElement" "data") ("HTMLTimeElement" "time") ("HTMLSpanElement" "span")
+    ("HTMLBRElement" "br") ("HTMLModElement" "ins" "del") ("HTMLPictureElement" "picture")
+    ("HTMLSourceElement" "source") ("HTMLImageElement" "img") ("HTMLIFrameElement" "iframe")
+    ("HTMLEmbedElement" "embed") ("HTMLObjectElement" "object") ("HTMLParamElement" "param")
+    ("HTMLVideoElement" "video") ("HTMLAudioElement" "audio") ("HTMLTrackElement" "track")
+    ("HTMLMapElement" "map") ("HTMLAreaElement" "area") ("HTMLTableElement" "table")
+    ("HTMLTableCaptionElement" "caption") ("HTMLTableColElement" "col" "colgroup")
+    ("HTMLTableSectionElement" "tbody" "thead" "tfoot") ("HTMLTableRowElement" "tr")
+    ("HTMLTableCellElement" "td" "th") ("HTMLFormElement" "form") ("HTMLLabelElement" "label")
+    ("HTMLInputElement" "input") ("HTMLButtonElement" "button") ("HTMLSelectElement" "select")
+    ("HTMLDataListElement" "datalist") ("HTMLOptGroupElement" "optgroup")
+    ("HTMLOptionElement" "option") ("HTMLTextAreaElement" "textarea")
+    ("HTMLOutputElement" "output") ("HTMLProgressElement" "progress") ("HTMLMeterElement" "meter")
+    ("HTMLFieldSetElement" "fieldset") ("HTMLLegendElement" "legend")
+    ("HTMLDetailsElement" "details") ("HTMLDialogElement" "dialog") ("HTMLScriptElement" "script")
+    ("HTMLTemplateElement" "template") ("HTMLSlotElement" "slot") ("HTMLCanvasElement" "canvas")
+    ("HTMLMenuElement" "menu") ("HTMLFontElement" "font") ("HTMLDirectoryElement" "dir")
+    ("HTMLFrameElement" "frame") ("HTMLFrameSetElement" "frameset") ("HTMLMarqueeElement" "marquee")))
+
+(defparameter *html-generic-tags*
+  '("abbr" "address" "article" "aside" "b" "bdi" "bdo" "cite" "code" "dd" "dfn"
+    "dt" "em" "figcaption" "figure" "footer" "header" "hgroup" "i" "kbd" "main"
+    "mark" "nav" "noscript" "rp" "rt" "ruby" "s" "samp" "section" "small" "strong"
+    "sub" "summary" "sup" "u" "var" "wbr" "acronym" "basefont" "big" "center"
+    "nobr" "noembed" "noframes" "plaintext" "strike" "tt")
+  "Known HTML tags whose interface is the generic HTMLElement.")
+
+(defun build-html-interfaces (ctx ep)
+  "Create the HTMLElement / HTMLUnknownElement / per-tag prototypes and register
+   them in CONTEXT-PROTOS.  Returns an alist of interface-name -> prototype so the
+   caller can expose each as a global interface object."
+  (let* ((hep (js:make-object :proto ep))    ; HTMLElement.prototype (<- Element)
+         (hup (js:make-object :proto hep))    ; HTMLUnknownElement.prototype (<- HTMLElement)
+         (tagmap (make-hash-table :test 'equal))
+         (ifaces (list (cons "HTMLElement" hep) (cons "HTMLUnknownElement" hup))))
+    (dolist (entry *html-tag-interfaces*)
+      (let ((proto (js:make-object :proto hep)))
+        (push (cons (car entry) proto) ifaces)
+        (dolist (tag (cdr entry)) (setf (gethash tag tagmap) proto))))
+    (dolist (tag *html-generic-tags*) (setf (gethash tag tagmap) hep))
+    (setf (getf (context-protos ctx) :html-element) hep
+          (getf (context-protos ctx) :html-unknown) hup
+          (getf (context-protos ctx) :html-tag-protos) tagmap)
+    (nreverse ifaces)))
 
 (defun make-context (document &key (css "") (width 800) (base "") loader)
   "Create a fresh scripting context for a parsed weft DOCUMENT: a realm with the
@@ -302,6 +381,9 @@
                 :fragment fp :event evp :doctype dtp :svg-element svgep :window window
                 :nodelist nlp :htmlcollection hcp :attr ap :namednodemap nnmp
                 :domimplementation dip))
+    ;; Per-tag HTML element interface prototypes (HTMLDivElement.prototype, …) so
+    ;; that `document.createElement('div') instanceof HTMLDivElement` holds.
+    (setf (getf (context-protos ctx) :html-ifaces) (build-html-interfaces ctx ep))
     (install-node-proto ctx np)
     (install-element-proto ctx ep)
     (install-svg-element-proto ctx svgep)

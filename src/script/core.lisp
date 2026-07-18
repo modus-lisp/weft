@@ -42,6 +42,7 @@
   (attr-of (make-hash-table :test 'eq))     ; JS Attr wrapper -> its ATTR-REC
   (owner-docs (make-hash-table :test 'eq))  ; created node -> its owner document (even while detached)
   (doc-content-types (make-hash-table :test 'eq)) ; document dnode -> its contentType (default text/html)
+  (blank-url-docs (make-hash-table :test 'eq)) ; document dnode -> t when its URL is "about:blank" (createHTMLDocument/createDocument)
   (input-values (make-hash-table :test 'eq)) ; <input> node -> its independent value property
   (on-handlers (make-hash-table :test 'eq))  ; node -> (equal hash "type" -> handler fn)
   (write-buffers (make-hash-table :test 'eq)) ; document node -> pending document.write buffer (open())
@@ -84,12 +85,20 @@
     (:comment :comment) (:processing-instruction :text)
     (:fragment :fragment) (:doctype :doctype) (t :node)))
 
+(defun wrapper-proto (ctx node)
+  "The JS prototype for NODE's wrapper.  Element wrappers get their per-tag HTML
+   interface prototype (HTMLDivElement.prototype, …); everything else keys off
+   PROTO-KEY-FOR."
+  (if (eq (h:dnode-kind node) :element)
+      (element-wrapper-proto ctx node)
+      (proto ctx (proto-key-for node))))
+
 (defun wrap (ctx node)
   "The JS wrapper for weft NODE, memoized (DOM object identity). NIL -> JS null."
   (cond ((null node) js:*null*)
         ((js:js-object-p node) node)   ; already a JS object (e.g. window as an event target)
         (t (or (gethash node (context-node-objs ctx))
-               (let ((obj (js:make-object :proto (proto ctx (proto-key-for node)))))
+               (let ((obj (js:make-object :proto (wrapper-proto ctx node))))
                  (setf (gethash node (context-node-objs ctx)) obj
                        (gethash obj (context-obj-nodes ctx)) node)
                  obj)))))

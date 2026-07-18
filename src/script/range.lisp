@@ -163,9 +163,13 @@
             (let ((clone (copy-dnode first-pc nil)))
               (h:dom-append frag clone)
               (append-frag-children (%range-cut sc so first-pc (node-len first-pc) movep) clone))))
-         ;; wholly-contained children
+         ;; wholly-contained children — each move fires a childList removal record
+         ;; on COMMON (DOM §extract/§delete run the "remove" algorithm per child).
          (dolist (child contained)
-           (if movep (progn (h:dom-remove child) (h:dom-append frag child))
+           (if movep (progn (mo-record-childlist common :removed (list child)
+                                                 :prev (node-prev-sibling child)
+                                                 :next (node-next-sibling child))
+                            (h:dom-remove child) (h:dom-append frag child))
                (h:dom-append frag (copy-dnode child t))))
          ;; last partially-contained node
          (cond
@@ -209,7 +213,10 @@
     (setf (h:dnode-data node) (subseq d 0 offset))
     (when parent
       (let ((ref (n-next-sib node)))
-        (if ref (h:dom-insert-before parent new ref) (h:dom-append parent new))))
+        (if ref (h:dom-insert-before parent new ref) (h:dom-append parent new))
+        ;; splitText inserts the new second half as NODE's next sibling — a
+        ;; childList addition record on the parent (DOM §Text.splitText step 7).
+        (mo-record-childlist parent :added (list new) :prev node :next ref)))
     ;; adjust every range boundary that falls in NODE past OFFSET, or in PARENT
     ;; after NODE's index (a child was inserted).
     (maphash (lambda (obj rr) (declare (ignore obj))
@@ -356,8 +363,16 @@
                (loop for ch across (h:dnode-children parent)
                      thereis (and (eq (h:dnode-kind ch) :element) (not (eq ch node)))))
       (throw-dom ctx "HierarchyRequestError" 3 "document can have only one element child"))
-    (dom-detach node)
-    (if ref (h:dom-insert-before parent node ref) (h:dom-append parent node))
+    ;; Range.insertNode inserts NODE into PARENT before REF (DOM §insert); a
+    ;; fragment contributes its children as the added nodes.
+    (let ((added (and (mo-recording-p)
+                      (if (eq (h:dnode-kind node) :fragment)
+                          (coerce (h:dnode-children node) 'list)
+                          (list node))))
+          (prev (and (mo-recording-p) (insert-back-sibling parent ref))))
+      (dom-detach node)
+      (if ref (h:dom-insert-before parent node ref) (h:dom-append parent node))
+      (when added (mo-record-childlist parent :added added :prev prev :next ref)))
     (setf (context-dirty ctx) t)))
 
 (defun install-range (ctx)

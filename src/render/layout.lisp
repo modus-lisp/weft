@@ -1404,6 +1404,12 @@ Returns (values lbox advance-height)."
                                   (t (- avail-w ml mr)))))
                     (when (numberp max-w) (setf bw (min bw (if border-box max-w (+ max-w pad-bord)))))
                     (when (numberp min-w) (setf bw (max bw (if border-box min-w (+ min-w pad-bord)))))
+                    ;; a table box is never narrower than its min-content inline size,
+                    ;; even under an explicit or max- constrained width (CSS 2.1 §17.5.2 /
+                    ;; css-tables-3): display:table with inline-size:30px but a 60px cell
+                    ;; is widened to fit.  This floor overrides width AND max-width.
+                    (when (string= (cdisplay cs) "table")
+                      (setf bw (max bw (+ (table-min-width node styles (- avail-w ml mr)) pad-bord))))
                     (max 0 bw)))
            ;; margin:auto centering when width is constrained
            (ml (if (and (css:cstyle-margin-left-auto cs) (css:cstyle-margin-right-auto cs)
@@ -2529,8 +2535,11 @@ intrinsic min, which overflowing content can exceed (a width:100px cell with a
            (min content-w
                 (if block-kids
                      (loop for k in block-kids
-                           maximize (+ (css::resolve-pad (css:cstyle-padding-left (st styles k)) content-w) (css::resolve-pad (css:cstyle-padding-right (st styles k)) content-w)
-                                       (used-border (st styles k) :l) (used-border (st styles k) :r)
+                           for kcs = (st styles k)
+                           maximize (+ (let ((m (css:cstyle-margin-left kcs))) (if (numberp m) (max 0 m) 0))
+                                       (let ((m (css:cstyle-margin-right kcs))) (if (numberp m) (max 0 m) 0))
+                                       (css::resolve-pad (css:cstyle-padding-left kcs) content-w) (css::resolve-pad (css:cstyle-padding-right kcs) content-w)
+                                       (used-border kcs :l) (used-border kcs :r)
                                        (min-content-width k styles content-w (1+ depth))))
                      (min-inline-width node styles cs content-w)))))))))
 

@@ -119,8 +119,11 @@ Limited-quirks counts as NON-quirks here — only full quirks suppresses e.g.
       (and (null system) public
            (some (lambda (p) (ci-prefix-p p public)) *quirks-public-prefixes-no-system*))))
 
-(defun parse-html (input)
-  "Parse an HTML string into a DOM document."
+(defun parse-html (input &key context)
+  "Parse an HTML string into a DOM document.  When CONTEXT (a lower-case tag
+name string) is supplied, parse INPUT as an HTML fragment in that element's
+context (WHATWG §13.4): the returned document holds a single <html> element
+whose children are the fragment nodes."
   (multiple-value-bind (tklist src) (tokenize input)
    (let* ((toks (coerce tklist 'vector)) (ntok (length toks)) (s src)
           (doc (make-document)) (open '()) (mode :initial) (orig-mode nil)
@@ -515,6 +518,24 @@ Limited-quirks counts as NON-quirks here — only full quirks suppresses e.g.
            (when open (pop open))
            (clear-afe-to-marker)
            (switch :in-row)))
+      ;; ---- fragment parsing (WHATWG §13.4): when CONTEXT (a tag name) is
+      ;; given, seed a synthetic <html> root, then set the insertion mode as if
+      ;; the context element were the sole open element.  The root's children are
+      ;; the fragment result.
+      (when context
+        (let ((root (make-element "html")))
+          (dom-append doc root) (push-el root)
+          (switch
+           (cond ((member context '("table") :test #'equal) :in-table)
+                 ((member context '("tbody" "thead" "tfoot") :test #'equal) :in-table-body)
+                 ((equal context "tr") :in-row)
+                 ((member context '("td" "th" "caption") :test #'equal) :in-body)
+                 ((equal context "colgroup") :in-column-group)
+                 ((equal context "select") :in-select)
+                 ((member context '("head" "noscript") :test #'equal) :in-head)
+                 (t :in-body)))
+          (when (member context '("title" "textarea") :test #'equal)
+            (setf mode :in-body))))
       (loop
         (when (>= i ntok) (return))
         (let* ((tk (aref toks i)) (ty (tok-type tk)))
@@ -844,3 +865,16 @@ Limited-quirks counts as NON-quirks here — only full quirks suppresses e.g.
                ((eq ty :eof) (return)))))
           (unless reconsume (incf i)))))
     doc)))
+
+(defun parse-fragment (input context-name)
+  "Parse INPUT as an HTML fragment in the CONTEXT-NAME element's context
+(WHATWG §13.4) and return a fresh :fragment dnode holding the parsed nodes."
+  (let* ((doc (parse-html input :context (and context-name
+                                              (string-downcase context-name))))
+         (root (and (plusp (length (dnode-children doc)))
+                    (aref (dnode-children doc) 0)))
+         (frag (make-fragment)))
+    (when root
+      (loop for c across (copy-seq (dnode-children root))
+            do (dom-remove c) (dom-append frag c)))
+    frag))

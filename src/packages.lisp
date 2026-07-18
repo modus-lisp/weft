@@ -24,7 +24,8 @@
            #:tok-type #:tok-name #:tok-data #:tok-attrs #:tok-self-closing
            #:tok-public #:tok-system #:tok-force-quirks
            ;; DOM + tree construction
-           #:parse-html #:serialize-tree #:make-document
+           #:parse-html #:parse-fragment #:serialize-tree #:make-document
+           #:serialize-html-fragment #:serialize-html-outer
            #:dnode #:dnode-kind #:dnode-name #:dnode-attrs #:dnode-data
            #:dnode-children #:dnode-parent #:dnode-namespace
            #:dnode-public #:dnode-system

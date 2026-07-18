@@ -266,6 +266,12 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                                                :h (+ mt (lbox-h lb) mb)
                                                :kind :block :children (list lb))
                                     n)))))
+                      ;; An auto-size block-level element in an inline run breaks the
+                      ;; inline formatting context and lays out as a normal block
+                      ;; (block-in-inline, CSS 2.1 §9.2.1.1): hoist it like flex/table
+                      ;; above so the enclosing block places it on its own line.
+                      ((and cs (member (cdisplay cs) '("block" "list-item") :test #'string=))
+                       (push n blocks))
                       (t                             ; generic inline: honor horizontal margins
                        (incf pend-px (iedge cs :left))
                        ;; ::before / ::after generated content on an inline element

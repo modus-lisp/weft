@@ -10,7 +10,7 @@
            #:ctok #:ctok-type #:ctok-value #:ctok-unit
            ;; selectors
            #:parse-selector-list #:selector-list-valid-p #:selector-matches-p #:specificity
-           #:*target-id*
+           #:*target-id* #:*scope-elements*
            #:query-select #:query-select-all
            ;; computed style
            #:compute-styles #:cstyle #:cstyle-display #:cstyle-color #:cstyle-background

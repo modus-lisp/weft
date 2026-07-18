@@ -1583,6 +1583,20 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                        (unless (custom-prop-p (css-decl-prop d))
                          (apply-decl cs (css-decl-prop d) (resolve-vars (css-decl-value d) vars) parent-cs))))
                    (and (cstyle-content cs) cs))))
+             (fragment-style (parent-cs matched vars)
+               "Build a CSTYLE for a ::first-letter/::first-line fragment (inherits
+all of PARENT-CS, then overlays the matched pseudo-element declarations).  No
+content gate — the fragment styles a slice of the element's own text."
+               (when matched
+                 (let ((cs (copy-cstyle parent-cs)))
+                   ;; a fragment box is not itself a block/float/positioned box; it
+                   ;; only restyles inline text, so drop inherited box-level bits.
+                   (setf (cstyle-content cs) nil)
+                   (dolist (m (sort-matched matched))
+                     (dolist (d (third m))
+                       (unless (custom-prop-p (css-decl-prop d))
+                         (apply-decl cs (css-decl-prop d) (resolve-vars (css-decl-value d) vars) parent-cs))))
+                   cs)))
              (walk (n parent-cs parent-vars anc-bloom)
                (when (eq (weft.html:dnode-kind n) :element)
                  (setf (gethash n *ancestor-bloom*) anc-bloom)
@@ -1598,7 +1612,7 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                    (when (el-attr n "popover")
                      (setf (cstyle-display cs) "none"))
                    ;; collect matching author rules, splitting element vs pseudo-element
-                   (let ((matched '()) (m-before '()) (m-after '()))
+                   (let ((matched '()) (m-before '()) (m-after '()) (m-first-letter '()) (m-first-line '()))
                      (map-candidate-rules
                       (lambda (ru)
                         (destructuring-bind (cx pe spec order decls) ru
@@ -1606,6 +1620,8 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                             (case pe
                               (:before (push (list spec order decls) m-before))
                               (:after  (push (list spec order decls) m-after))
+                              (:first-letter (push (list spec order decls) m-first-letter))
+                              (:first-line   (push (list spec order decls) m-first-line))
                               (t       (push (list spec order decls) matched))))))
                       rindex n tag)
                      (let* ((sorted (sort-matched matched))
@@ -1694,9 +1710,13 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                                  (cstyle-padding-left cs) 0.0 (cstyle-padding-right cs) 0.0)))
                        (setf (gethash n styles) cs)
                        ;; generated content (computed after the element's own style is known)
-                       (let ((bs (pseudo-style cs m-before vars)) (as (pseudo-style cs m-after vars)))
+                       (let ((bs (pseudo-style cs m-before vars)) (as (pseudo-style cs m-after vars))
+                             (fl (fragment-style cs m-first-letter vars))
+                             (fli (fragment-style cs m-first-line vars)))
                          (when bs (setf (gethash (cons n :before) styles) bs))
-                         (when as (setf (gethash (cons n :after) styles) as)))
+                         (when as (setf (gethash (cons n :after) styles) as))
+                         (when fl (setf (gethash (cons n :first-letter) styles) fl))
+                         (when fli (setf (gethash (cons n :first-line) styles) fli)))
                        (let ((child-bloom (logior anc-bloom (el-own-bloom n))))
                          (loop for c across (weft.html:dnode-children n) do (walk c cs vars child-bloom)))))))))
       (loop for c across (weft.html:dnode-children document) do (walk c nil nil 0)))

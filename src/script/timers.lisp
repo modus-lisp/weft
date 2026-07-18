@@ -40,6 +40,7 @@
    shell can pump ~one frame of time per real frame instead of draining a
    self-rescheduling setTimeout to the task cap. UNTIL NIL keeps the full-drain
    behavior (unchanged)."
+  (let ((*ctx* ctx))
   (js:drain-microtasks)
   (let ((n 0))
     (loop
@@ -66,7 +67,7 @@
           (error (e)
             (format *error-output* "~&weft.script: timer error: ~a~%" e)))
         (js:drain-microtasks)))
-    n))
+    n)))
 
 (defun schedule-task (ctx thunk &optional (delay 0))
   "Queue a host-side CL THUNK as a macrotask (used for load/error events)."

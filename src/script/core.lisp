@@ -53,7 +53,22 @@
   (cookie "")               ; document.cookie backing store
   (current-script nil)      ; the <script> node currently executing (for document.write)
   (ran-scripts (make-hash-table :test 'eq)) ; <script> nodes already executed (run once)
+  ;; ---- MutationObserver (DOM §4.3) ----
+  (mo-enabled nil)          ; T once any observe() ran — the zero-observer fast-path gate
+  (mo-list nil)             ; every MO struct in this context (creation order, newest first)
+  (mo-objs (make-hash-table :test 'eq)) ; MO wrapper object -> its MO struct
+  (mo-regs (make-hash-table :test 'eq)) ; node -> list of MO-REG registered observers
+  (mo-microtask-queued nil) ; the "mutation observer microtask queued" flag (DOM §4.3.3)
   (dirty nil))              ; a DOM mutation happened; styles cache is stale
+
+;;; ---- MutationObserver dynamic state ---------------------------------------
+;;; *CTX* is the context in effect while JS runs (scripts, timers, event handlers,
+;;; the mutation-observer microtask).  Mutation sites in dom.lisp reach the active
+;;; observer registry through it without threading CTX to every primitive.
+;;; *MO-SUPPRESS* suppresses the primitive childList records while a coalescing
+;;; algorithm ("replace all" / "replace") emits its own single record.
+(defvar *ctx* nil)
+(defvar *mo-suppress* nil)
 
 ;;; ---- small value helpers --------------------------------------------------
 (declaim (inline num jbool opt))

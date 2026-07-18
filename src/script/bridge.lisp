@@ -77,12 +77,22 @@
             (js:put o "matches" js:*false*) (js:put o "media" (jstr (arg args 0)))
             (js:put o "addListener" (js:native-function realm "addListener" (lambda (a b) (declare (ignore a b)) js:*undefined*) 0))
             o)) 1))
-    ;; Interface objects carrying the Node type constants (Node.COMMENT_NODE …),
-    ;; with .prototype pointing at the shared prototypes.
-    (flet ((iface (name proto-key)
-             (let ((o (js:make-object :proto (js:eval-script realm "Function.prototype"))))
-               (js:put o "prototype" (proto ctx proto-key) :enumerable nil)
-               (js:define-global realm name o) o)))
+    ;; Per WebIDL an interface object is itself a callable function object: this
+    ;; is what makes `x instanceof Node` (RHS must be callable) work, and what
+    ;; lets the constructable interfaces (Document/Text/Comment/DocumentFragment,
+    ;; DOM §"Interface") be invoked with `new`.  Each carries .prototype pointing
+    ;; at the shared prototype and (for Node) the nodeType constants.
+    (flet ((iface (name proto-key &optional construct)
+             ;; CONSTRUCT (this args)->node builds an instance; abstract
+             ;; interfaces (no CONSTRUCT) throw "Illegal constructor" per WebIDL.
+             (let ((f (js:native-function realm name
+                        (or construct
+                            (lambda (this args) (declare (ignore this args))
+                              (js:js-throw (js:make-native-error
+                                            "TypeError" "Illegal constructor"))))
+                        0)))
+               (js:put f "prototype" (proto ctx proto-key) :enumerable nil :writable nil)
+               (js:define-global realm name f) f)))
       (let ((node-iface (iface "Node" :node)))
         (dolist (pair '(("ELEMENT_NODE" . 1) ("ATTRIBUTE_NODE" . 2) ("TEXT_NODE" . 3)
                         ("CDATA_SECTION_NODE" . 4) ("ENTITY_REFERENCE_NODE" . 5)
@@ -90,7 +100,26 @@
                         ("COMMENT_NODE" . 8) ("DOCUMENT_NODE" . 9) ("DOCUMENT_TYPE_NODE" . 10)
                         ("DOCUMENT_FRAGMENT_NODE" . 11) ("NOTATION_NODE" . 12)))
           (js:put node-iface (car pair) (num (cdr pair)) :enumerable nil :writable nil :configurable nil)))
-      (iface "Element" :element) (iface "Document" :document))
+      (iface "Element" :element)
+      (iface "CharacterData" :text)
+      (iface "DocumentType" :doctype)
+      ;; Constructable node interfaces (DOM §Document/Text/Comment/DocumentFragment).
+      (iface "Document" :document
+             (lambda (this args) (declare (ignore this args))
+               (wrap ctx (h:make-document))))
+      (iface "Text" :text
+             (lambda (this args) (declare (ignore this))
+               (new-node ctx docobj
+                         (h:make-text (if (js:js-undefined-p (arg args 0)) ""
+                                          (jstr (arg args 0)))))))
+      (iface "Comment" :comment
+             (lambda (this args) (declare (ignore this))
+               (new-node ctx docobj
+                         (h:make-comment (if (js:js-undefined-p (arg args 0)) ""
+                                             (jstr (arg args 0)))))))
+      (iface "DocumentFragment" :fragment
+             (lambda (this args) (declare (ignore this args))
+               (new-node ctx docobj (h:make-fragment)))))
     ;; URL / URLSearchParams / XMLHttpRequest / IntersectionObserver / ResizeObserver —
     ;; Web APIs real pages depend on.  URL parsing is delegated to weft.url (WHATWG)
     ;; through a native helper; the rest are JS polyfills.  IntersectionObserver /
@@ -172,7 +201,8 @@
   G.fetch=fetch;
   if(typeof G.queueMicrotask!=='function'){G.queueMicrotask=function(cb){Promise.resolve().then(cb);};}
   function mkctor(nat){var w=function(t,i){return nat(t,i);};w.prototype=nat.prototype;return w;}
-  ['Event','CustomEvent','UIEvent','MouseEvent','KeyboardEvent'].forEach(function(nm){if(typeof G[nm]==='function')G[nm]=mkctor(G[nm]);});
+  ['Event','CustomEvent','UIEvent','MouseEvent','KeyboardEvent',
+   'Document','Text','Comment','DocumentFragment'].forEach(function(nm){if(typeof G[nm]==='function')G[nm]=mkctor(G[nm]);});
 })(globalThis);")
     docobj))
 
@@ -202,6 +232,15 @@
     (install-document-proto ctx dp)
     (install-doctype-proto ctx dtp)
     (install-chardata-proto ctx cp)
+    ;; ParentNode (DOM §4.2.6) on Element + Document; ChildNode (§4.2.7) on
+    ;; Element, CharacterData (Text/Comment/…) and DocumentType.  (DocumentFragment
+    ;; shares the Node prototype NP here, so it is intentionally left out to avoid
+    ;; leaking these methods onto every node.)
+    (install-parent-node-methods ctx ep)
+    (install-parent-node-methods ctx dp)
+    (install-child-node-methods ctx ep)
+    (install-child-node-methods ctx cp)
+    (install-child-node-methods ctx dtp)
     (install-on-handlers ctx ep)
     (install-on-handlers ctx dp)
     (install-table-interfaces ctx ep)

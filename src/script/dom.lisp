@@ -276,12 +276,16 @@ replaceChildren + the query surface) plus getElementById (DOM §4.2.7)."
             do (h:dom-append c (copy-dnode ch t))))
     c))
 
-(defun attrs-equal-p (a b)
-  "Attribute lists (name . value alists) compared as unordered sets."
+(defun attrs-equal-p (ctx a b)
+  "DOM §isEqualNode: attribute lists match iff same count and every attribute in
+A has one in B with equal namespace, local name, and value (prefix ignored)."
   (and (= (length a) (length b))
-       (every (lambda (pair)
-                (let ((m (assoc (car pair) b :test #'equal)))
-                  (and m (equal (cdr pair) (cdr m)))))
+       (every (lambda (cell)
+                (multiple-value-bind (ns local) (cell-ns/local ctx cell)
+                  (loop for other in b
+                        thereis (multiple-value-bind (ons olocal) (cell-ns/local ctx other)
+                                  (and (equal ns ons) (equal local olocal)
+                                       (equal (cdr cell) (cdr other)))))))
               a)))
 
 (defun nodes-equal-p (ctx a b)
@@ -294,13 +298,13 @@ and pairwise-equal children."
                         (equal (h:dnode-public a) (h:dnode-public b))
                         (equal (h:dnode-system a) (h:dnode-system b))))
          (:element
-          (let ((ia (gethash a (context-ns-info ctx))) (ib (gethash b (context-ns-info ctx))))
-            (and (eq (h:dnode-namespace a) (h:dnode-namespace b))
-                 (equal (getf ia :ns) (getf ib :ns))
-                 (equal (getf ia :prefix) (getf ib :prefix))
-                 (equal (or (getf ia :local) (h:dnode-name a))
-                        (or (getf ib :local) (h:dnode-name b)))
-                 (attrs-equal-p (h:dnode-attrs a) (h:dnode-attrs b)))))
+          ;; Compare on real namespace, prefix, and local name (DOM §isEqualNode) —
+          ;; element-real-ns folds the default HTML namespace in so an ns-info-less
+          ;; HTML element equals a createDocument'd xhtml one.
+          (and (equal (element-real-ns ctx a) (element-real-ns ctx b))
+               (equal (element-prefix ctx a) (element-prefix ctx b))
+               (equal (element-local ctx a) (element-local ctx b))
+               (attrs-equal-p ctx (h:dnode-attrs a) (h:dnode-attrs b))))
          ((:text :cdata :comment) (equal (h:dnode-data a) (h:dnode-data b)))
          (:processing-instruction (and (equal (h:dnode-name a) (h:dnode-name b))
                                        (equal (h:dnode-data a) (h:dnode-data b))))
@@ -730,7 +734,15 @@ of the other)."
         (opt (and o ns (element-locate-prefix ctx o ns)))))
     (defmethod* ctx ap "getRootNode" 1 (this a) (declare (ignore a))
       ;; An Attr has no parent, so it is its own root (DOM §).
-      this)))
+      this)
+    ;; DOM §Node.isSameNode/isEqualNode for Attr (identity / ns+local+value).
+    (defmethod* ctx ap "isSameNode" 1 (this a) (jbool (eq this (arg a 0))))
+    (defmethod* ctx ap "isEqualNode" 1 (this a)
+      (let* ((r1 (rec this)) (o (arg a 0))
+             (r2 (and (js:js-object-p o) (gethash o (context-attr-of ctx)))))
+        (jbool (and r2 (equal (attr-rec-ns r1) (attr-rec-ns r2))
+                    (equal (attr-rec-local r1) (attr-rec-local r2))
+                    (equal (cdr (attr-rec-cell r1)) (cdr (attr-rec-cell r2)))))))))
 
 ;;; ---- NamedNodeMap (element.attributes) ------------------------------------
 (defun make-attr-map (ctx el)
@@ -1002,8 +1014,9 @@ of the other)."
       (let ((node (n this))) (make-collection ctx (lambda () (children-list node)) nil :nodelist)))
     (defgetset ctx np "nodeValue" (this)
       (if (char-data-p (n this)) (h:dnode-data (n this)) js:*null*)
+      ;; DOM §nodeValue setter: a null value acts as the empty string.
       (v) (when (char-data-p (n this))
-            (setf (h:dnode-data (n this)) (jstr v)) (setf (context-dirty ctx) t)))
+            (setf (h:dnode-data (n this)) (null->empty v)) (setf (context-dirty ctx) t)))
     (defgetset ctx np "textContent" (this)
       ;; DOM §textContent: a CharacterData/PI node returns its own data; Document /
       ;; DocumentType return null; other nodes return descendant text concatenated.
@@ -1011,7 +1024,8 @@ of the other)."
         (cond ((member (h:dnode-kind node) '(:document :doctype)) js:*null*)
               ((char-data-p node) (h:dnode-data node))
               (t (dom:text-content node))))
-      (v) (progn (set-text-content (n this) (jstr v)) (setf (context-dirty ctx) t)))
+      ;; DOM §textContent setter: a null value acts as the empty string.
+      (v) (progn (set-text-content (n this) (null->empty v)) (setf (context-dirty ctx) t)))
 
     (defmethod* ctx np "hasChildNodes" 0 (this a)
       (jbool (plusp (length (h:dnode-children (n this))))))
@@ -1774,15 +1788,19 @@ of the other)."
         (defmethod* ctx impl "createHTMLDocument" 1 (this a)
           ;; DOM §createHTMLDocument appends a `html` doctype first, then the
           ;; html>head(>title?)>body skeleton.
-          (let* ((d (h:make-document)) (dt (h:make-doctype "html"))
+          (let* ((d (h:make-document)) (dt (h:make-doctype "html" "" ""))
                  (html (h:make-element "html"))
-                 (head (h:make-element "head")) (title (h:make-element "title"))
+                 (head (h:make-element "head"))
                  (body (h:make-element "body")))
             (h:dom-append d dt) (setf (gethash dt (context-owner-docs ctx)) d)
             (h:dom-append d html) (h:dom-append html head)
-            (h:dom-append head title) (h:dom-append html body)
+            ;; DOM §createHTMLDocument: the title element exists only when a title
+            ;; argument was supplied.
             (unless (js:js-undefined-p (arg a 0))
-              (h:dom-append title (h:make-text (jstr (arg a 0)))))
+              (let ((title (h:make-element "title")))
+                (h:dom-append head title)
+                (h:dom-append title (h:make-text (jstr (arg a 0))))))
+            (h:dom-append html body)
             (wrap ctx d)))
         (defmethod* ctx impl "createDocumentType" 3 (this a)
           (let ((qname (jstr (arg a 0))))

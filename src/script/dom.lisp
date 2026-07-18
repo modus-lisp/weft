@@ -409,6 +409,19 @@ of the other)."
                           (let ((cb (arg a 0)) (i 0))
                             (dolist (tk (toks)) (js:js-call cb (arg a 1) (list tk (num i) tl)) (incf i)))
                           js:*undefined*))
+      ;; Integer-indexed getter (classList[0]) and length are surfaced as own
+      ;; data properties; the DOMTokenList is live, so refresh them whenever the
+      ;; class attribute is (re)read.  A closure over TL installs the stringifier
+      ;; tag and the iteration protocol (Symbol.iterator/keys/values/entries).
+      (let ((installer (js:eval-script realm "(function(tl){
+        tl[Symbol.toStringTag]='DOMTokenList';
+        function arr(){var a=[];for(var i=0,n=tl.length;i<n;i++)a.push(tl.item(i));return a;}
+        tl[Symbol.iterator]=function(){return arr()[Symbol.iterator]();};
+        tl.keys=function(){return arr().map(function(_,i){return i;})[Symbol.iterator]();};
+        tl.values=function(){return arr()[Symbol.iterator]();};
+        tl.entries=function(){return arr().map(function(v,i){return [i,v];})[Symbol.iterator]();};
+      })")))
+        (js:js-call installer js:*undefined* (list tl)))
       tl)))
 
 ;;; ---- attributes -----------------------------------------------------------

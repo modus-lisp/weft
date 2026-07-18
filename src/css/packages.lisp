@@ -46,4 +46,5 @@
            #:cstyle-letter-spacing #:cstyle-word-spacing #:cstyle-text-indent
            #:cstyle-overflow-wrap #:cstyle-word-break
            #:cstyle-bg-image #:cstyle-bg-repeat #:cstyle-bg-position #:cstyle-bg-size #:cstyle-bg-attachment
+           #:cstyle-bg-origin #:cstyle-bg-clip #:cstyle-bg-clip-list #:cstyle-bg-layers
            #:cstyle-object-fit #:cstyle-aspect-ratio))

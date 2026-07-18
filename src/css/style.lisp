@@ -46,6 +46,10 @@
   (bg-position nil)   ; ((xval xunit) (yval yunit)) or NIL = 0,0
   (bg-size nil)       ; NIL(auto) | :contain | :cover | (w-spec h-spec); spec = px | (:percent N) | :auto
   (bg-attachment "scroll") ; scroll | fixed (fixed images are not painted; see paint)
+  (bg-origin "padding-box") ; background positioning area: border-box | padding-box | content-box
+  (bg-clip "border-box")    ; background painting area:    border-box | padding-box | content-box
+  (bg-clip-list nil)        ; per-layer background-clip list when comma-valued (else NIL)
+  (bg-layers 1)             ; number of background layers (from background-image commas)
   (object-fit "fill") ; fill | contain | cover | none | scale-down — how a replaced element's content fills its box
   (writing-mode "horizontal-tb") ; horizontal-tb | vertical-rl | vertical-lr (inherited)
   (direction "ltr")   ; ltr | rtl (inherited)
@@ -866,6 +870,10 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
                  ;; `background: url(…) no-repeat 1px white` still sets the bg colour.
                  (t (let ((c (some #'resolve-color (css-background-tokens value))))
                       (when c (setf (cstyle-background cs) c)))))
+           ;; layer count = comma-separated groups of background-image (each layer),
+           ;; so background-color uses the bottom (last) layer's background-clip.
+           (when (member prop '("background" "background-image") :test #'string=)
+             (setf (cstyle-bg-layers cs) (max 1 (length (split-top-commas value)))))
            ;; capture a url() image (data: URI) from `background`/`background-image`
            (when url
              (setf (cstyle-bg-image cs) url)
@@ -875,6 +883,12 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
                  (when (member "fixed" toks :test #'string=) (setf (cstyle-bg-attachment cs) "fixed"))
                  (let ((r (find-if (lambda (tk) (member tk '("repeat" "repeat-x" "repeat-y" "no-repeat") :test #'string=)) toks)))
                    (when r (setf (cstyle-bg-repeat cs) r)))
+                 ;; box keywords in the shorthand: first = origin, second = clip;
+                 ;; a lone box sets both (CSS Backgrounds 3 §2.1 shorthand).
+                 (let ((boxes (remove-if-not (lambda (tk) (member tk '("border-box" "padding-box" "content-box") :test #'string=)) toks)))
+                   (when boxes
+                     (setf (cstyle-bg-origin cs) (first boxes)
+                           (cstyle-bg-clip cs) (or (second boxes) (first boxes)))))
                  ;; pull a background-position (length/percent/keyword pair, e.g.
                  ;; the `1px 0` in Acid2's eye images) out of the shorthand
                  (let ((postoks (remove-if-not #'bg-position-token-p toks)))
@@ -890,6 +904,16 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
         ((string= prop "background-size") (setf (cstyle-bg-size cs) (parse-bg-size value fs)))
         ((string= prop "background-attachment")
          (setf (cstyle-bg-attachment cs) (string-downcase (string-trim '(#\Space) value))))
+        ((string= prop "background-origin")
+         (let ((v (string-downcase (string-trim '(#\Space) value))))
+           (when (member v '("border-box" "padding-box" "content-box") :test #'string=)
+             (setf (cstyle-bg-origin cs) v))))
+        ((string= prop "background-clip")
+         (let ((vals (mapcar (lambda (p) (string-downcase (string-trim '(#\Space) p)))
+                             (split-top-commas value))))
+           (when (and vals (every (lambda (v) (member v '("border-box" "padding-box" "content-box") :test #'string=)) vals))
+             (setf (cstyle-bg-clip cs) (first vals)
+                   (cstyle-bg-clip-list cs) (if (cdr vals) vals nil)))))
         ((string= prop "object-fit")
          (let ((v (parse-value "object-fit" value))) (when (stringp v) (setf (cstyle-object-fit cs) v))))
         ((string= prop "aspect-ratio")

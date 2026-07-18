@@ -3849,8 +3849,36 @@ for a degenerate ratio, e.g. a zero-height viewBox); the painter skips those."
             (t (both-auto)))
         (values (r w) (r h))))))
 
+(defun effective-bg-clip (cs)
+  "The background-clip keyword for the bottom-most background layer (CSS Backgrounds
+3 §2.11.2 — background-color uses that layer's clip).  With a comma-valued
+background-clip, layer L uses the (L mod count)-th value."
+  (let ((lst (css:cstyle-bg-clip-list cs)))
+    (if lst
+        (nth (mod (1- (css:cstyle-bg-layers cs)) (length lst)) lst)
+        (css:cstyle-bg-clip cs))))
+
+(defun bg-box-edges (lb cs box)
+  "Edges (values x0 y0 x1 y1) of LB's BOX area (a background-origin/-clip keyword):
+border-box is the full box; padding-box insets by the borders; content-box also by
+the padding (CSS Backgrounds 3 §2.1)."
+  (let* ((bl (used-border cs :l)) (bt (used-border cs :t))
+         (br (used-border cs :r)) (bb (used-border cs :b))
+         (pl (if (string= box "content-box") (max 0 (css::resolve-pad (css:cstyle-padding-left cs) nil)) 0))
+         (pt (if (string= box "content-box") (max 0 (css::resolve-pad (css:cstyle-padding-top cs) nil)) 0))
+         (pr (if (string= box "content-box") (max 0 (css::resolve-pad (css:cstyle-padding-right cs) nil)) 0))
+         (pb (if (string= box "content-box") (max 0 (css::resolve-pad (css:cstyle-padding-bottom cs) nil)) 0))
+         (inl (if (string= box "border-box") 0 (+ bl pl)))
+         (int (if (string= box "border-box") 0 (+ bt pt)))
+         (inr (if (string= box "border-box") 0 (+ br pr)))
+         (inb (if (string= box "border-box") 0 (+ bb pb))))
+    (values (round (+ (lbox-x lb) inl)) (round (+ (lbox-y lb) int))
+            (round (- (+ (lbox-x lb) (lbox-w lb)) inr))
+            (round (- (+ (lbox-y lb) (lbox-h lb)) inb)))))
+
 (defun paint-bg-image (cv lb cs url)
-  "Decode URL (data: URI or network image) and tile it across LB's padding box,
+  "Decode URL (data: URI or network image) and tile it across the background
+positioning area (background-origin), clipped to the painting area (background-clip),
 honoring background-repeat, -position and -size.  Best-effort: an undecodable image
 paints nothing (the bg color shows through)."
   (let* ((duri (if (find #\% url) (percent-decode url) url))
@@ -3863,12 +3891,11 @@ paints nothing (the bg color shows through)."
       (let* ((iw0 (img-w img)) (ih0 (img-h img))
              (rep (css:cstyle-bg-repeat cs))
              (repx (member rep '("repeat" "repeat-x") :test #'string=))
-             (repy (member rep '("repeat" "repeat-y") :test #'string=))
-             ;; padding box (inside the borders)
-             (px0 (round (+ (lbox-x lb) (used-border cs :l))))
-             (py0 (round (+ (lbox-y lb) (used-border cs :t))))
-             (px1 (round (- (+ (lbox-x lb) (lbox-w lb)) (used-border cs :r))))
-             (py1 (round (- (+ (lbox-y lb) (lbox-h lb)) (used-border cs :b)))))
+             (repy (member rep '("repeat" "repeat-y") :test #'string=)))
+        ;; positioning area = background-origin box (default padding-box)
+        (multiple-value-bind (px0 py0 px1 py1) (bg-box-edges lb cs (css:cstyle-bg-origin cs))
+        ;; painting/clip area = background-clip box (default border-box)
+        (multiple-value-bind (cx0 cy0 cx1 cy1) (bg-box-edges lb cs (css:cstyle-bg-clip cs))
         (multiple-value-bind (iw ih)   ; effective tile size after background-size
             (bg-tile-size (css:cstyle-bg-size cs) img (- px1 px0) (- py1 py0))
           (let* ((pos (css:cstyle-bg-position cs))
@@ -3877,28 +3904,29 @@ paints nothing (the bg color shows through)."
                  (ox (+ px0 offx)) (oy (+ py0 offy)))
             ;; a degenerate tile (0 wide or tall — e.g. a zero-height-ratio SVG under
             ;; `background-size` with an auto axis) paints nothing.
-            (when (and (> px1 px0) (> py1 py0) (> iw 0) (> ih 0))
-              ;; clip tiles to the padding box so they never bleed out
-              (let ((*clip* (clip-intersect px0 py0 px1 py1)))
+            (when (and (> cx1 cx0) (> cy1 cy0) (> iw 0) (> ih 0))
+              ;; clip to the background-clip (painting) box; the tile grid is
+              ;; positioned against the origin box but repeats to fill the clip box.
+              (let ((*clip* (clip-intersect cx0 cy0 cx1 cy1)))
                 ;; common case: an intrinsic 1x1 image filling the box — solid rect.
                 (if (and (= iw0 1) (= ih0 1) (null (css:cstyle-bg-size cs)) (>= (aref (img-rgba img) 3) 255))
                     (let ((r (aref (img-rgba img) 0)) (g (aref (img-rgba img) 1)) (b (aref (img-rgba img) 2)))
-                      (fill-rect cv (if repx px0 ox) (if repy py0 oy)
-                                 (if repx (- px1 px0) 1) (if repy (- py1 py0) 1) (list r g b)))
+                      (fill-rect cv (if repx cx0 ox) (if repy cy0 oy)
+                                 (if repx (- cx1 cx0) 1) (if repy (- cy1 cy0) 1) (list r g b)))
                     ;; general tiling, each tile scaled to the effective (IW IH).
                     ;; A tile-count cap bounds a pathological fine tiling (a tiny tile
                     ;; over a large area) so a degenerate background can't stall paint.
-                    (let ((startx (if repx (- ox (* iw (ceiling (- ox px0) iw))) ox))
-                          (starty (if repy (- oy (* ih (ceiling (- oy py0) ih))) oy))
+                    (let ((startx (if repx (- ox (* iw (ceiling (- ox cx0) iw))) ox))
+                          (starty (if repy (- oy (* ih (ceiling (- oy cy0) ih))) oy))
                           (budget 200000))
                       (block tiles
                         (loop for ty = starty then (+ ty ih)
-                              while (and (< ty py1) (or repy (= ty starty))) do
+                              while (and (< ty cy1) (or repy (= ty starty))) do
                           (loop for tx = startx then (+ tx iw)
-                                while (and (< tx px1) (or repx (= tx startx))) do
-                            (when (and (> (+ tx iw) px0) (> (+ ty ih) py0))
+                                while (and (< tx cx1) (or repx (= tx startx))) do
+                            (when (and (> (+ tx iw) cx0) (> (+ ty ih) cy0))
                               (blit-img cv img tx ty iw ih)
-                              (when (<= (decf budget) 0) (return-from tiles))))))))))))))))
+                              (when (<= (decf budget) 0) (return-from tiles))))))))))))))))))
 
 (defun paint-bg-image-fixed (cv lb cs url)
   "Tile URL's image as a background-attachment:fixed background: the tile grid is
@@ -4031,7 +4059,10 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                     ;; painting opaque black — RGB is just the first three elements.
                     (fill-gradient cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) dir from to)))
                  ((css:cstyle-background cs)
-                  (fill-rect cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) (rgb (css:cstyle-background cs)))))
+                  ;; background-clip: fill only the painting area (default border-box
+                  ;; == the whole box; padding/content-box inset by border[+padding]).
+                  (multiple-value-bind (bx0 by0 bx1 by1) (bg-box-edges lb cs (effective-bg-clip cs))
+                    (fill-rect cv bx0 by0 (- bx1 bx0) (- by1 by0) (rgb (css:cstyle-background cs))))))
            ;; CSS background image: over the bg color, under the borders, tiled and
            ;; clipped to this box's padding box.  Fixed-attachment images are not
            ;; painted (out of scope) — for Acid2 that is the correct result (their

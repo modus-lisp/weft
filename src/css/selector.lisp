@@ -432,6 +432,23 @@ Return (values decoded-string new-i)."
 (defun read-attr (s i end)
   "I points just after '['.  Returns (values (:attr name op value) new-i)."
   (loop while (and (< i end) (css-ws-p (char s i))) do (incf i))
+  ;; Strip an optional namespace prefix (`*|`, `|`, `ns|`) — weft has no XML
+  ;; namespaces, so the local name is matched alone (HTML attribute names compare
+  ;; ASCII-case-insensitively, e.g. `[*|TiTlE]` matches a `title` attribute).  A
+  ;; trailing `|=` is the dash-match operator, not a prefix, so it is left alone.
+  (let ((save i))
+    (cond ((and (< (1+ i) end) (char= (char s i) #\*) (char= (char s (1+ i)) #\|)
+                (not (and (< (+ i 2) end) (char= (char s (+ i 2)) #\=))))
+           (incf i 2))
+          ((and (< i end) (char= (char s i) #\|)
+                (not (and (< (1+ i) end) (char= (char s (1+ i)) #\=))))
+           (incf i))
+          (t (multiple-value-bind (pfx j) (read-ident s i end)
+               (declare (ignore pfx))
+               (if (and (> j i) (< j end) (char= (char s j) #\|)
+                        (not (and (< (1+ j) end) (char= (char s (1+ j)) #\=))))
+                   (setf i (1+ j))
+                   (setf i save))))))
   (multiple-value-bind (name j) (read-ident s i end)
     (setf i j)
     (loop while (and (< i end) (css-ws-p (char s i))) do (incf i))
@@ -554,6 +571,238 @@ the identifier and is kept, so `#\\ ` still selects id=\" \"."
           ;; drop invalid selectors (parse-complex yields no compounds), e.g. a
           ;; selector containing a stray `;` from a botched preceding rule.
           when (and cx (plusp (length (cx-compounds cx)))) collect cx)))
+
+;;; ---- strict validation (Selectors 4 §3.1) ------------------------------
+;;; The JS Selectors API (Element.matches/closest, querySelector[All]) must throw
+;;; a SyntaxError DOMException on an invalid selector, whereas the CSS cascade
+;;; must silently DROP invalid rules (CSS error recovery — Acid2/Acid3 depend on
+;;; it).  So this validator is a SEPARATE strict pass used ONLY by the DOM layer;
+;;; the lenient PARSE-SELECTOR-LIST above (used by the cascade) is untouched.
+;;; SELECTOR-LIST-VALID-P returns T only when STRING is a syntactically valid
+;;; selector list per the subset weft supports.
+
+(defun ident-char-p (c)
+  (or (alphanumericp c) (member c '(#\- #\_)) (char= c #\\) (> (char-code c) 127)))
+(defun ident-start-p (c)
+  ;; An ident may not start with a digit (`.5cm` is invalid, CSS Syntax §4.3.11).
+  (or (alpha-char-p c) (member c '(#\- #\_)) (char= c #\\) (> (char-code c) 127)))
+
+(defparameter *known-pseudo-classes*
+  '("root" "empty" "first-child" "last-child" "only-child" "first-of-type"
+    "last-of-type" "only-of-type" "enabled" "disabled" "checked" "indeterminate"
+    "default" "placeholder-shown" "optional" "required" "valid" "invalid"
+    "in-range" "out-of-range" "read-only" "read-write" "link" "visited" "any-link"
+    "local-link" "target" "target-within" "scope" "hover" "active" "focus"
+    "focus-within" "focus-visible" "current" "past" "future" "playing" "paused"
+    "autofill" "defined" "fullscreen" "modal" "picture-in-picture" "popover-open"
+    "user-invalid" "user-valid" "blank" "first" "left" "right" "muted" "volume-locked"
+    "seeking" "buffering" "stalled" "open" "closed"
+    ;; legacy pseudo-elements accepted with a single colon
+    "before" "after" "first-line" "first-letter")
+  "Simple (argument-less) pseudo-classes weft accepts as valid selectors.")
+
+(defparameter *known-pseudo-elements*
+  '("before" "after" "first-line" "first-letter" "selection" "placeholder"
+    "marker" "backdrop" "cue" "cue-region" "file-selector-button" "grammar-error"
+    "spelling-error" "target-text" "highlight" "part" "slotted" "details-content"
+    "first-line" "first-letter" "view-transition" "before" "after")
+  "Pseudo-elements weft accepts as valid selectors (double-colon syntax).")
+
+(defparameter *forgiving-functional-pseudos* '("is" "where" "matches" "any")
+  "Functional pseudo-classes whose argument is a FORGIVING selector list — an
+invalid inner selector does not invalidate the whole (Selectors 4 §3.4.2).")
+(defparameter *strict-functional-pseudos* '("not" "has")
+  "Functional pseudo-classes whose argument is validated strictly.")
+
+(defun sv-read-ident (s i n)
+  "Read an ident starting at S[i] (escapes included).  Return (values ok new-i).
+OK requires a valid ident-start char and at least one char consumed."
+  (if (or (>= i n) (not (ident-start-p (char s i))))
+      (values nil i)
+      (progn
+        (loop while (< i n) do
+          (let ((c (char s i)))
+            (cond ((char= c #\\) (incf i) (when (< i n) (incf i)))
+                  ((ident-char-p c) (incf i))
+                  (t (return)))))
+        (values t i))))
+
+(defun sv-name-string (s i n)
+  "Like SV-READ-IDENT but also return the (undecoded) name text: (values ok new-i name)."
+  (let ((start i))
+    (multiple-value-bind (ok j) (sv-read-ident s i n)
+      (values ok j (and ok (subseq s start j))))))
+
+(defun sv-type (s i n)
+  "Parse a type/universal selector with optional namespace prefix at S[i].
+Return (values ok new-i).  A NAMED namespace prefix is undeclared (weft has no
+namespaces) → invalid; `*|` and `|` (any / no namespace) are accepted."
+  (let ((j i) (prefix :none))
+    (cond ((char= (char s j) #\*) (setf prefix :star) (incf j))
+          ((char= (char s j) #\|) (setf prefix :none))
+          ((ident-start-p (char s j))
+           (multiple-value-bind (ok k) (sv-read-ident s j n)
+             (unless ok (return-from sv-type (values nil i)))
+             (setf prefix :named j k)))
+          (t (return-from sv-type (values nil i))))
+    (if (and (< j n) (char= (char s j) #\|)
+             (not (and (< (1+ j) n) (char= (char s (1+ j)) #\=))))  ; not [x|=v]
+        (progn
+          (incf j)                                   ; consume '|'
+          (when (eq prefix :named) (return-from sv-type (values nil j)))  ; undeclared ns
+          (cond ((and (< j n) (char= (char s j) #\*)) (values t (1+ j)))
+                ((and (< j n) (ident-start-p (char s j)))
+                 (multiple-value-bind (ok k) (sv-read-ident s j n) (values ok k)))
+                (t (values nil j))))
+        (if (eq prefix :none) (values nil i) (values t j)))))  ; lone '|' → invalid
+
+(defun sv-attr (s i n)
+  "Validate an attribute selector; S[i] is just after '['.  Return (values ok new-i)."
+  (labels ((skip-ws (k) (loop while (and (< k n) (css-ws-p (char s k))) do (incf k)) k))
+    (let ((i (skip-ws i)))
+      (when (>= i n) (return-from sv-attr (values nil i)))
+      ;; attribute name, with optional namespace prefix (`*|`, `|`, `ns|`).
+      (cond ((char= (char s i) #\*)
+             (if (and (< (1+ i) n) (char= (char s (1+ i)) #\|)) (incf i 2)
+                 (return-from sv-attr (values nil i))))   ; bare '*' is no name ([*=v])
+            ((char= (char s i) #\|) (incf i))
+            ((ident-start-p (char s i))
+             (multiple-value-bind (ok j) (sv-read-ident s i n)
+               (declare (ignore ok)) (setf i j)
+               (when (and (< i n) (char= (char s i) #\|)
+                          (not (and (< (1+ i) n) (char= (char s (1+ i)) #\=))))
+                 (incf i))))                              ; prefix|  → local follows
+            (t (return-from sv-attr (values nil i))))
+      ;; local name (required after any namespace separator).  If we already read
+      ;; a bare ident with no '|', I is now past it; re-reading a valid ident here
+      ;; must succeed only when a '|' consumed above left us at the local name.
+      (when (or (and (> i 0) (char= (char s (1- i)) #\|)))
+        (multiple-value-bind (ok j) (sv-read-ident s i n)
+          (unless ok (return-from sv-attr (values nil i)))
+          (setf i j)))
+      (setf i (skip-ws i))
+      ;; A '[' left unclosed at end-of-input is auto-closed (CSS Syntax §4.3.1),
+      ;; so `[name` == `[name]` (presence) is valid.
+      (when (>= i n) (return-from sv-attr (values t i)))
+      (when (char= (char s i) #\]) (return-from sv-attr (values t (1+ i))))
+      ;; operator
+      (let ((op (cond ((and (< (1+ i) n) (member (char s i) '(#\~ #\| #\^ #\$ #\*))
+                            (char= (char s (1+ i)) #\=)) (incf i 2) t)
+                      ((char= (char s i) #\=) (incf i) t)
+                      (t nil))))
+        (unless op (return-from sv-attr (values nil i))))
+      (setf i (skip-ws i))
+      (when (>= i n) (return-from sv-attr (values nil i)))
+      ;; value: quoted string or a single unquoted ident
+      (if (member (char s i) '(#\" #\'))
+          (let ((q (char s i)))
+            (incf i)
+            (loop while (and (< i n) (not (char= (char s i) q))) do
+              (if (char= (char s i) #\\) (incf i 2) (incf i)))
+            (when (>= i n) (return-from sv-attr (values nil i)))  ; unterminated
+            (incf i))                                             ; closing quote
+          (multiple-value-bind (ok j) (sv-read-ident s i n)
+            (unless ok (return-from sv-attr (values nil i)))
+            (setf i j)))
+      (setf i (skip-ws i))
+      ;; optional case-sensitivity flag (i/I/s/S)
+      (when (and (< i n) (member (char s i) '(#\i #\I #\s #\S))
+                 (or (>= (1+ i) n) (css-ws-p (char s (1+ i))) (char= (char s (1+ i)) #\])))
+        (incf i) (setf i (skip-ws i)))
+      ;; end-of-input auto-closes the '[' (CSS Syntax §4.3.1) → also valid.
+      (cond ((>= i n) (values t i))
+            ((char= (char s i) #\]) (values t (1+ i)))
+            (t (values nil i))))))
+
+(defun sv-pseudo (s i n)
+  "Validate a pseudo-class/element; S[i] is at ':'.  Return (values ok new-i)."
+  (incf i)
+  (let ((double nil))
+    (when (and (< i n) (char= (char s i) #\:)) (setf double t) (incf i))
+    (multiple-value-bind (ok j name) (sv-name-string s i n)
+      (unless ok (return-from sv-pseudo (values nil i)))   ; `:::x`, `:: x`, `::`
+      (setf i j)
+      (let ((lname (string-downcase name)))
+        (if (and (< i n) (char= (char s i) #\())
+            ;; functional pseudo: consume the balanced parenthesized argument.
+            (let ((depth 0) (start (1+ i)))
+              (loop while (< i n) do
+                (case (char s i) (#\( (incf depth)) (#\) (decf depth)))
+                (incf i)
+                (when (zerop depth) (return)))
+              (unless (zerop depth) (return-from sv-pseudo (values nil i)))  ; unbalanced
+              (let ((arg (subseq s start (1- i))))
+                (cond
+                  ((member lname *strict-functional-pseudos* :test #'string=)
+                   (if (selector-list-valid-p arg) (values t i) (values nil i)))
+                  (t (values t i)))))            ; forgiving / other functional args
+            ;; simple pseudo
+            (if (if double
+                    (member lname *known-pseudo-elements* :test #'string=)
+                    (member lname *known-pseudo-classes* :test #'string=))
+                (values t i)
+                (values nil i)))))))
+
+(defun sv-compound (s i n)
+  "Validate one compound selector at S[i]; must consume ≥1 simple.
+Return (values ok new-i)."
+  (let ((count 0))
+    (loop while (< i n) do
+      (let ((c (char s i)))
+        (cond
+          ((char= c #\.)
+           (incf i) (multiple-value-bind (ok j) (sv-read-ident s i n)
+                      (unless ok (return-from sv-compound (values nil j)))
+                      (setf i j) (incf count)))
+          ((char= c #\#)
+           (incf i) (multiple-value-bind (ok j) (sv-read-ident s i n)
+                      (unless ok (return-from sv-compound (values nil j)))
+                      (setf i j) (incf count)))
+          ((char= c #\[)
+           (multiple-value-bind (ok j) (sv-attr s (1+ i) n)
+             (unless ok (return-from sv-compound (values nil j)))
+             (setf i j) (incf count)))
+          ((char= c #\:)
+           (multiple-value-bind (ok j) (sv-pseudo s i n)
+             (unless ok (return-from sv-compound (values nil j)))
+             (setf i j) (incf count)))
+          ((or (char= c #\*) (char= c #\|) (ident-start-p c))
+           (multiple-value-bind (ok j) (sv-type s i n)
+             (unless ok (return-from sv-compound (values nil j)))
+             (setf i j) (incf count)))
+          (t (return)))))                    ; ws / combinator / end
+    (if (plusp count) (values t i) (values nil i))))
+
+(defun sv-complex (s)
+  "Validate one complex selector string (already comma-split).  A leading or
+trailing combinator, or a bad/absent compound, is invalid."
+  (let ((s (trim-selector s)) )
+    (let ((n (length s)) (i 0))
+      (when (zerop n) (return-from sv-complex nil))
+      (loop
+        (multiple-value-bind (ok j) (sv-compound s i n)
+          (unless ok (return-from sv-complex nil))
+          (setf i j))
+        (loop while (and (< i n) (css-ws-p (char s i))) do (incf i))  ; ws
+        (when (>= i n) (return-from sv-complex t))                    ; done
+        ;; explicit combinator?
+        (when (member (char s i) '(#\> #\+ #\~))
+          (incf i)
+          (loop while (and (< i n) (css-ws-p (char s i))) do (incf i))
+          ;; a combinator must be followed by a compound, not end/another combinator
+          (when (or (>= i n) (member (char s i) '(#\> #\+ #\~)))
+            (return-from sv-complex nil)))))))
+
+(defun selector-list-valid-p (string)
+  "T iff STRING is a syntactically valid selector list (Selectors 4 §3.1) in the
+subset weft supports.  Used only by the JS Selectors API to decide whether to
+throw a SyntaxError; the CSS cascade never calls this."
+  (let ((parts '()) (depth 0) (start 0) (n (length string)))
+    (loop for i from 0 below n for c = (char string i) do
+      (case c ((#\( #\[) (incf depth)) ((#\) #\]) (when (plusp depth) (decf depth)))
+        (#\, (when (zerop depth) (push (subseq string start i) parts) (setf start (1+ i))))))
+    (push (subseq string start) parts)
+    (and (every #'sv-complex (nreverse parts)) t)))
 
 ;;; ---- public API --------------------------------------------------------
 (defun selector-matches-p (selector-list n)

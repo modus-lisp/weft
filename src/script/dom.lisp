@@ -354,10 +354,10 @@ Document and DocumentFragment prototypes."
     (defget ctx proto "lastElementChild" (this) (wrap ctx (dom:last-element-child (n this))))
     (defget ctx proto "childElementCount" (this) (num (dom:child-element-count (n this))))
     (defmethod* ctx proto "querySelector" 1 (this a)
-      (let ((sl (ignore-errors (css:parse-selector-list (jstr (arg a 0))))))
+      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
         (let ((m (and sl (qs-first (n this) sl)))) (if m (wrap ctx m) js:*null*))))
     (defmethod* ctx proto "querySelectorAll" 1 (this a)
-      (let ((sl (ignore-errors (css:parse-selector-list (jstr (arg a 0))))))
+      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
         (make-collection ctx (lambda () (and sl (qs-all (n this) sl))) nil :nodelist)))))
 
 (defun install-fragment-proto (ctx fp)
@@ -589,6 +589,15 @@ of the other)."
                 (t 4)))))                                      ; FOLLOWING
 
 ;;; ---- selector queries (querySelector / querySelectorAll) ------------------
+(defun parse-selector-or-throw (ctx str)
+  "Parse STR as a selector list for the JS Selectors API.  An invalid selector
+must throw a SyntaxError DOMException (DOM §Element.matches / ParentNode query),
+whereas the CSS cascade silently drops invalid rules — so this uses the strict
+CSS:SELECTOR-LIST-VALID-P validator, distinct from the lenient cascade path."
+  (unless (css:selector-list-valid-p str)
+    (throw-dom ctx "SyntaxError" 12 (format nil "'~a' is not a valid selector" str)))
+  (css:parse-selector-list str))
+
 (defun qs-first (root selector-list)
   "First descendant element of ROOT (in tree order, excluding ROOT) matching
    SELECTOR-LIST; NIL if none.  Combinators are evaluated against the live tree."
@@ -1682,23 +1691,25 @@ of the other)."
       (let ((node (n this)) (cls (jstr (arg a 0))))
         (make-collection ctx (lambda () (dom:get-elements-by-class-name node cls)))))
     (flet ((matches-selector (this a)
-             ;; A syntactically invalid selector must throw SyntaxError (not
-             ;; silently return false), per DOM §Element.matches.
-             (let ((sl (handler-case (css:parse-selector-list (jstr (arg a 0)))
-                         (error () (throw-dom ctx "SyntaxError" 12 "invalid selector")))))
+             ;; matches() with no argument throws TypeError; a syntactically
+             ;; invalid selector throws SyntaxError (DOM §Element.matches).
+             (when (null a) (js:js-throw (js:make-native-error
+                                          "TypeError" "matches requires 1 argument")))
+             (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
                (jbool (css:selector-matches-p sl (n this))))))
       (defmethod* ctx ep "matches" 1 (this a) (matches-selector this a))
       ;; legacy aliases (DOM §Element): both delegate to matches().
       (defmethod* ctx ep "webkitMatchesSelector" 1 (this a) (matches-selector this a))
       (defmethod* ctx ep "matchesSelector" 1 (this a) (matches-selector this a)))
     (defmethod* ctx ep "querySelector" 1 (this a)
-      (let ((sl (ignore-errors (css:parse-selector-list (jstr (arg a 0))))))
+      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
         (let ((m (and sl (qs-first (n this) sl)))) (if m (wrap ctx m) js:*null*))))
     (defmethod* ctx ep "querySelectorAll" 1 (this a)
-      (let ((sl (ignore-errors (css:parse-selector-list (jstr (arg a 0))))))
+      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
         (make-collection ctx (lambda () (and sl (qs-all (n this) sl))) nil :nodelist)))
     (defmethod* ctx ep "closest" 1 (this a)
-      (let ((sl (ignore-errors (css:parse-selector-list (jstr (arg a 0))))))
+      ;; closest() also throws SyntaxError on an invalid selector (DOM §Element).
+      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
         (if sl
             (loop for e = (n this) then (h:dnode-parent e)
                   while (and e (eq (h:dnode-kind e) :element))
@@ -2019,10 +2030,10 @@ of the other)."
       (let ((id (jstr (arg a 0))))
         (wrap ctx (and (plusp (length id)) (dom:get-element-by-id (n this) id)))))
     (defmethod* ctx dp "querySelector" 1 (this a)
-      (let ((sl (ignore-errors (css:parse-selector-list (jstr (arg a 0))))))
+      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
         (let ((m (and sl (qs-first (n this) sl)))) (if m (wrap ctx m) js:*null*))))
     (defmethod* ctx dp "querySelectorAll" 1 (this a)
-      (let ((sl (ignore-errors (css:parse-selector-list (jstr (arg a 0))))))
+      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
         (make-collection ctx (lambda () (and sl (qs-all (n this) sl))) nil :nodelist)))
     (defmethod* ctx dp "getElementsByTagName" 1 (this a)
       (let ((node (n this)) (tag (string-downcase (jstr (arg a 0)))))

@@ -46,6 +46,9 @@ instead of once per rule removes an O(elements x rules) cost on rule-heavy pages
     (if p (count (el-name n) (element-children p) :key #'el-name :test #'string=) 1)))
 (defun el-index-of-type-from-end (n)
   (1+ (- (el-count-of-type n) (el-index-of-type n))))
+(defun el-index-from-end (n)   ; 1-based index among element siblings, counted from the end
+  (let ((p (el-parent n)))
+    (if p (- (length (element-children p)) (position n (element-children p))) 1)))
 (defun prev-element (n)
   (let ((p (el-parent n)))
     (when p (let ((sibs (element-children p))) (let ((i (position n sibs))) (when (and i (plusp i)) (nth (1- i) sibs)))))))
@@ -160,6 +163,8 @@ instead of once per rule removes an O(elements x rules) cost on rule-heavy pages
                                                :key #'el-name :test (complement #'string=))))))))
       ((string= nm "nth-child")
        (multiple-value-bind (a b) (parse-nth arg) (and a (nth-match-p (el-index n) a b))))
+      ((string= nm "nth-last-child")
+       (multiple-value-bind (a b) (parse-nth arg) (and a (nth-match-p (el-index-from-end n) a b))))
       ((string= nm "nth-of-type")
        (multiple-value-bind (a b) (parse-nth arg) (and a (nth-match-p (el-index-of-type n) a b))))
       ((string= nm "nth-last-of-type")
@@ -391,16 +396,34 @@ list is built — each rule is keyed to exactly one bucket, so no duplicates."
           (t (return)))))
     (values (nreverse simples) i)))
 
+(defun consume-escape (s i end)
+  "S[i] is the char just after a backslash.  Decode one CSS escape (CSS Syntax
+§4.3.7 consume-escaped-code-point): a run of 1-6 hex digits (optionally followed
+by one whitespace char) names a code point; any other char is taken literally.
+Return (values decoded-string new-i)."
+  (if (>= i end)
+      (values (string #\Replacement_Character) i)   ; trailing backslash (§4.3.7)
+      (let ((c (char s i)))
+        (if (digit-char-p c 16)
+            (let ((hex 0) (cnt 0))
+              (loop while (and (< i end) (< cnt 6) (digit-char-p (char s i) 16))
+                    do (setf hex (+ (* hex 16) (digit-char-p (char s i) 16))) (incf i) (incf cnt))
+              (when (and (< i end) (css-ws-p (char s i))) (incf i))   ; one trailing ws consumed
+              (values (string (code-char (if (or (zerop hex) (> hex #x10ffff)
+                                                 (<= #xd800 hex #xdfff)) ; surrogate
+                                             #xfffd hex)))
+                      i))
+            (values (string c) (1+ i))))))
+
 (defun read-ident (s i end)
-  ;; CSS escapes: a backslash takes the next char literally (e.g. `second\ two`
-  ;; -> "second two").  Hex escapes (\20) are not decoded — only the literal form
-  ;; Acid2 needs.  Without this, `[class=second\ two]` would parse as "second".
+  ;; CSS escapes (CSS Syntax §4.3.7): `\<hex>` names a code point (`\e9` -> é),
+  ;; and `\<char>` takes that char literally (e.g. `second\ two` -> "second two").
   (let ((out (make-string-output-stream)))
     (loop while (< i end)
           for c = (char s i) do
           (cond ((char= c #\\)
-                 (when (< (1+ i) end) (write-char (char s (1+ i)) out))
-                 (incf i 2))
+                 (multiple-value-bind (dec j) (consume-escape s (1+ i) end)
+                   (write-string dec out) (setf i j)))
                 ((or (alphanumericp c) (member c '(#\- #\_)) (> (char-code c) 127))
                  (write-char c out) (incf i))
                 (t (return))))
@@ -421,9 +444,15 @@ list is built — each rule is keyed to exactly one bucket, so no duplicates."
           (loop while (and (< i end) (css-ws-p (char s i))) do (incf i))
           (let* ((quoted (and (< i end) (member (char s i) '(#\" #\'))))
                  (val (cond (quoted
-                            (let ((q (char s i)) (start (1+ i)))
-                              (incf i) (loop while (and (< i end) (not (char= (char s i) q))) do (incf i))
-                              (prog1 (subseq s start i) (when (< i end) (incf i)))))
+                            (let ((q (char s i)) (out (make-string-output-stream)))
+                              (incf i)
+                              (loop while (and (< i end) (not (char= (char s i) q))) do
+                                (if (char= (char s i) #\\)
+                                    (multiple-value-bind (dec j) (consume-escape s (1+ i) end)
+                                      (write-string dec out) (setf i j))
+                                    (progn (write-char (char s i) out) (incf i))))
+                              (when (< i end) (incf i))
+                              (get-output-stream-string out)))
                            ;; Unquoted value: read up to ']' (honoring '\' escapes),
                            ;; then trim surrounding whitespace.  This keeps internal
                            ;; spaces that came from a decoded escape (e.g. Acid2's
@@ -434,8 +463,8 @@ list is built — each rule is keyed to exactly one bucket, so no duplicates."
                                 (loop while (< i end)
                                       for c = (char s i) do
                                   (cond ((char= c #\\)
-                                         (when (< (1+ i) end) (write-char (char s (1+ i)) out))
-                                         (incf i 2))
+                                         (multiple-value-bind (dec j) (consume-escape s (1+ i) end)
+                                           (write-string dec out) (setf i j)))
                                         ((char= c #\]) (return))
                                         (t (write-char c out) (incf i))))
                                 (string-trim '(#\Space #\Tab #\Newline)

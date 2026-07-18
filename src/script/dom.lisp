@@ -1127,8 +1127,14 @@ top document takes it from the base URL."
       (let ((o (attr-rec-owner (rec this))))
         (wrap ctx (and o (or (gethash o (context-owner-docs ctx)) (context-document ctx))))))
     (flet ((getv (this) (cdr (attr-rec-cell (rec this))))
-           (setv (this v) (let ((r (rec this)))
-                            (setf (cdr (attr-rec-cell r)) (jstr v))
+           (setv (this v) (let* ((r (rec this)) (cell (attr-rec-cell r)))
+                            ;; Setting an owned Attr's value is an attribute change
+                            ;; on its owner element (DOM §Attr value setter).
+                            (when (and (attr-rec-owner r) (mo-recording-p)
+                                       (not (internal-attr-p (attr-rec-local r))))
+                              (mo-record-attr ctx (attr-rec-owner r) (attr-rec-local r)
+                                              (attr-rec-ns r) (cdr cell)))
+                            (setf (cdr cell) (jstr v))
                             (when (attr-rec-owner r) (setf (context-dirty ctx) t)))))
       (defgetset ctx ap "value" (this) (getv this) (v) (setv this v))
       (defgetset ctx ap "nodeValue" (this) (getv this) (v) (setv this v))
@@ -1936,12 +1942,18 @@ top document takes it from the base URL."
                    (throw-dom ctx "NoModificationAllowedError" 7 "cannot set outerHTML on a document child")))
             (let* ((ctxname (if (eq (h:dnode-kind parent) :element) (h:dnode-name parent) "body"))
                    (frag (h:parse-fragment (null->empty v) ctxname))
-                   (ref (node-next-sibling node)))
+                   (ref (node-next-sibling node))
+                   (prev (and (mo-recording-p) (node-prev-sibling node)))
+                   (added (and (mo-recording-p) (coerce (h:dnode-children frag) 'list))))
               (adopt-parsed-fragment ctx frag (owner-doc-node ctx node))
               (h:dom-remove node)
               (loop for c across (copy-seq (h:dnode-children frag))
                     do (h:dom-remove c)
                        (if ref (h:dom-insert-before parent c ref) (h:dom-append parent c)))
+              ;; outerHTML replaces NODE with the parsed nodes: one coalesced
+              ;; childList record on PARENT (DOM Parsing §outerHTML setter).
+              (mo-record-childlist parent :removed (list node) :added added
+                                   :prev prev :next ref)
               (setf (context-dirty ctx) t))))
     (defmethod* ctx ep "insertAdjacentHTML" 2 (this a)
       (let* ((node (n this))

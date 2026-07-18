@@ -92,4 +92,26 @@
         (js:native-function realm "clearTimeout"
           (lambda (this args) (declare (ignore this))
             (cancel-timer ctx (int-arg args 0)) js:*undefined*) 1))
-      (js:define-global realm "clearInterval" (js:js-get global "clearTimeout")))))
+      (js:define-global realm "clearInterval" (js:js-get global "clearTimeout"))
+      ;; requestAnimationFrame — schedule the callback as a one-shot ~16ms timer
+      ;; and invoke it with the frame's timestamp (HTML §animation-frames).  A
+      ;; frame budget stops runaway self-rescheduling animation loops (headless
+      ;; single-snapshot render); reftest-wait tests settle in a few frames.
+      (js:define-global realm "requestAnimationFrame"
+        (js:native-function realm "requestAnimationFrame"
+          (lambda (this args) (declare (ignore this))
+            (let ((cb (arg args 0)))
+              (if (and (js:js-callable-p cb) (< (context-raf-count ctx) 600))
+                  (progn
+                    (incf (context-raf-count ctx))
+                    (num (schedule-timer
+                          ctx
+                          (lambda ()
+                            (js:invoke (context-realm ctx) cb js:*undefined*
+                                       (list (num (float (context-now ctx) 1d0)))))
+                          16 nil)))
+                  (num 0)))) 1))
+      (js:define-global realm "cancelAnimationFrame"
+        (js:native-function realm "cancelAnimationFrame"
+          (lambda (this args) (declare (ignore this))
+            (cancel-timer ctx (int-arg args 0)) js:*undefined*) 1)))))

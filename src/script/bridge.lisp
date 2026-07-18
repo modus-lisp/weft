@@ -70,7 +70,7 @@
       (js:define-global realm "sessionStorage" (storage)))
     ;; a few window methods real pages call
     (dolist (m '("scrollTo" "scroll" "scrollBy" "focus" "blur" "print" "close" "open"
-                 "alert" "resizeTo" "moveTo" "requestAnimationFrame" "cancelAnimationFrame"))
+                 "alert" "resizeTo" "moveTo"))
       (js:define-global realm m (js:native-function realm m (lambda (this args) (declare (ignore this args)) js:*undefined*) 0)))
     (js:define-global realm "matchMedia"
       (js:native-function realm "matchMedia"

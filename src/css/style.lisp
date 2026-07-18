@@ -575,8 +575,56 @@ passes through unchanged; a multi-keyword form <display-outside> <display-inside
                  (inline (concatenate 'string "inline-" inside))
                  (t inside)))))))
 
+(defun logical-box-remap (prop)
+  "Map a CSS Logical 1 box property to physical one(s) for the default
+horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
+(top/bottom); *-start/-end map to left/top and right/bottom.  Returns
+ (values MAPPED MODE): MAPPED a physical prop string (MODE :single) or a
+ (P1 P2) pair with MODE :split (1-2 values split across the sides) or :dup
+ (the whole value applied to both).  NIL when PROP is not a logical box prop."
+  (macrolet ((pair (a b mode) `(values (list ,a ,b) ,mode)))
+    (cond
+      ((string= prop "margin-inline")  (pair "margin-left" "margin-right" :split))
+      ((string= prop "margin-block")   (pair "margin-top" "margin-bottom" :split))
+      ((string= prop "padding-inline") (pair "padding-left" "padding-right" :split))
+      ((string= prop "padding-block")  (pair "padding-top" "padding-bottom" :split))
+      ((string= prop "inset-inline")   (pair "left" "right" :split))
+      ((string= prop "inset-block")    (pair "top" "bottom" :split))
+      ((string= prop "border-inline")  (pair "border-left" "border-right" :dup))
+      ((string= prop "border-block")   (pair "border-top" "border-bottom" :dup))
+      ((string= prop "margin-inline-start")  (values "margin-left" :single))
+      ((string= prop "margin-inline-end")    (values "margin-right" :single))
+      ((string= prop "margin-block-start")   (values "margin-top" :single))
+      ((string= prop "margin-block-end")     (values "margin-bottom" :single))
+      ((string= prop "padding-inline-start") (values "padding-left" :single))
+      ((string= prop "padding-inline-end")   (values "padding-right" :single))
+      ((string= prop "padding-block-start")  (values "padding-top" :single))
+      ((string= prop "padding-block-end")    (values "padding-bottom" :single))
+      ((string= prop "border-inline-start")  (values "border-left" :single))
+      ((string= prop "border-inline-end")    (values "border-right" :single))
+      ((string= prop "border-block-start")   (values "border-top" :single))
+      ((string= prop "border-block-end")     (values "border-bottom" :single))
+      ((string= prop "inset-inline-start")   (values "left" :single))
+      ((string= prop "inset-inline-end")     (values "right" :single))
+      ((string= prop "inset-block-start")    (values "top" :single))
+      ((string= prop "inset-block-end")      (values "bottom" :single))
+      (t nil))))
+
 (defun apply-decl (cs prop value parent-cs)
   "Apply one declaration to CSTYLE CS (best-effort)."
+  ;; Logical box properties (margin/padding/border/inset -inline/-block[-start/end])
+  ;; expand to their physical longhands before dispatch.
+  (multiple-value-bind (mapped mode) (logical-box-remap prop)
+    (when mapped
+      (ecase mode
+        (:single (apply-decl cs mapped value parent-cs))
+        (:dup (apply-decl cs (first mapped) value parent-cs)
+              (apply-decl cs (second mapped) value parent-cs))
+        (:split (let ((toks (split-tokens (string-trim '(#\Space) value))))
+                  (when toks
+                    (apply-decl cs (first mapped) (first toks) parent-cs)
+                    (apply-decl cs (second mapped) (or (second toks) (first toks)) parent-cs)))))
+      (return-from apply-decl)))
   ;; Logical sizing properties (CSS Logical 1 §4.1) resolve to physical ones in the
   ;; default horizontal-tb writing mode, which covers effectively all content:
   ;; inline-size is width, block-size is height (and their min-/max- forms).

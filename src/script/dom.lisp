@@ -495,7 +495,10 @@ replaceChildren + the query surface) plus getElementById (DOM §4.2.7)."
                  ;; An empty Text node is dropped (so the first *non-empty* node of
                  ;; a run is the one that survives and absorbs the rest).
                  ((zerop (length (or (h:dnode-data c) "")))
-                  (adjust-ranges-for-removal ctx c) (h:dom-remove c))
+                  (adjust-ranges-for-removal ctx c)
+                  (mo-record-childlist node :removed (list c)
+                                       :prev (node-prev-sibling c) :next (node-next-sibling c))
+                  (h:dom-remove c))
                  (t (loop while (and (< (1+ i) (length (h:dnode-children node)))
                                      (eq (h:dnode-kind (aref (h:dnode-children node) (1+ i))) :text))
                           do (let ((nx (aref (h:dnode-children node) (1+ i))))
@@ -503,6 +506,9 @@ replaceChildren + the query surface) plus getElementById (DOM §4.2.7)."
                                      (concatenate 'string (or (h:dnode-data c) "")
                                                   (or (h:dnode-data nx) "")))
                                (adjust-ranges-for-removal ctx nx)
+                               (mo-record-childlist node :removed (list nx)
+                                                    :prev (node-prev-sibling nx)
+                                                    :next (node-next-sibling nx))
                                (h:dom-remove nx)))
                     (incf i)))))))
 

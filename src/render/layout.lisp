@@ -2188,7 +2188,7 @@ column distributes grow/shrink into; NIL means auto (size to content)."
           ;; Lay each item out at its natural size to get its main-axis (height) base;
           ;; then, if the container has a definite height, distribute the free space by
           ;; flex-grow / flex-shrink (weighted by shrink*height) along the vertical axis.
-          (let ((boxes '()) (heights '()) (max-w 0))
+          (let ((boxes '()) (heights '()) (vmargins '()) (max-w 0))
             (dolist (it items)
               ;; cross size (width): a non-stretch item with an auto cross size
               ;; shrink-wraps to fit-content (CSS Flexbox §7.5); stretch or a definite
@@ -2207,12 +2207,21 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                      (def-basis (and (stringp basis)
                                      (not (member basis '("auto" "content") :test #'string=))
                                      (let ((v (css::resolve-len basis (css:cstyle-font-size is))))
-                                       (and (numberp v) v)))))
+                                       (and (numberp v) v))))
+                     ;; fixed main-axis (top/bottom) margins (0 when auto — those are
+                     ;; absorbed as free space below).
+                     (mt (if (and is (not (css:cstyle-margin-top-auto is))) (css:cstyle-margin-top is) 0))
+                     (mb (if (and is (not (css:cstyle-margin-bottom-auto is))) (css:cstyle-margin-bottom is) 0)))
                 (multiple-value-bind (lb adv) (layout-node it styles cx cy (round cw))
-                  (push lb boxes) (push (if lb (or def-basis adv) 0) heights)
+                  (push lb boxes)
+                  ;; ADV is the item's outer (margin-box) advance; its main base size is
+                  ;; the border box, so strip the fixed margins back off (CSS Flexbox §9.2).
+                  (push (if lb (or def-basis (max 0 (- adv mt mb))) 0) heights)
+                  (push (+ mt mb) vmargins)
                   (when lb (setf max-w (max max-w (lbox-w lb)))))))
-            (setf boxes (nreverse boxes) heights (nreverse heights))
-            (let* ((base-sum (+ (reduce #'+ heights) total-gap))
+            (setf boxes (nreverse boxes) heights (nreverse heights) vmargins (nreverse vmargins))
+            (let* ((vmargin-sum (reduce #'+ vmargins))
+                   (base-sum (+ (reduce #'+ heights) total-gap vmargin-sum))
                    (hfree (if (numberp avail-h) (- avail-h base-sum) 0))
                    (hscaled (mapcar #'* shrinks heights))
                    (sum-hscaled (reduce #'+ hscaled))
@@ -2224,7 +2233,7 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                    ;; main-axis (vertical) auto margins absorb positive free space
                    ;; before justify-content (CSS Flexbox §8.1): margin-top:auto pushes
                    ;; an item down, margin:auto centers it in the column.
-                   (used (+ (reduce #'+ tgt) total-gap))
+                   (used (+ (reduce #'+ tgt) total-gap vmargin-sum))
                    (free (if (numberp avail-h) (max 0 (- avail-h used)) 0))
                    (n-mauto (loop for it in items for is = (st styles it)
                                   sum (+ (if (and is (css:cstyle-margin-top-auto is)) 1 0)
@@ -2232,10 +2241,13 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                    (auto-unit (if (and (> n-mauto 0) (> free 0)) (/ free n-mauto) 0))
                    (y cy))
               (loop for lb in boxes for h in tgt for it in items
-                    for is = (st styles it) do
+                    for is = (st styles it)
+                    for mt = (if (and is (not (css:cstyle-margin-top-auto is))) (css:cstyle-margin-top is) 0)
+                    for mb = (if (and is (not (css:cstyle-margin-bottom-auto is))) (css:cstyle-margin-bottom is) 0)
+                    do
                 (when (and (> auto-unit 0) is (css:cstyle-margin-top-auto is)) (incf y auto-unit))
                 (when lb
-                  (shift-box lb 0 (round (- y (lbox-y lb))))   ; stack at the running main-axis offset
+                  (shift-box lb 0 (round (- (+ y mt) (lbox-y lb))))   ; border box sits MT below the pen
                   ;; reset to the content-left: the item was laid out across the full
                   ;; container width, so block-level margin:auto centering may already
                   ;; have shifted it — flex cross-alignment below is the authority.
@@ -2255,7 +2267,7 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                            (shift-box lb (round (- content-w (lbox-w lb))) 0))
                           ((string= a "stretch")
                            (when (null (css:cstyle-width s)) (setf (lbox-w lb) content-w))))))
-                (incf y (+ h gap))
+                (incf y (+ mt h mb gap))
                 (when (and (> auto-unit 0) is (css:cstyle-margin-bottom-auto is)) (incf y auto-unit)))
               (values (remove nil boxes) (max 0 (- y cy gap)))))))))
 

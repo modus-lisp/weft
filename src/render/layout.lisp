@@ -1860,13 +1860,18 @@ Returns (values lbox advance-height)."
                           ;; min-height:312 targets 312 total); flex/grid size the content
                           ;; box like a block, so add the padding + border on.
                           (let ((tbl (member (cdisplay cs) '("table" "inline-table") :test #'string=)))
-                            ;; a table's explicit height is a *minimum* on its border box
+                            ;; a table's explicit height is a *minimum* on its grid box
                             ;; (css-tables-3 §computing-the-table-height): an empty table
                             ;; with height:100px is 100 tall even with no rows to grow.
-                            (when (and tbl (numberp exp-h)) (setf bh (max bh exp-h)))
-                            (when (numberp max-h) (setf bh (min bh (if tbl max-h (+ max-h pt pb bt bb)))))
+                            ;; Under content-box the table's own padding + border sit
+                            ;; OUTSIDE that grid, so height:50px + border:25px is a 100px
+                            ;; border box; a border-box height already spans them.
+                            (when (and tbl (numberp exp-h))
+                              (setf bh (max bh (if border-box exp-h (+ exp-h pt pb bt bb)))))
+                            (when (numberp max-h)
+                              (setf bh (min bh (if (and tbl border-box) max-h (+ max-h pt pb bt bb)))))
                             (when (and (numberp min-h) (> min-h 0))
-                              (setf bh (max bh (if tbl min-h (+ min-h pt pb bt bb))))))
+                              (setf bh (max bh (if (and tbl border-box) min-h (+ min-h pt pb bt bb))))))
                           bh))
                  (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                                 :kind :block :children boxes)))

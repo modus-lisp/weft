@@ -1094,7 +1094,12 @@ CB=(px py pw ph) using top/left/right/bottom from CS.  When top (or left) is
 :auto and so is bottom (right), the box keeps its static-flow position."
   (when (and lb cb)
     (destructuring-bind (px py pw ph) cb
-      (let* ((left (css:cstyle-left cs)) (right (css:cstyle-right cs))
+      (let* (;; left/right position the *inline* margin edges and, like top/bottom,
+             ;; resolve percentages against the containing block's WIDTH (CSS 2.1
+             ;; §10.3.7 / §9.3.2) — a `left:50%` was previously left unresolved (only
+             ;; top/bottom were), so it fell through to the static position.
+             (left (resolve-inset (css:cstyle-left cs) pw))
+             (right (resolve-inset (css:cstyle-right cs) pw))
              (top (css:cstyle-top cs)) (bottom (css:cstyle-bottom cs))
              ;; CSS 2.1 10.6.4 / 9.3.2: top/left position the *margin* edge, so the
              ;; border box is offset inward by the box's own margin (the static

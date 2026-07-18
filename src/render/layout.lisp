@@ -317,6 +317,58 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
     ;; (intrinsic width) ignore them.
     (values (nreverse words) (nreverse floats) (nreverse blocks))))
 
+(defun combining-mark-p (ch)
+  "Approximate Unicode combining-mark test (categories Mn/Mc/Me) via the common
+blocks, so ::first-letter keeps a base letter and its accents together."
+  (let ((c (char-code ch)))
+    (or (<= #x300 c #x36F) (<= #x483 c #x489) (<= #x591 c #x5BD) (<= #x610 c #x61A)
+        (<= #x64B c #x65F) (<= #x6D6 c #x6DC) (<= #x6DF c #x6E4) (<= #x900 c #x903)
+        (<= #x93A c #x94F) (<= #x1AB0 c #x1AFF) (<= #x1DC0 c #x1DFF) (<= #x20D0 c #x20FF)
+        (<= #xFE20 c #xFE2F))))
+
+(defun first-letter-slice (word)
+  "The ::first-letter typographic unit of WORD (CSS 2.1 §5.12.2): any leading
+punctuation (Ps/Pe/Pi/Pf/Po), the first letter itself, and any punctuation that
+immediately follows it.  Return the character count of that slice, or 0 when WORD
+has no letter (all punctuation / empty) so the caller leaves it whole."
+  (let ((n (length word)) (i 0))
+    (declare (type fixnum n i))
+    (loop while (and (< i n) (first-letter-punct-p (char-code (char word i)))) do (incf i))
+    (if (>= i n)
+        0                                   ; no base letter to anchor on
+        (progn
+          (incf i)                          ; the first letter (one typographic unit)
+          ;; absorb combining marks that attach to the letter
+          (loop while (and (< i n) (combining-mark-p (char word i))) do (incf i))
+          (loop while (and (< i n) (first-letter-punct-p (char-code (char word i)))) do (incf i))
+          i))))
+
+(defun apply-first-letter (words fl-cs)
+  "Restyle the ::first-letter slice of the first text token in WORDS with FL-CS,
+splitting that token into a first-letter fragment (styled FL-CS) followed by its
+remainder (CSS 2.1 §5.12.2).  Returns the possibly-modified WORDS list."
+  (loop for cell on words
+        for tok = (car cell)
+        when (stringp (car tok)) do
+          (let* ((word (car tok)) (k (first-letter-slice word)))
+            (when (plusp k)
+              (let* ((head (subseq word 0 k)) (tail (subseq word k))
+                     ;; head token: inherits SPACE/GAP/NODE/REL of the original,
+                     ;; carries FL-CS as its style.
+                     (head-tok (list head fl-cs (tok-space tok) (tok-gap tok)
+                                      (tok-node tok) (tok-rel tok))))
+                (if (zerop (length tail))
+                    (setf (car cell) head-tok)
+                    ;; splice: head then tail (tail keeps original style; no leading
+                    ;; space/gap between the two halves of one word).
+                    (let ((tail-tok (list tail (tok-meta tok) nil 0
+                                          (tok-node tok) (tok-rel tok))))
+                      (setf (car cell) head-tok (cdr cell) (cons tail-tok (cdr cell)))))))
+            (return))
+        ;; a leading atomic/break before any text: first-letter does not apply
+        when (not (stringp (car tok))) do (return))
+  words)
+
 ;;; Inline-token accessors: (PAYLOAD META SPACE GAP) — PAYLOAD is (CAR tok) (a word
 ;;; string or :ATOMIC), META its style or lbox, SPACE whether whitespace preceded it,
 ;;; GAP extra leading px from the enclosing element's inline horizontal margins.
@@ -1883,6 +1935,11 @@ Returns (values lbox advance-height)."
                          (let ((m (+ (max 0 (car prev-mb)) (min 0 (cdr prev-mb)))))
                            (incf yy m) (incf content-h m)))
                        (setf prev-mb nil)
+                       ;; ::first-letter (CSS 2.1 §5.12.2): on the block's first
+                       ;; formatted line only, restyle the leading typographic unit.
+                       (let ((fl-cs (and (not content-started)
+                                         (gethash (cons node :first-letter) styles))))
+                         (when fl-cs (setf words (apply-first-letter words fl-cs))))
                        (multiple-value-bind (lines lh-total) (layout-inline words cx yy content-w cs)
                          (dolist (l lines) (push l children))
                          (incf yy lh-total) (incf content-h lh-total)

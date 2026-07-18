@@ -267,19 +267,24 @@ the full complex matcher, which verifies the combinator chain back to the anchor
 (defstruct cx compounds combs keybits)   ; compounds: vector; combs: vector len-1 (combinator BEFORE each compound); keybits: lazily-cached ancestor-filter key bits per compound
 
 (defun cx-pseudo-element (cx)
-  "If CX's final compound names a ::before/::after pseudo-element, return
-(values :before|:after stripped-cx) where stripped-cx has that simple removed;
-else (values NIL CX).  first-line/first-letter are treated as NIL (no box)."
+  "If CX's final compound names a ::before/::after/::first-line/::first-letter
+pseudo-element, return (values :before|:after|:first-line|:first-letter
+stripped-cx) where stripped-cx has that simple removed; else (values NIL CX)."
   (let* ((comps (cx-compounds cx)) (n (length comps)))
     (if (zerop n) (values nil cx)
         (let* ((last (aref comps (1- n)))
                (pe (find-if (lambda (s) (and (eq (first s) :pseudo)
-                                             (member (string-downcase (second s)) '("before" "after") :test #'string=)))
+                                             (member (string-downcase (second s))
+                                                     '("before" "after" "first-line" "first-letter") :test #'string=)))
                             last)))
           (if (null pe) (values nil cx)
               (let ((new (copy-seq comps)))
                 (setf (aref new (1- n)) (or (remove pe last) (list '(:universal))))
-                (values (if (string-equal (second pe) "before") :before :after)
+                (values (let ((nm (string-downcase (second pe))))
+                          (cond ((string= nm "before") :before)
+                                ((string= nm "after") :after)
+                                ((string= nm "first-line") :first-line)
+                                (t :first-letter)))
                         (make-cx :compounds new :combs (cx-combs cx)))))))))
 
 ;;; ---- ancestor Bloom filter ---------------------------------------------

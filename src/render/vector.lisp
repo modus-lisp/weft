@@ -19,11 +19,19 @@ it into the page.  Bound fresh per render so buffers never leak across pages.")
 (defun (setf element-canvas) (v node) (setf (gethash node *element-canvas*) v))
 
 ;;; ---- weft DOM subtree -> stencil SVG DOM ----------------------------------
+(defun local-name (name)
+  "The local part of a possibly namespace-prefixed tag name: `svg:rect` -> `rect`.
+XHTML documents often qualify SVG/MathML with a prefix (`<svg:svg>`), which weft's
+HTML parser keeps verbatim; SVG detection and the stencil bridge want the local
+name so the shapes are recognised."
+  (let ((c (position #\: name)))
+    (if c (subseq name (1+ c)) name)))
+
 (defun dnode->svg-node (dn)
   "Convert a weft <svg> element subtree DN into a stencil SVG DOM node, so the
 stencil renderer can paint it.  Element children recurse; character-data children
 accumulate into the node's text (for <text>/<tspan>)."
-  (let ((sn (st:make-svg-node (h:dnode-name dn)
+  (let ((sn (st:make-svg-node (local-name (h:dnode-name dn))
                               (mapcar (lambda (a) (cons (string-downcase (car a)) (cdr a)))
                                       (h:dnode-attrs dn))))
         (txt nil))

@@ -435,6 +435,7 @@
     (install-timers ctx)
     (install-globals ctx)
     (install-window-events ctx)
+    (install-mutation-observer ctx)
     ctx))
 
 (defun fire-lifecycle-events (ctx)
@@ -488,7 +489,8 @@
     (setf (gethash script (context-ran-scripts ctx)) t)
     (let ((source (script-source ctx script)))
       (when (and source (plusp (length source)))
-        (let ((saved (context-current-script ctx)))
+        (let ((saved (context-current-script ctx))
+              (*ctx* ctx))
           (setf (context-current-script ctx) script)
           (unwind-protect
                (handler-case (js:eval-script (context-realm ctx) source)

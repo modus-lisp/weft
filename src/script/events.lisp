@@ -112,7 +112,8 @@
           (when (evt-stop-immediate ev) (return)))))))
 
 (defun dispatch-event (ctx node evt-obj)
-  (let ((ev (evt-of ctx evt-obj)))
+  (let ((ev (evt-of ctx evt-obj))
+        (*ctx* ctx))
     (unless ev (return-from dispatch-event js:*true*))
     (setf (evt-target ev) node (evt-dispatched ev) t
           (evt-stopped ev) nil (evt-stop-immediate ev) nil)

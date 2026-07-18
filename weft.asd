@@ -90,6 +90,7 @@
                 ((:module "script" :serial t
                   :components ((:file "packages") (:file "core") (:file "timers")
                                (:file "events") (:file "cssom") (:file "dom")
+                               (:file "mutation")
                                (:file "canvas") (:file "svg")
                                (:file "traversal") (:file "range") (:file "xml") (:file "loader")
                                (:file "tables") (:file "bridge") (:file "interact")))))))

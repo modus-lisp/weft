@@ -147,14 +147,21 @@
 ;;; ---- structural mutation (weft side) --------------------------------------
 (defun set-text-content (node text)
   "The textContent setter: detach NODE's children and, if TEXT is non-empty,
-   give it a single text child holding TEXT (DOM Node.textContent)."
+   give it a single text child holding TEXT (DOM Node.textContent).  This is a
+   'replace all' (DOM §): one coalesced childList record on NODE with the removed
+   children and the (possibly) new text node."
   (if (char-data-p node)
-      (setf (h:dnode-data node) text)
-      (let ((children (h:dnode-children node)))
+      (progn (mo-record-chardata node (or (h:dnode-data node) ""))
+             (setf (h:dnode-data node) text))
+      (let* ((children (h:dnode-children node))
+             (removed (and (mo-recording-p) (coerce children 'list))))
         (loop for c across children do (setf (h:dnode-parent c) nil))
         (setf (fill-pointer children) 0)
-        (when (plusp (length text))
-          (h:dom-append node (h:make-text text))))))
+        (let ((new-text (when (plusp (length text)) (h:make-text text))))
+          (when new-text (h:dom-append node new-text))
+          (when (or removed new-text)
+            (mo-record-childlist node :added (and new-text (list new-text))
+                                 :removed removed))))))
 
 (defun nullable-string (v)
   "A nullable DOMString attribute setter value: null or undefined -> \"\" (DOM
@@ -166,16 +173,28 @@
 innerHTML/outerHTML setters); everything else stringifies normally."
   (if (eq v js:*null*) "" (jstr v)))
 
-(defun dom-detach (node) (when (h:dnode-parent node) (h:dom-remove node)))
+(defun dom-detach (node)
+  ;; Removing NODE from its parent queues a childList removal record on that
+  ;; parent (DOM §remove); the record captures the siblings before the removal.
+  (let ((parent (h:dnode-parent node)))
+    (when parent
+      (mo-record-childlist parent :removed (list node)
+                           :prev (node-prev-sibling node) :next (node-next-sibling node))
+      (h:dom-remove node))))
 
 (defun replace-all-children (node fragment)
   "Detach every child of NODE and append FRAGMENT's children in their place
-(the innerHTML-setter 'replace all' step)."
-  (let ((children (h:dnode-children node)))
-    (loop for c across children do (setf (h:dnode-parent c) nil))
-    (setf (fill-pointer children) 0))
-  (loop for c across (copy-seq (h:dnode-children fragment))
-        do (h:dom-remove c) (h:dom-append node c)))
+(the innerHTML-setter 'replace all' step).  Queues one coalesced childList record
+on NODE with the removed children and the newly inserted ones (DOM §replace all)."
+  (let ((removed (and (mo-recording-p) (coerce (h:dnode-children node) 'list)))
+        (added (and (mo-recording-p) (coerce (h:dnode-children fragment) 'list))))
+    (let ((children (h:dnode-children node)))
+      (loop for c across children do (setf (h:dnode-parent c) nil))
+      (setf (fill-pointer children) 0))
+    (loop for c across (copy-seq (h:dnode-children fragment))
+          do (h:dom-remove c) (h:dom-append node c))
+    (when (or removed added)
+      (mo-record-childlist node :added added :removed removed))))
 
 (defun mark-fragment-scripts-started (ctx fragment)
   "Set the 'already started' flag on every <script> parsed as part of FRAGMENT
@@ -307,15 +326,32 @@ children; a Text/Comment/CDATA/PI/DocumentType parent throws HierarchyRequestErr
                    (and (null child) (plusp (element-child-count parent))))
            (bad)))))))
 
+(defun insert-back-sibling (parent ref)
+  "The node a childList addition record records as previousSibling: REF's previous
+   sibling, or PARENT's last child when appending (REF NIL)."
+  (if ref
+      (node-prev-sibling ref)
+      (let ((ch (h:dnode-children parent)))
+        (and (plusp (length ch)) (aref ch (1- (length ch)))))))
+
 (defun insert-into (parent node ref)
   "Insert NODE (or, if NODE is a fragment, each of its children) into PARENT
-   before REF (NIL = append). Returns NODE."
+   before REF (NIL = append). Returns NODE.  Queues the childList mutation
+   records (DOM §insert): a fragment first queues a removal record for its
+   own emptied children, then PARENT gets one addition record for the inserted
+   nodes; a single node's removal from an old parent is recorded by DOM-DETACH."
   (if (eq (h:dnode-kind node) :fragment)
-      (loop for c across (copy-seq (h:dnode-children node))
-            do (h:dom-remove c) (if ref (h:dom-insert-before parent c ref)
-                                     (h:dom-append parent c)))
-      (progn (dom-detach node)
-             (if ref (h:dom-insert-before parent node ref) (h:dom-append parent node))))
+      (let ((kids (and (mo-recording-p) (coerce (h:dnode-children node) 'list))))
+        (when kids (mo-record-childlist node :removed kids))
+        (let ((prev (and (mo-recording-p) (insert-back-sibling parent ref))))
+          (loop for c across (copy-seq (h:dnode-children node))
+                do (h:dom-remove c) (if ref (h:dom-insert-before parent c ref)
+                                        (h:dom-append parent c)))
+          (when kids (mo-record-childlist parent :added kids :prev prev :next ref))))
+      (let ((prev (and (mo-recording-p) (insert-back-sibling parent ref))))
+        (dom-detach node)             ; records the removal from any old parent
+        (if ref (h:dom-insert-before parent node ref) (h:dom-append parent node))
+        (mo-record-childlist parent :added (list node) :prev prev :next ref)))
   node)
 
 (defun node-next-sibling (node)
@@ -475,10 +511,13 @@ replaceChildren + the query surface) plus getElementById (DOM §4.2.7)."
   (macrolet ((n (this) `(require-node ctx ,this)))
     (defmethod* ctx proto "remove" 0 (this a) (declare (ignore a))
       (let ((node (n this)))
-        (when (h:dnode-parent node)
-          (adjust-ranges-for-removal ctx node)
-          (ni-pre-remove ctx node)
-          (h:dom-remove node) (setf (context-dirty ctx) t)))
+        (let ((parent (h:dnode-parent node)))
+          (when parent
+            (adjust-ranges-for-removal ctx node)
+            (ni-pre-remove ctx node)
+            (mo-record-childlist parent :removed (list node)
+                                 :prev (node-prev-sibling node) :next (node-next-sibling node))
+            (h:dom-remove node) (setf (context-dirty ctx) t))))
       js:*undefined*)
     ;; before/after/replaceWith must skip any argument nodes when choosing the
     ;; reference sibling (DOM §"viable previous/next sibling"), so that passing a
@@ -813,14 +852,20 @@ top document takes it from the base URL."
 (defun set-attr (node name value)
   (let* ((n (attr-name name)) (v (jstr value))
          (cell (assoc n (h:dnode-attrs node) :test #'string=)))
+    (when (and (mo-recording-p) (not (internal-attr-p n)))
+      (mo-record-attr *ctx* node n nil (and cell (cdr cell))))
     (if cell (setf (cdr cell) v)
         (setf (h:dnode-attrs node)
               (append (h:dnode-attrs node) (list (cons n v)))))))
 (defun remove-attr (node name)
   ;; removeAttribute removes the FIRST attribute whose qualified name matches
   ;; (DOM §remove-an-attribute-by-name); :count 1 keeps any same-qname twins.
-  (setf (h:dnode-attrs node)
-        (remove (attr-name name) (h:dnode-attrs node) :key #'car :test #'string= :count 1)))
+  (let* ((n (attr-name name))
+         (cell (assoc n (h:dnode-attrs node) :test #'string=)))
+    (when (and cell (mo-recording-p) (not (internal-attr-p n)))
+      (mo-record-attr *ctx* node n nil (cdr cell)))
+    (setf (h:dnode-attrs node)
+          (remove n (h:dnode-attrs node) :key #'car :test #'string= :count 1))))
 
 ;;; ---- namespaced attributes + Attr / NamedNodeMap (DOM §4.9/§Attr) ----------
 ;;; An attribute's value + qualified name live in a (qname . value) cons inside the
@@ -1027,6 +1072,8 @@ top document takes it from the base URL."
    value — updating in place or appending a new cons (DOM §setAttributeNS)."
   (multiple-value-bind (ns prefix local) (validate-extract ctx ns qname)
     (let ((cell (find-attr-ns ctx el ns local)))
+      (when (mo-recording-p)
+        (mo-record-attr ctx el local ns (and cell (cdr cell))))
       (if cell
           (setf (cdr cell) (jstr value))
           (let ((c (cons (jstr qname) (jstr value))))
@@ -1037,8 +1084,11 @@ top document takes it from the base URL."
 
 (defun detach-attr-cell (ctx el cell)
   "Remove attribute CELL from EL, clearing its Attr wrapper's owner."
-  (setf (h:dnode-attrs el) (remove cell (h:dnode-attrs el) :test #'eq))
   (let ((rec (gethash cell (context-attr-recs ctx))))
+    (when (and (mo-recording-p) (not (internal-attr-p (car cell))))
+      (mo-record-attr ctx el (if rec (attr-rec-local rec) (car cell))
+                      (and rec (attr-rec-ns rec)) (cdr cell)))
+    (setf (h:dnode-attrs el) (remove cell (h:dnode-attrs el) :test #'eq))
     (when rec (setf (attr-rec-owner rec) nil)))
   (setf (context-dirty ctx) t))
 
@@ -1389,8 +1439,10 @@ top document takes it from the base URL."
     (defgetset ctx np "nodeValue" (this)
       (if (char-data-p (n this)) (h:dnode-data (n this)) js:*null*)
       ;; DOM §nodeValue setter: a null/undefined value acts as the empty string.
-      (v) (when (char-data-p (n this))
-            (setf (h:dnode-data (n this)) (nullable-string v)) (setf (context-dirty ctx) t)))
+      (v) (let ((node (n this)))
+            (when (char-data-p node)
+              (mo-record-chardata node (or (h:dnode-data node) ""))
+              (setf (h:dnode-data node) (nullable-string v)) (setf (context-dirty ctx) t))))
     (defgetset ctx np "textContent" (this)
       ;; DOM §textContent: a CharacterData/PI node returns its own data; Document /
       ;; DocumentType return null; other nodes return descendant text concatenated.
@@ -1439,6 +1491,8 @@ top document takes it from the base URL."
           (throw-dom ctx "NotFoundError" 8 "node is not a child"))
         (adjust-ranges-for-removal ctx child)
         (ni-pre-remove ctx child)
+        (mo-record-childlist parent :removed (list child)
+                             :prev (node-prev-sibling child) :next (node-next-sibling child))
         (h:dom-remove child) (setf (context-dirty ctx) t) (arg a 0)))
     (defmethod* ctx np "replaceChild" 2 (this a)
       (let* ((parent (n this)) (new (require-node ctx (arg a 0)))
@@ -1448,10 +1502,22 @@ top document takes it from the base URL."
         (ensure-replace-validity ctx new parent old)
         ;; Reference child is old's next sibling; if that is NEW itself, advance
         ;; past it (DOM §replace), then swap old out for NEW.
-        (let ((ref (node-next-sibling old)))
+        ;; DOM §replace (matching Chrome's record shape): NEW is first adopted —
+        ;; i.e. detached from its old parent, which fires an *un*suppressed
+        ;; childList removal record (this is what makes n52/n53 emit two records);
+        ;; then OLD's removal and NEW's re-insertion are suppressed and coalesced
+        ;; into ONE record on PARENT carrying addedNodes/removedNodes + OLD's
+        ;; original siblings.
+        (let ((ref (node-next-sibling old)) (prev (node-prev-sibling old)))
           (when (eq ref new) (setf ref (node-next-sibling new)))
-          (h:dom-remove old)
-          (insert-into parent new ref))
+          (dom-detach new)                        ; adopt: records NEW's removal
+          (let ((old-here (eq (h:dnode-parent old) parent)))
+            (let ((*mo-suppress* t))
+              (when old-here (h:dom-remove old))
+              (insert-into parent new ref))
+            (mo-record-childlist parent :added inserted
+                                 :removed (and old-here (list old))
+                                 :prev prev :next ref)))
         (setf (context-dirty ctx) t)
         (dolist (n2 inserted) (run-inserted-scripts ctx n2))
         (arg a 1)))
@@ -1677,6 +1743,8 @@ top document takes it from the base URL."
           (throw-dom ctx "InvalidCharacterError" 5 "empty attribute name"))
         (unless (internal-attr-p name)
           (let ((cell (find-attr-qname el name)) (v (jstr (arg a 1))))
+            (when (mo-recording-p)
+              (mo-record-attr ctx el name nil (and cell (cdr cell))))
             (if cell (setf (cdr cell) v)
                 (setf (h:dnode-attrs el) (append (h:dnode-attrs el) (list (cons name v))))))
           (setf (context-dirty ctx) t)
@@ -1702,7 +1770,8 @@ top document takes it from the base URL."
               (cond (cell (cond ((and has force) js:*true*)
                                 (t (detach-attr-cell ctx el cell) js:*false*)))
                     ((and has (not force)) js:*false*)
-                    (t (setf (h:dnode-attrs el) (append (h:dnode-attrs el) (list (cons lname ""))))
+                    (t (when (mo-recording-p) (mo-record-attr ctx el lname nil nil))
+                       (setf (h:dnode-attrs el) (append (h:dnode-attrs el) (list (cons lname ""))))
                        (setf (context-dirty ctx) t) js:*true*))))))
     (defmethod* ctx ep "hasAttribute" 1 (this a)
       (let* ((el (n this)) (name (adjust-qname ctx el (arg a 0))))
@@ -1931,8 +2000,10 @@ top document takes it from the base URL."
 (defun install-chardata-proto (ctx cp)
   (macrolet ((n (this) `(require-node ctx ,this))
              (cd-data (this) `(or (h:dnode-data (n ,this)) ""))
-             (store (this val) `(progn (setf (h:dnode-data (n ,this)) ,val)
-                                       (setf (context-dirty ctx) t))))
+             (store (this val) `(let ((%cd (n ,this)))
+                                  (mo-record-chardata %cd (or (h:dnode-data %cd) ""))
+                                  (setf (h:dnode-data %cd) ,val)
+                                  (setf (context-dirty ctx) t))))
     (flet ((need (a k) "WebIDL: throw TypeError when fewer than K arguments were passed."
              (when (< (length a) k)
                (js:js-throw (js:make-native-error "TypeError" "not enough arguments")))))

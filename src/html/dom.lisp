@@ -100,3 +100,83 @@ If REF is NIL, append.  Used for foster parenting."
   "Serialize DOCUMENT's subtree to the html5lib tree-construction text format."
   (with-output-to-string (out)
     (loop for ch across (dnode-children document) do (serialize-node ch 0 out))))
+
+;;; ---- HTML fragment serialization (WHATWG HTML §13.3) -------------------
+;;; Produces real HTML markup (for Element.innerHTML/outerHTML,
+;;; insertAdjacentHTML round-trips, and the XMLSerializer's HTML path).
+
+(defparameter *html-void*
+  '("area" "base" "br" "col" "embed" "hr" "img" "input" "keygen" "link"
+    "meta" "param" "source" "track" "wbr"))
+;; Elements whose text-child contents are serialized literally (no escaping).
+(defparameter *html-rawtext*
+  '("style" "script" "xmp" "iframe" "noembed" "noframes" "plaintext" "noscript"))
+
+(defun %escape-html (s attribute-p)
+  "HTML text/attribute-value escaping (§13.3): & \\u00a0 always; in text also
+< and >; in an attribute value also \"."
+  (with-output-to-string (o)
+    (loop for c across s do
+      (cond ((char= c #\&) (write-string "&amp;" o))
+            ((char= c #\No-Break_Space) (write-string "&nbsp;" o))
+            ((and attribute-p (char= c #\")) (write-string "&quot;" o))
+            ((and (not attribute-p) (char= c #\<)) (write-string "&lt;" o))
+            ((and (not attribute-p) (char= c #\>)) (write-string "&gt;" o))
+            (t (write-char c o))))))
+
+(defun %attr-qualified-name (a)
+  "The serialized attribute name.  A namespaced attr may carry a stored
+prefix (\"xml:lang\", \"xlink:href\", \"xmlns:x\") in its car already; use it as-is."
+  (car a))
+
+(defun serialize-html-node (node out)
+  "Serialize NODE (an element/text/comment/…) as HTML markup into stream OUT,
+including the node itself and its descendants (the 'outer' form)."
+  (ecase (dnode-kind node)
+    (:element
+     (let* ((ns (dnode-namespace node))
+            (tag (dnode-name node)))
+       (write-char #\< out) (write-string tag out)
+       (dolist (a (dnode-attrs node))
+         (write-char #\Space out)
+         (write-string (%attr-qualified-name a) out)
+         (write-string "=\"" out)
+         (write-string (%escape-html (or (cdr a) "") t) out)
+         (write-char #\" out))
+       (write-char #\> out)
+       (unless (and (eq ns :html) (member tag *html-void* :test #'string=))
+         (serialize-html-children node out)
+         (write-string "</" out) (write-string tag out) (write-char #\> out))))
+    (:text
+     (let ((parent (dnode-parent node)))
+       (if (and parent (eq (dnode-kind parent) :element)
+                (eq (dnode-namespace parent) :html)
+                (member (dnode-name parent) *html-rawtext* :test #'string=))
+           (write-string (or (dnode-data node) "") out)
+           (write-string (%escape-html (or (dnode-data node) "") nil) out))))
+    (:comment
+     (write-string "<!--" out) (write-string (or (dnode-data node) "") out)
+     (write-string "-->" out))
+    (:cdata
+     (write-string "<![CDATA[" out) (write-string (or (dnode-data node) "") out)
+     (write-string "]]>" out))
+    (:processing-instruction
+     (write-string "<?" out) (write-string (or (dnode-name node) "") out)
+     (write-char #\Space out) (write-string (or (dnode-data node) "") out)
+     (write-char #\> out))
+    (:doctype
+     (write-string "<!DOCTYPE " out) (write-string (or (dnode-name node) "") out)
+     (write-char #\> out))
+    (:fragment (serialize-html-children node out))
+    (:document (serialize-html-children node out))))
+
+(defun serialize-html-children (node out)
+  (loop for ch across (dnode-children node) do (serialize-html-node ch out)))
+
+(defun serialize-html-fragment (node)
+  "The HTML serialization of NODE's *children* (Element.innerHTML getter)."
+  (with-output-to-string (out) (serialize-html-children node out)))
+
+(defun serialize-html-outer (node)
+  "The HTML serialization of NODE itself (Element.outerHTML getter)."
+  (with-output-to-string (out) (serialize-html-node node out)))

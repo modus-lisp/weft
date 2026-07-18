@@ -703,8 +703,21 @@ semantics handled elsewhere."
   (and lang (let ((n (length code)))
               (and (>= (length lang) n) (string= lang code :end1 n)
                    (or (= (length lang) n) (char= (char lang n) #\-))))))
-(defun turkic-lang-p (lang) (or (lang-prefix-p lang "tr") (lang-prefix-p lang "az")))
-(defun lithuanian-lang-p (lang) (lang-prefix-p lang "lt"))
+(defun lang-script-subtag (lang)
+  "The BCP47 script subtag of (lowercased) LANG — the first 4-alpha subtag — or NIL."
+  (and lang (loop with start = 0
+                  for pos = (position #\- lang :start start)
+                  for sub = (subseq lang start (or pos (length lang)))
+                  when (and (= (length sub) 4) (every #'alpha-char-p sub)) return sub
+                  while pos do (setf start (1+ pos)))))
+(defun latin-casing-lang-p (lang code)
+  "T if LANG selects CODE's Latin-script casing tailoring: LANG is CODE (or a
+CODE- subtag) whose script subtag, if present, is Latn.  An explicit non-Latin
+script (e.g. tr-Cyrl) suppresses the tailoring (CSS Text 3 §2.1 languages)."
+  (and (lang-prefix-p lang code)
+       (let ((s (lang-script-subtag lang))) (or (null s) (string= s "latn")))))
+(defun turkic-lang-p (lang) (or (latin-casing-lang-p lang "tr") (latin-casing-lang-p lang "az")))
+(defun lithuanian-lang-p (lang) (latin-casing-lang-p lang "lt"))
 
 (defun case-ignorable-char-p (c)
   "Approx Unicode Case_Ignorable: combining marks + a few format/punct chars.
@@ -799,8 +812,15 @@ language tailoring (CSS Text 3 §2.1, Unicode SpecialCasing)."
         ((string= transform "uppercase") (transform-upper word (and node (node-lang node))))
         ((string= transform "lowercase") (transform-lower word (and node (node-lang node))))
         ((and (string= transform "capitalize") (plusp (length word)))
-         (let ((m (gethash (char-code (char word 0)) *full-upcase-map*)))
-           (concatenate 'string (or m (string (char-upcase (char word 0)))) (subseq word 1))))
+         ;; capitalize titlecases only the first *letter* unit; non-letters
+         ;; (e.g. enclosed alphanumerics, category So) are left untouched.
+         (let ((c (char word 0)))
+           (concatenate 'string
+                        (if (alpha-char-p c)
+                            (or (gethash (char-code c) *full-titlecase-map*)
+                                (string (char-upcase c)))
+                            (string c))
+                        (subseq word 1))))
         (t word)))
 
 (defun word-w (word &optional style)

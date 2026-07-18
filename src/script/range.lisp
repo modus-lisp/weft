@@ -319,7 +319,20 @@
           (append-frag-children frag np)
           (setf (rg-sc rr) (h:dnode-parent np) (rg-so rr) (node-index np)
                 (rg-ec rr) (h:dnode-parent np) (rg-eo rr) (1+ (node-index np)))))
-      js:*undefined*)))
+      js:*undefined*)
+    ;; DOM Parsing §Range.createContextualFragment: parse HTML in the context of
+    ;; the range's start node's nearest element (default <body>).
+    (defmethod* ctx rp "createContextualFragment" 1 (this a)
+      (when (null a)
+        (js:js-throw (js:make-native-error "TypeError" "createContextualFragment requires 1 argument")))
+      (let* ((rr (r this)) (html (jstr (arg a 0)))
+             (elt (loop for n = (rg-sc rr) then (h:dnode-parent n)
+                        while n when (eq (h:dnode-kind n) :element) return n))
+             (ctxname (if (and elt (not (string= (h:dnode-name elt) "html")))
+                          (h:dnode-name elt) "body"))
+             (frag (h:parse-fragment html ctxname)))
+        (adopt-fragment-owners ctx frag (owner-doc-node ctx (rg-sc rr)))
+        (wrap ctx frag)))))
 
 (defun partially-contained-nodes (rr)
   "Nodes that are an inclusive ancestor of exactly one of the range's boundary

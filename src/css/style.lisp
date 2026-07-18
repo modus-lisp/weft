@@ -949,7 +949,11 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
                     (unless grow (setf (cstyle-flex-grow cs) 1.0))))))))   ; lone basis -> grow 1
         ((string= prop "margin")
          (let ((parts (split-tokens (string-trim '(#\Space) value))))
-           ;; per-edge auto margins (flags used by flex/grid + block centering).
+           ;; per-edge auto margins (flags used by flex/grid + block centering).  The
+           ;; shorthand replaces all four edges, so clear every auto flag first, then
+           ;; set the ones this value names.
+           (setf (cstyle-margin-top-auto cs) nil (cstyle-margin-right-auto cs) nil
+                 (cstyle-margin-bottom-auto cs) nil (cstyle-margin-left-auto cs) nil)
            (flet ((autop (i) (and (> (length parts) i) (string-equal (nth i parts) "auto"))))
              (case (length parts)
                (1 (when (autop 0) (setf (cstyle-margin-top-auto cs) t (cstyle-margin-right-auto cs) t
@@ -965,10 +969,10 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
                   (when (autop 3) (setf (cstyle-margin-left-auto cs) t)))))
            (apply-box value fs cs #'(setf cstyle-margin-top) #'(setf cstyle-margin-right) #'(setf cstyle-margin-bottom) #'(setf cstyle-margin-left))))
         ((string= prop "padding") (apply-pad-box value fs cs #'(setf cstyle-padding-top) #'(setf cstyle-padding-right) #'(setf cstyle-padding-bottom) #'(setf cstyle-padding-left)))
-        ((string= prop "margin-top") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-top-auto cs) t) (let ((v (len))) (when v (setf (cstyle-margin-top cs) v)))))
-        ((string= prop "margin-right") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-right-auto cs) t) (let ((v (len))) (when v (setf (cstyle-margin-right cs) v)))))
-        ((string= prop "margin-bottom") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-bottom-auto cs) t) (let ((v (len))) (when v (setf (cstyle-margin-bottom cs) v)))))
-        ((string= prop "margin-left") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-left-auto cs) t) (let ((v (len))) (when v (setf (cstyle-margin-left cs) v)))))
+        ((string= prop "margin-top") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-top-auto cs) t) (let ((v (len))) (when v (setf (cstyle-margin-top cs) v (cstyle-margin-top-auto cs) nil)))))
+        ((string= prop "margin-right") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-right-auto cs) t) (let ((v (len))) (when v (setf (cstyle-margin-right cs) v (cstyle-margin-right-auto cs) nil)))))
+        ((string= prop "margin-bottom") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-bottom-auto cs) t) (let ((v (len))) (when v (setf (cstyle-margin-bottom cs) v (cstyle-margin-bottom-auto cs) nil)))))
+        ((string= prop "margin-left") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-left-auto cs) t) (let ((v (len))) (when v (setf (cstyle-margin-left cs) v (cstyle-margin-left-auto cs) nil)))))
         ((string= prop "padding-top") (setf (cstyle-padding-top cs) (pad-len value fs)))
         ((string= prop "padding-right") (setf (cstyle-padding-right cs) (pad-len value fs)))
         ((string= prop "padding-bottom") (setf (cstyle-padding-bottom cs) (pad-len value fs)))

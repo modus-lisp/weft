@@ -2029,7 +2029,19 @@ column distributes grow/shrink into; NIL means auto (size to content)."
           (flet ((layout-line (litems lbases lgrows lshrinks ly &optional forced-cross)
                    (let* ((n (length litems))
                           (lgap (* gap (max 0 (1- n))))
-                          (lfree (- content-w (+ (reduce #'+ lbases) lgap)))
+                          ;; Each item's non-auto main-axis (left+right) margins count
+                          ;; toward the hypothetical main size, so free space and
+                          ;; justify-content spacing are computed on the item OUTER
+                          ;; sizes (CSS Flexbox §9.2/§9.7).  Auto margins are absorbed
+                          ;; separately below and contribute 0 here.
+                          (lmargins (mapcar (lambda (it)
+                                              (let ((is (st styles it)))
+                                                (if (null is) 0
+                                                    (+ (if (css:cstyle-margin-left-auto is) 0 (css:cstyle-margin-left is))
+                                                       (if (css:cstyle-margin-right-auto is) 0 (css:cstyle-margin-right is))))))
+                                            litems))
+                          (lmargin-sum (reduce #'+ lmargins))
+                          (lfree (- content-w (+ (reduce #'+ lbases) lgap lmargin-sum)))
                           (lsum-grow (reduce #'+ lgrows))
                           (scaled (mapcar #'* lshrinks lbases))
                           (sum-scaled (reduce #'+ scaled))
@@ -2038,7 +2050,7 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                                        ((and (< lfree 0) (> sum-scaled 0))
                                         (mapcar (lambda (b sc) (max 0 (+ b (* lfree (/ sc sum-scaled))))) lbases scaled))
                                        (t lbases)))
-                          (used (+ (reduce #'+ sizes) lgap))
+                          (used (+ (reduce #'+ sizes) lgap lmargin-sum))
                           (extra (max 0 (- content-w used)))
                           ;; auto margins on the main axis absorb positive free space
                           ;; BEFORE justify-content (CSS Flexbox §8.1): each takes an
@@ -2058,7 +2070,11 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                           (x (if (and (not mauto) (string= justify "space-around")) (+ start (/ between 2)) start))
                           (boxes '()) (max-h 0))
                      (loop for it in litems for w in sizes
-                           for is = (st styles it) do
+                           for is = (st styles it)
+                           ;; fixed leading/trailing main-axis margins (0 when auto)
+                           for ml = (if (and is (not (css:cstyle-margin-left-auto is))) (css:cstyle-margin-left is) 0)
+                           for mr = (if (and is (not (css:cstyle-margin-right-auto is))) (css:cstyle-margin-right is) 0)
+                           do
                        (when (and mauto is (css:cstyle-margin-left-auto is)) (incf x auto-unit))
                        (multiple-value-bind (lb adv)
                            (let* ((is (st styles it))
@@ -2079,7 +2095,10 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                              (layout-node it styles (round x) ly (round w)))
                          (declare (ignore adv))
                          (when lb (push lb boxes) (setf max-h (max max-h (lbox-h lb))))
-                         (incf x w)
+                         ;; layout-node already positioned the border box ML past X;
+                         ;; advance past the whole margin box so the next item clears
+                         ;; both this item's trailing margin and its own leading one.
+                         (incf x (+ ml w mr))
                          (when (and mauto is (css:cstyle-margin-right-auto is)) (incf x auto-unit))
                          (incf x (+ gap between))))
                      (let ((boxes (nreverse boxes))

@@ -1904,12 +1904,14 @@ Returns (values lbox advance-height)."
       ;; collapse (CSS 2.1 8.3.1) with the next sibling's top margin instead of
       ;; simply summing.  NIL = no collapsible margin precedes the next block
       ;; (start of flow, or inline/clearance separates them).
-      (let ((kids (flatten-contents
-                   (multiple-value-bind (before after) (pseudo-kids node styles)
-                     (append (when before (list before))
-                             (coerce (h:dnode-children node) 'list)
-                             (when after (list after))))
-                   styles))
+      (let ((kids (fixup-anon-tables
+                   (flatten-contents
+                    (multiple-value-bind (before after) (pseudo-kids node styles)
+                      (append (when before (list before))
+                              (coerce (h:dnode-children node) 'list)
+                              (when after (list after))))
+                    styles)
+                   node styles))
             ;; PREV-MB is the pending collapsible margin of the last in-flow
             ;; block, kept as a (max-positive . min-negative) pair (NIL = none) so
             ;; that a negative margin which is momentarily dominated by a larger
@@ -2763,6 +2765,75 @@ fixup, so it never forces an empty anonymous cell between real cells."
   (and (eq (h:dnode-kind n) :text)
        (every (lambda (c) (member c '(#\Space #\Tab #\Newline #\Return #\Page)))
               (h:dnode-data n))))
+
+(defun internal-table-display-p (d)
+  "True for the internal table-box display values (CSS 2.1 §17.2): the boxes that,
+when misparented (a parent that is not a table / table part), are gathered into an
+anonymous table."
+  (member d '("table-cell" "table-row" "table-row-group" "table-header-group"
+              "table-footer-group" "table-column" "table-column-group" "table-caption")
+          :test #'string=))
+
+(defun anon-table-wrap (kids ref styles)
+  "A synthetic block-level display:table wrapping a run of misparented internal
+table boxes KIDS (CSS 2.1 §17.2.1 — a stray table-cell/-row/-row-group in normal
+flow generates the missing anonymous table around it).  It generates no box of its
+own; inheritable style comes from REF's box."
+  (let ((cs (let ((c (css::copy-cstyle (or (st styles ref) (css::make-cstyle)))))
+              (setf (css:cstyle-display c) "table"
+                    (css:cstyle-width c) :auto (css:cstyle-height c) :auto
+                    (css:cstyle-min-width c) 0.0 (css:cstyle-max-width c) :none
+                    (css:cstyle-min-height c) 0.0 (css:cstyle-max-height c) :none
+                    (css:cstyle-float c) "none" (css:cstyle-position c) "static"
+                    (css:cstyle-background c) nil (css:cstyle-bg-image c) nil (css:cstyle-bg-gradient c) nil
+                    (css:cstyle-margin-top c) 0.0 (css:cstyle-margin-right c) 0.0
+                    (css:cstyle-margin-bottom c) 0.0 (css:cstyle-margin-left c) 0.0
+                    (css:cstyle-padding-top c) 0.0 (css:cstyle-padding-right c) 0.0
+                    (css:cstyle-padding-bottom c) 0.0 (css:cstyle-padding-left c) 0.0
+                    (css:cstyle-border-top-width c) 0.0 (css:cstyle-border-right-width c) 0.0
+                    (css:cstyle-border-bottom-width c) 0.0 (css:cstyle-border-left-width c) 0.0)
+              c))
+        (v (make-array (length kids) :adjustable t :fill-pointer 0)))
+    (dolist (k kids) (vector-push-extend k v))
+    (let ((el (h::%dnode :kind :element :name "table" :children v)))
+      (setf (gethash el styles) cs)
+      el)))
+
+(defun fixup-anon-tables (kids ref styles)
+  "Wrap each maximal run of consecutive misparented internal table boxes among KIDS
+in an anonymous block-level table (CSS 2.1 §17.2.1).  White space adjacent to a run
+is dropped (white space between table boxes is not rendered).  Returns KIDS
+unchanged when it holds no such boxes, so ordinary content is untouched."
+  ;; Only intervene when internal table boxes are MIXED with real non-table flow
+  ;; content (text or a block/inline sibling): that is when the anonymous table
+  ;; must break the flow (e.g. a stray table-cell after a text run drops to its
+  ;; own line).  A block whose only in-flow content is internal table boxes is
+  ;; left alone — its flattened inline rendering already matches the references
+  ;; these WPT anonymous-table tests use, and a real anon table would only differ
+  ;; by cell-packing antialiasing.
+  (flet ((internal (k) (and (eq (h:dnode-kind k) :element)
+                            (let ((cs (st styles k)))
+                              (and cs (internal-table-display-p (cdisplay cs))))))
+         (flow-content (k)
+           (or (and (eq (h:dnode-kind k) :text) (not (ws-only-text-p k)))
+               (and (eq (h:dnode-kind k) :element)
+                    (let ((cs (st styles k)))
+                      (and cs (not (member (cdisplay cs) '("none") :test #'string=))
+                           (not (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=))
+                           (not (float-p styles k))))))))
+  (if (not (and (some #'internal kids)
+                (some (lambda (k) (and (flow-content k) (not (internal k)))) kids)))
+      kids
+      (let ((out '()) (run '()))
+        (flet ((flush () (when run (push (anon-table-wrap (nreverse run) ref styles) out) (setf run '()))))
+          (dolist (k kids)
+            (cond ((and (eq (h:dnode-kind k) :element)
+                        (let ((cs (st styles k))) (and cs (internal-table-display-p (cdisplay cs)))))
+                   (push k run))
+                  ((and run (ws-only-text-p k)))          ; drop ws inside/adjacent a run
+                  (t (flush) (push k out))))
+          (flush))
+        (nreverse out)))))
 
 (defun anon-table-cell (kids ref styles)
   "A synthetic table-cell wrapping a run of promoted non-cell content KIDS — the

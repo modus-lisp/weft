@@ -547,7 +547,9 @@ escapes in quoted runs are already decoded by the tokenizer's string reader."
                   (let* ((close (or (position #\) v :start i) n))
                          (args (subseq v (+ i 9) close))
                          (parts (split-counter-args args)))
-                    (push (list :counters (string-downcase (string-trim '(#\Space) (first parts)))
+                    ;; the counter NAME is case-sensitive (CSS 2.1 §12.4); only the
+                    ;; optional list-style keyword is case-insensitive.
+                    (push (list :counters (string-trim '(#\Space) (first parts))
                                 (or (second parts) "")
                                 (and (third parts) (string-downcase (string-trim '(#\Space) (third parts)))))
                           segs)
@@ -556,7 +558,7 @@ escapes in quoted runs are already decoded by the tokenizer's string reader."
                   (let* ((close (or (position #\) v :start i) n))
                          (args (subseq v (+ i 8) close))
                          (parts (split-counter-args args)))
-                    (push (list :counter (string-downcase (string-trim '(#\Space) (first parts)))
+                    (push (list :counter (string-trim '(#\Space) (first parts))
                                 (and (second parts) (string-downcase (string-trim '(#\Space) (second parts)))))
                           segs)
                     (setf i (1+ close))))

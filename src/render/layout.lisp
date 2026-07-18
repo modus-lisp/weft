@@ -871,10 +871,25 @@ text-align.  Returns (values line-boxes total-height)."
                  ;; are kept as before (strut + atomics only) so element geometry is
                  ;; unchanged.  The paint BASELINE additionally maxes in each text
                  ;; run's own ascent, so mixed font sizes on a line share one baseline.
-                 (line-asc (reduce #'max metrics :initial-value strut-asc
-                                   :key (lambda (m) (if (member (fourth m) '(:top :bottom)) (lbox-h (first m)) (second m)))))
-                 (line-desc (reduce #'max metrics :initial-value strut-desc
+                 ;; CSS 2.1 §10.8: the line box height is first set by the
+                 ;; baseline-relative content (the strut and every baseline-aligned
+                 ;; atomic — :normal, incl. sub/super/middle/length).  A `top`- or
+                 ;; `bottom`-aligned box is then placed against the line edge and
+                 ;; grows the box ONLY when it is taller than that: a top box adds to
+                 ;; the descent, a bottom box to the ascent.  (The old code added a
+                 ;; top box's FULL height into the ascent and still kept the strut
+                 ;; descent below it, so a top-aligned image exactly filling the line
+                 ;; made the box ~font-descent too tall.)
+                 (base-asc (reduce #'max metrics :initial-value strut-asc
+                                   :key (lambda (m) (if (member (fourth m) '(:top :bottom)) 0.0 (second m)))))
+                 (base-desc (reduce #'max metrics :initial-value strut-desc
                                     :key (lambda (m) (if (member (fourth m) '(:top :bottom)) 0.0 (third m)))))
+                 (line-asc (reduce #'max metrics :initial-value base-asc
+                                   :key (lambda (m) (if (eq (fourth m) :bottom)
+                                                        (- (lbox-h (first m)) base-desc) 0.0))))
+                 (line-desc (reduce #'max metrics :initial-value base-desc
+                                    :key (lambda (m) (if (eq (fourth m) :top)
+                                                         (- (lbox-h (first m)) base-asc) 0.0))))
                  (lh2 (max 1 (round (+ line-asc line-desc))))
                  ;; baseline offset (line top -> baseline) shared by all text runs.
                  (baseline (round (reduce #'max items :initial-value line-asc

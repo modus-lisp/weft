@@ -1035,6 +1035,12 @@ CB=(px py pw ph) using top/left/right/bottom from CS.  When top (or left) is
              ;; (the `position:fixed; inset:0; margin:auto` centering idiom).
              (h-auto (and (numberp left) (numberp right)
                           (or (css:cstyle-margin-left-auto cs) (css:cstyle-margin-right-auto cs))))
+             ;; CSS 2.1 §10.6.4: definite top AND bottom with an auto block-axis
+             ;; margin — the auto margin(s) absorb the leftover space, two autos
+             ;; center the box (the `position:absolute; inset:0; margin:auto` idiom
+             ;; with a resolved height).
+             (v-auto (and (numberp top) (numberp bottom)
+                          (or (css:cstyle-margin-top-auto cs) (css:cstyle-margin-bottom-auto cs))))
              (nx (cond (h-auto
                         (let ((space (- pw (lbox-w lb) left right))
                               (mla (css:cstyle-margin-left-auto cs))
@@ -1045,7 +1051,14 @@ CB=(px py pw ph) using top/left/right/bottom from CS.  When top (or left) is
                        ((numberp left)  (+ px left ml))
                        ((numberp right) (+ px (- pw (lbox-w lb) right mr)))
                        (t (lbox-x lb))))
-             (ny (cond ((numberp top)    (+ py top mt))
+             (ny (cond (v-auto
+                        (let ((space (- ph (lbox-h lb) top bottom))
+                              (mta (css:cstyle-margin-top-auto cs))
+                              (mba (css:cstyle-margin-bottom-auto cs)))
+                          (+ py top (cond ((and mta mba) (/ (max 0 space) 2.0))
+                                          (mta (max 0 space))
+                                          (t 0)))))
+                       ((numberp top)    (+ py top mt))
                        ((numberp bottom) (+ py (- ph (lbox-h lb) bottom mb)))
                        (t (lbox-y lb)))))
         (shift-box lb (round (- nx (lbox-x lb))) (round (- ny (lbox-y lb))))))))
@@ -3017,7 +3030,7 @@ enclosing scroll container (else the viewport VP-RECT) and its containing block.
                    (when (typep c 'lbox) (walk c sr cr)))))))
     (walk root vp-rect vp-rect)))
 
-(defun layout-tree (document styles width &optional viewport-height scroll-to)
+(defun layout-tree (document styles width &optional viewport-height scroll-to abs-vh)
   (let* ((*floats* nil) (*abs-pending* nil) (*fixed-pending* nil)
          (*intrinsic-cache* (make-hash-table :test 'equal))
          ;; Lay out the ROOT element (<html>), not <body>: the root's own width /
@@ -3047,10 +3060,15 @@ enclosing scroll container (else the viewport VP-RECT) and its containing block.
                ;; face it pins, even though little content trails below #top.
                (scroll-y (if anchor (max 0 (round (lbox-y anchor))) 0))
                ;; Absolutes with no positioned ancestor resolve against the
-               ;; initial containing block (document origin, scrolls with the
-               ;; page); fixed boxes resolve against the viewport (offset by the
-               ;; current scroll so they stay pinned to the visible rectangle).
-               (icb (list 0 0 width ph))
+               ;; initial containing block: the viewport-sized rectangle at the
+               ;; document origin (CSS 2.1 §10.1) — it scrolls with the page, but
+               ;; its height is the viewport's, not the content's, so `bottom` and
+               ;; auto block-axis margins measure the visible box.  Fixed boxes
+               ;; resolve against the viewport (offset by the current scroll so
+               ;; they stay pinned to the visible rectangle).  ABS-VH carries the
+               ;; true viewport height even in reader mode (where the layout height
+               ;; is left indefinite so the page grows to content).
+               (icb (list 0 0 width (or abs-vh viewport-height ph)))
                (vp  (list 0 scroll-y width vph)))
           (dolist (p *abs-pending*)   (finalize-positioned p icb styles))
           (dolist (p *fixed-pending*) (finalize-positioned p vp styles))
@@ -3579,7 +3597,8 @@ Two height models:
          (vph (and viewport-p (round viewport-height))))
     (declare (ignore pre-hook))
     (multiple-value-bind (root adv) (layout-tree doc styles width vph
-                                                 (and viewport-p scroll-to))
+                                                 (and viewport-p scroll-to)
+                                                 (and viewport-height (round viewport-height)))
       (declare (ignore adv))
       (let* ((content-h (if root (round (+ (lbox-y root) (lbox-h root) 8)) min-height))
              (height (if vph vph (min max-height (max min-height content-h))))

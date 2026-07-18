@@ -79,6 +79,7 @@
                   :components ((:file "packages") (:file "font") (:file "font-bold")
                                (:file "canvas") (:file "image") (:file "jpeg") (:file "vector")
                                (:file "text") (:file "hyphen-en") (:file "hyphenate")
+                               (:file "case-map")
                                (:file "layout") (:file "grid") (:file "interact")))))))
 
 ;; The scripting seam: binds shuttle (a pure-CL JavaScript engine) to the weft

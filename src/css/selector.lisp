@@ -824,8 +824,15 @@ namespaces) → invalid; `*|` and `|` (any / no namespace) are accepted."
             ((char= (char s i) #\]) (values t (1+ i)))
             (t (values nil i))))))
 
+(defparameter *legacy-pseudo-elements* '("before" "after" "first-line" "first-letter")
+  "Pseudo-elements that CSS 2.1 also accepts written with a single colon; for the
+`a pseudo-element must be the last simple' rule they count as pseudo-ELEMENTS even
+in single-colon form.")
+
 (defun sv-pseudo (s i n)
-  "Validate a pseudo-class/element; S[i] is at ':'.  Return (values ok new-i)."
+  "Validate a pseudo-class/element; S[i] is at ':'.  Return (values ok new-i is-pe)
+where IS-PE is true when the simple is a pseudo-ELEMENT (nothing may follow it in
+the selector — CSS 2.1 §5.10 / Selectors 4 §3.3)."
   (incf i)
   (let ((double nil))
     (when (and (< i n) (char= (char s i) #\:)) (setf double t) (incf i))
@@ -841,23 +848,33 @@ namespaces) → invalid; `*|` and `|` (any / no namespace) are accepted."
                 (incf i)
                 (when (zerop depth) (return)))
               (unless (zerop depth) (return-from sv-pseudo (values nil i)))  ; unbalanced
-              (let ((arg (subseq s start (1- i))))
+              (let ((arg (string-trim '(#\Space #\Tab #\Newline #\Return) (subseq s start (1- i)))))
                 (cond
+                  ;; :lang()/:nth-*()/:not() etc. require a non-empty argument; the
+                  ;; forgiving list pseudos (:is/:where/:matches/:any) accept empty.
+                  ((and (zerop (length arg))
+                        (not (member lname *forgiving-functional-pseudos* :test #'string=)))
+                   (values nil i))
                   ((member lname *strict-functional-pseudos* :test #'string=)
                    (if (selector-list-valid-p arg) (values t i) (values nil i)))
                   (t (values t i)))))            ; forgiving / other functional args
             ;; simple pseudo
-            (if (if double
-                    (member lname *known-pseudo-elements* :test #'string=)
-                    (member lname *known-pseudo-classes* :test #'string=))
-                (values t i)
-                (values nil i)))))))
+            (cond
+              (double (if (member lname *known-pseudo-elements* :test #'string=)
+                          (values t i t) (values nil i)))
+              ((member lname *legacy-pseudo-elements* :test #'string=) (values t i t))
+              ((member lname *known-pseudo-classes* :test #'string=) (values t i))
+              (t (values nil i))))))))
 
 (defun sv-compound (s i n)
   "Validate one compound selector at S[i]; must consume ≥1 simple.
-Return (values ok new-i)."
-  (let ((count 0))
+Return (values ok new-i saw-pe) where SAW-PE is true when this compound ends with
+a pseudo-element (so nothing may follow it — CSS 2.1 §5.10 / Selectors 4 §3.3)."
+  (let ((count 0) (pe nil))
     (loop while (< i n) do
+      ;; a pseudo-element must be the last simple of the last compound: any simple
+      ;; after one already seen makes the selector invalid.
+      (when pe (return-from sv-compound (values nil i)))
       (let ((c (char s i)))
         (cond
           ((char= c #\.)
@@ -873,15 +890,15 @@ Return (values ok new-i)."
              (unless ok (return-from sv-compound (values nil j)))
              (setf i j) (incf count)))
           ((char= c #\:)
-           (multiple-value-bind (ok j) (sv-pseudo s i n)
+           (multiple-value-bind (ok j is-pe) (sv-pseudo s i n)
              (unless ok (return-from sv-compound (values nil j)))
-             (setf i j) (incf count)))
+             (setf i j) (incf count) (when is-pe (setf pe t))))
           ((or (char= c #\*) (char= c #\|) (ident-start-p c))
            (multiple-value-bind (ok j) (sv-type s i n)
              (unless ok (return-from sv-compound (values nil j)))
              (setf i j) (incf count)))
           (t (return)))))                    ; ws / combinator / end
-    (if (plusp count) (values t i) (values nil i))))
+    (if (plusp count) (values t i pe) (values nil i))))
 
 (defun sv-complex (s)
   "Validate one complex selector string (already comma-split).  A leading or
@@ -890,11 +907,15 @@ trailing combinator, or a bad/absent compound, is invalid."
     (let ((n (length s)) (i 0))
       (when (zerop n) (return-from sv-complex nil))
       (loop
-        (multiple-value-bind (ok j) (sv-compound s i n)
-          (unless ok (return-from sv-complex nil))
-          (setf i j))
-        (loop while (and (< i n) (css-ws-p (char s i))) do (incf i))  ; ws
-        (when (>= i n) (return-from sv-complex t))                    ; done
+        (let ((saw-pe nil))
+          (multiple-value-bind (ok j pe) (sv-compound s i n)
+            (unless ok (return-from sv-complex nil))
+            (setf i j saw-pe pe))
+          (loop while (and (< i n) (css-ws-p (char s i))) do (incf i))  ; ws
+          (when (>= i n) (return-from sv-complex t))                    ; done
+          ;; a pseudo-element ends the selector: nothing (combinator+compound) may
+          ;; follow it (CSS 2.1 §5.10) — e.g. `p:first-line p` is invalid.
+          (when saw-pe (return-from sv-complex nil)))
         ;; explicit combinator?
         (when (member (char s i) '(#\> #\+ #\~))
           (incf i)

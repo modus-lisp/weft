@@ -1437,9 +1437,12 @@ Returns (values lbox advance-height)."
                     (when (string= (cdisplay cs) "table")
                       (setf bw (max bw (+ (table-min-width node styles (- avail-w ml mr)) pad-bord))))
                     (max 0 bw)))
-           ;; margin:auto centering when width is constrained
+           ;; margin:auto centering when width is constrained — a definite width, a
+           ;; definite max-width, or a width transferred from a definite height through
+           ;; an aspect-ratio (all leave leftover inline space for the auto margins).
            (ml (if (and (css:cstyle-margin-left-auto cs) (css:cstyle-margin-right-auto cs)
-                        (or (numberp spec-w) (numberp max-w)) (< width avail-w))
+                        (or (numberp spec-w) (numberp max-w) (and ar used-h (null spec-w)))
+                        (< width avail-w))
                    (max 0 (floor (- avail-w width) 2)) ml))
            (content-w (max 0 (- width pad-bord)))
            ;; aspect-ratio-derived content-box height: when the box has a ratio

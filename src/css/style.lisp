@@ -63,7 +63,9 @@
   ;; CSS Transforms: TRANSFORM is a list of (fn arg...) (e.g. ("translate" "10px" "5px")),
   ;; NIL = none.  TRANSFORM-ORIGIN is ((val unit) (val unit)) or NIL (= 50% 50%).
   (transform nil) (transform-origin nil)
-  (content nil))      ; generated-content string for ::before/::after (NIL = no box)
+  ;; CSS 2.1 §12.4 counters: each an alist of (name . integer) — NOT inherited.
+  (counter-reset nil) (counter-increment nil)
+  (content nil))      ; generated-content string (or (:tmpl seg...) template) for ::before/::after (NIL = no box)
 
 ;;; ---- UA defaults --------------------------------------------------------
 (defparameter *block-tags*
@@ -485,28 +487,105 @@ against AVAIL-H if definite, else computes to none (NIL = no ceiling)."
         (#\, (when (zerop depth) (push (subseq s start i) out) (setf start (1+ i))))))
     (push (subseq s start) out) (nreverse out)))
 
+(defun %read-css-string (v i)
+  "Read a quoted string starting at index I in V (V[I] is the quote).  Returns
+\(values decoded-string next-index)."
+  (let ((q (char v i)) (n (length v)))
+    (with-output-to-string (out)
+      (let ((j (1+ i)))
+        (loop while (and (< j n) (char/= (char v j) q)) do
+          (when (and (char= (char v j) #\\) (< (1+ j) n)) (incf j))
+          (write-char (char v j) out) (incf j))
+        (return-from %read-css-string (values (get-output-stream-string out) (1+ j)))))))
+
 (defun parse-content (value)
-  "Parse a 'content' value into a generated string, or NIL (none/normal/no box).
-Handles 'string' / \"string\" (incl. an empty string -> an empty but present
-box, marked by the empty string) and concatenated string tokens; non-string
-values (attr(), counters, images) yield an empty box.  CSS escapes (e.g. \\a0)
-are already decoded by the tokenizer's string reader, so VALUE's quoted runs are
-literal text here."
+  "Parse a 'content' value into a generated STRING, a TEMPLATE (:tmpl seg ...) when
+it references counter()/counters(), or NIL (none/normal/no box).  A template
+segment is a literal string, (:counter name style) or (:counters name sep style);
+it is resolved to a string once counter values are known (RESOLVE-COUNTERS).  CSS
+escapes in quoted runs are already decoded by the tokenizer's string reader."
   (let ((v (string-trim '(#\Space #\Tab #\Newline) value)))
-    (cond ((or (string-equal v "none") (string-equal v "normal")) nil)
-          ((and (plusp (length v)) (member (char v 0) '(#\' #\")))
+    (cond
+      ((or (string-equal v "none") (string-equal v "normal")) nil)
+      ((not (or (search "counter(" v :test #'char-equal)
+                (search "counters(" v :test #'char-equal)))
+       ;; no counter reference: concatenated quoted strings -> a flat string
+       ;; (attr()/url() and other bare tokens still yield an empty-but-present box).
+       (if (and (plusp (length v)) (member (char v 0) '(#\' #\")))
            (with-output-to-string (out)
              (let ((i 0) (n (length v)))
                (loop while (< i n) do
-                 (let ((q (char v i)))
-                   (if (member q '(#\' #\"))
-                       (let ((j (1+ i)))
-                         (loop while (and (< j n) (char/= (char v j) q)) do
-                           (when (and (char= (char v j) #\\) (< (1+ j) n)) (incf j))
-                           (write-char (char v j) out) (incf j))
-                         (setf i (1+ j)))
-                       (incf i)))))))
-          (t ""))))   ; attr()/counter()/url() -> present-but-empty box
+                 (if (member (char v i) '(#\' #\"))
+                     (multiple-value-bind (s j) (%read-css-string v i)
+                       (write-string s out) (setf i j))
+                     (incf i)))))
+           ""))
+      (t
+       ;; template: walk the value emitting string / counter / counters segments.
+       (let ((segs '()) (i 0) (n (length v)))
+         (flet ((ci-prefix (p) (and (<= (+ i (length p)) n)
+                                    (string-equal p (subseq v i (+ i (length p)))))))
+           (loop while (< i n) do
+             (let ((c (char v i)))
+               (cond
+                 ((member c '(#\' #\"))
+                  (multiple-value-bind (s j) (%read-css-string v i)
+                    (push s segs) (setf i j)))
+                 ((ci-prefix "counters(")
+                  (let* ((close (or (position #\) v :start i) n))
+                         (args (subseq v (+ i 9) close))
+                         (parts (split-counter-args args)))
+                    (push (list :counters (string-downcase (string-trim '(#\Space) (first parts)))
+                                (or (second parts) "")
+                                (and (third parts) (string-downcase (string-trim '(#\Space) (third parts)))))
+                          segs)
+                    (setf i (1+ close))))
+                 ((ci-prefix "counter(")
+                  (let* ((close (or (position #\) v :start i) n))
+                         (args (subseq v (+ i 8) close))
+                         (parts (split-counter-args args)))
+                    (push (list :counter (string-downcase (string-trim '(#\Space) (first parts)))
+                                (and (second parts) (string-downcase (string-trim '(#\Space) (second parts)))))
+                          segs)
+                    (setf i (1+ close))))
+                 (t (incf i))))))
+         (cons :tmpl (nreverse segs)))))))
+
+(defun split-counter-args (s)
+  "Split a counter()/counters() argument list S on top-level commas, honouring
+quoted strings (so the separator string may contain a comma).  Returns a list of
+trimmed argument strings; a quoted arg is returned decoded without its quotes."
+  (let ((args '()) (i 0) (n (length s)) (start 0))
+    (flet ((emit (end)
+             (let ((a (string-trim '(#\Space #\Tab #\Newline) (subseq s start end))))
+               (if (and (plusp (length a)) (member (char a 0) '(#\' #\")))
+                   (push (%read-css-string a 0) args)
+                   (push a args)))))
+      (loop while (< i n) do
+        (let ((c (char s i)))
+          (cond ((member c '(#\' #\"))
+                 (multiple-value-bind (str j) (%read-css-string s i)
+                   (declare (ignore str)) (setf i j)))
+                ((char= c #\,) (emit i) (setf start (1+ i)) (incf i))
+                (t (incf i)))))
+      (emit n)
+      (nreverse args))))
+
+(defun parse-counter-ops (value)
+  "Parse a `counter-reset`/`counter-increment` value into an alist of
+\(name . integer).  `none` -> NIL.  A bare name defaults to DEFAULT (0 for reset,
+1 for increment), applied by the caller."
+  (let ((v (string-trim '(#\Space #\Tab #\Newline) value)))
+    (when (and (plusp (length v)) (not (string-equal v "none")))
+      (let ((toks (remove "" (uiop:split-string v :separator '(#\Space #\Tab #\Newline)) :test #'string=))
+            (ops '()) (i 0))
+        (loop while (< i (length toks)) do
+          (let* ((name (nth i toks))
+                 (next (and (< (1+ i) (length toks)) (nth (1+ i) toks)))
+                 (num (and next (ignore-errors (parse-integer next)))))
+            (if num (progn (push (cons name num) ops) (incf i 2))
+                (progn (push (cons name :default) ops) (incf i)))))
+        (nreverse ops)))))
 
 (defun apply-font-shorthand (cs value parent-cs)
   "Best-effort `font` shorthand: [style|variant|weight ...] <size>[/<line-height>]
@@ -696,6 +775,14 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
       (cond
         ((string= prop "display") (setf (cstyle-display cs) (normalize-display value)))
         ((string= prop "content") (setf (cstyle-content cs) (parse-content value)))
+        ((string= prop "counter-reset")
+         (setf (cstyle-counter-reset cs)
+               (mapcar (lambda (op) (cons (car op) (if (eq (cdr op) :default) 0 (cdr op))))
+                       (parse-counter-ops value))))
+        ((string= prop "counter-increment")
+         (setf (cstyle-counter-increment cs)
+               (mapcar (lambda (op) (cons (car op) (if (eq (cdr op) :default) 1 (cdr op))))
+                       (parse-counter-ops value))))
         ((string= prop "color")
          (if (string-equal (string-trim '(#\Space) value) "inherit")
              (when parent-cs (setf (cstyle-color cs) (cstyle-color parent-cs)))   ; a{color:inherit} resets the UA link colour
@@ -1382,6 +1469,84 @@ of :normal|:italic.  Rules lacking a family or any src url are dropped."
                                               (t 400))
                                 :style (if (and sraw (search "italic" (string-downcase sraw))) :italic :normal)))))))
 
+(defun int->roman (n upper)
+  (if (or (<= n 0) (> n 3999)) (format nil "~d" n)
+      (let ((vals '((1000 . "M") (900 . "CM") (500 . "D") (400 . "CD") (100 . "C")
+                    (90 . "XC") (50 . "L") (40 . "XL") (10 . "X") (9 . "IX")
+                    (5 . "V") (4 . "IV") (1 . "I")))
+            (m n))
+        (let ((r (with-output-to-string (s)
+                   (dolist (p vals) (loop while (>= m (car p)) do (write-string (cdr p) s) (decf m (car p)))))))
+          (if upper r (string-downcase r))))))
+
+(defun int->alpha (n upper)
+  (if (<= n 0) (format nil "~d" n)
+      (let ((chars '()) (m n) (base (char-code (if upper #\A #\a))))
+        (loop while (> m 0) do (decf m) (push (code-char (+ base (mod m 26))) chars) (setf m (floor m 26)))
+        (coerce chars 'string))))
+
+(defun format-counter (n style)
+  "Format counter value N (an integer) with counter STYLE (a list-style-type
+name; NIL = decimal), per CSS 2.1 §12.4.1."
+  (cond ((null style) (format nil "~d" n))
+        ((string= style "decimal") (format nil "~d" n))
+        ((string= style "decimal-leading-zero") (if (and (>= n 0) (< n 10)) (format nil "0~d" n) (format nil "~d" n)))
+        ((string= style "lower-roman") (int->roman n nil))
+        ((string= style "upper-roman") (int->roman n t))
+        ((member style '("lower-alpha" "lower-latin") :test #'string=) (int->alpha n nil))
+        ((member style '("upper-alpha" "upper-latin") :test #'string=) (int->alpha n t))
+        ((string= style "none") "")
+        (t (format nil "~d" n))))
+
+(defun resolve-counters (document styles)
+  "Assign CSS 2.1 §12.4 counter values in document order (a stack per counter
+name, keyed by the DOM depth at which each was reset, so a reset's scope covers
+the element, its following siblings and their descendants), then resolve every
+content template (:tmpl ...) in STYLES to a final string."
+  (let ((stacks (make-hash-table :test 'equal)))   ; name -> list of (value . depth), innermost first
+    (labels ((counter-val (name) (let ((s (gethash name stacks))) (if s (car (first s)) 0)))
+             (do-reset (ops depth)
+               (dolist (op ops)
+                 (let* ((name (car op)) (val (cdr op)) (s (gethash name stacks)))
+                   (loop while (and s (> (cdr (first s)) depth)) do (pop s))
+                   (if (and s (= (cdr (first s)) depth))
+                       (setf (car (first s)) val)
+                       (push (cons val depth) s))
+                   (setf (gethash name stacks) s))))
+             (do-incr (ops)
+               (dolist (op ops)
+                 (let* ((name (car op)) (val (cdr op)) (s (gethash name stacks)))
+                   (if s (incf (car (first s)) val)
+                       (setf (gethash name stacks) (list (cons val 0)))))))  ; implicit root reset 0
+             (pop-deeper (depth)
+               (maphash (lambda (name s)
+                          (loop while (and s (>= (cdr (first s)) depth)) do (pop s))
+                          (setf (gethash name stacks) s))
+                        stacks))
+             (resolve (cs)
+               (when (and cs (consp (cstyle-content cs)) (eq (car (cstyle-content cs)) :tmpl))
+                 (setf (cstyle-content cs)
+                       (with-output-to-string (o)
+                         (dolist (seg (rest (cstyle-content cs)))
+                           (cond ((stringp seg) (write-string seg o))
+                                 ((eq (car seg) :counter)
+                                  (write-string (format-counter (counter-val (second seg)) (third seg)) o))
+                                 ((eq (car seg) :counters)
+                                  (loop for e in (reverse (gethash (second seg) stacks)) for first = t then nil do
+                                    (unless first (write-string (third seg) o))
+                                    (write-string (format-counter (car e) (fourth seg)) o)))))))))
+             (walk (n depth)
+               (when (eq (weft.html:dnode-kind n) :element)
+                 (let ((cs (gethash n styles))
+                       (bcs (gethash (cons n :before) styles))
+                       (acs (gethash (cons n :after) styles)))
+                   (when cs (do-reset (cstyle-counter-reset cs) depth) (do-incr (cstyle-counter-increment cs)) (resolve cs))
+                   (when bcs (do-reset (cstyle-counter-reset bcs) (1+ depth)) (do-incr (cstyle-counter-increment bcs)) (resolve bcs))
+                   (loop for c across (weft.html:dnode-children n) do (walk c (1+ depth)))
+                   (when acs (do-reset (cstyle-counter-reset acs) (1+ depth)) (do-incr (cstyle-counter-increment acs)) (resolve acs))
+                   (pop-deeper (1+ depth))))))
+      (loop for c across (weft.html:dnode-children document) do (walk c 0)))))
+
 (defun compute-styles (document stylesheet)
   "Compute a CSTYLE for every element under DOCUMENT, applying STYLESHEET (a list
 of CSS-RULEs).  Returns a hash-table element->CSTYLE."
@@ -1528,6 +1693,9 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                        (let ((child-bloom (logior anc-bloom (el-own-bloom n))))
                          (loop for c across (weft.html:dnode-children n) do (walk c cs vars child-bloom)))))))))
       (loop for c across (weft.html:dnode-children document) do (walk c nil nil 0)))
+    ;; second pass: assign counter values in document order and resolve every
+    ;; content template that references counter()/counters() (CSS 2.1 §12.4).
+    (resolve-counters document styles)
     styles))
 
 (defun spec< (a b)

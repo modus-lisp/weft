@@ -1319,7 +1319,12 @@ shift it to its final top/left."
                ;; overrides §10.3.7), letting auto margins then center it.
                (auto-w (and (member (css:cstyle-width cs) '(nil :auto))
                             (not (member (cdisplay cs) '("table" "inline-table") :test #'string=))))
-               (auto-h (member (css:cstyle-height cs) '(nil :auto)))
+               ;; likewise a table's height is its own content/row model (a minimum grown
+               ;; to fit, css-tables-3), never the top/bottom gap — so it is not an
+               ;; auto-height fill candidate either, letting auto block-margins center it
+               ;; (position-absolute-center: table with top:0;bottom:0;margin:auto).
+               (auto-h (and (member (css:cstyle-height cs) '(nil :auto))
+                            (not (member (cdisplay cs) '("table" "inline-table") :test #'string=))))
                (l (css:cstyle-left cs)) (r (css:cstyle-right cs))
                (tp (css:cstyle-top cs)) (bt (css:cstyle-bottom cs))
                (pos-w (and auto-w (numberp l) (numberp r)

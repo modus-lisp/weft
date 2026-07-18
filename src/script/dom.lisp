@@ -354,11 +354,14 @@ Document and DocumentFragment prototypes."
     (defget ctx proto "lastElementChild" (this) (wrap ctx (dom:last-element-child (n this))))
     (defget ctx proto "childElementCount" (this) (num (dom:child-element-count (n this))))
     (defmethod* ctx proto "querySelector" 1 (this a)
-      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
+      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0))))
+            (css:*target-id* (node-target-id ctx (n this))))
         (let ((m (and sl (qs-first (n this) sl)))) (if m (wrap ctx m) js:*null*))))
     (defmethod* ctx proto "querySelectorAll" 1 (this a)
-      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
-        (make-collection ctx (lambda () (and sl (qs-all (n this) sl))) nil :nodelist)))))
+      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0))))
+            (tid (node-target-id ctx (n this))))
+        (make-collection ctx (lambda () (let ((css:*target-id* tid))
+                                          (and sl (qs-all (n this) sl)))) nil :nodelist)))))
 
 (defun install-fragment-proto (ctx fp)
   "DocumentFragment.prototype: the ParentNode mixin (append/prepend/
@@ -597,6 +600,17 @@ CSS:SELECTOR-LIST-VALID-P validator, distinct from the lenient cascade path."
   (unless (css:selector-list-valid-p str)
     (throw-dom ctx "SyntaxError" 12 (format nil "'~a' is not a valid selector" str)))
   (css:parse-selector-list str))
+
+(defun node-target-id (ctx node)
+  "The URL fragment (sans '#') of NODE's document, bound to CSS:*TARGET-ID* so
+:target can match.  Frame documents carry their fragment in FRAME-FRAGMENTS; the
+top document takes it from the base URL."
+  (let ((doc (owner-document node)))
+    (when doc
+      (or (gethash doc (context-frame-fragments ctx))
+          (and (eq doc (context-document ctx))
+               (let* ((b (context-base ctx)) (h (position #\# b)))
+                 (and h (< (1+ h) (length b)) (subseq b (1+ h)))))))))
 
 (defun qs-first (root selector-list)
   "First descendant element of ROOT (in tree order, excluding ROOT) matching
@@ -1695,21 +1709,26 @@ CSS:SELECTOR-LIST-VALID-P validator, distinct from the lenient cascade path."
              ;; invalid selector throws SyntaxError (DOM §Element.matches).
              (when (null a) (js:js-throw (js:make-native-error
                                           "TypeError" "matches requires 1 argument")))
-             (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
+             (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0))))
+                   (css:*target-id* (node-target-id ctx (n this))))
                (jbool (css:selector-matches-p sl (n this))))))
       (defmethod* ctx ep "matches" 1 (this a) (matches-selector this a))
       ;; legacy aliases (DOM §Element): both delegate to matches().
       (defmethod* ctx ep "webkitMatchesSelector" 1 (this a) (matches-selector this a))
       (defmethod* ctx ep "matchesSelector" 1 (this a) (matches-selector this a)))
     (defmethod* ctx ep "querySelector" 1 (this a)
-      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
+      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0))))
+            (css:*target-id* (node-target-id ctx (n this))))
         (let ((m (and sl (qs-first (n this) sl)))) (if m (wrap ctx m) js:*null*))))
     (defmethod* ctx ep "querySelectorAll" 1 (this a)
-      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
-        (make-collection ctx (lambda () (and sl (qs-all (n this) sl))) nil :nodelist)))
+      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0))))
+            (tid (node-target-id ctx (n this))))
+        (make-collection ctx (lambda () (let ((css:*target-id* tid))
+                                          (and sl (qs-all (n this) sl)))) nil :nodelist)))
     (defmethod* ctx ep "closest" 1 (this a)
       ;; closest() also throws SyntaxError on an invalid selector (DOM §Element).
-      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
+      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0))))
+            (css:*target-id* (node-target-id ctx (n this))))
         (if sl
             (loop for e = (n this) then (h:dnode-parent e)
                   while (and e (eq (h:dnode-kind e) :element))
@@ -2030,11 +2049,14 @@ CSS:SELECTOR-LIST-VALID-P validator, distinct from the lenient cascade path."
       (let ((id (jstr (arg a 0))))
         (wrap ctx (and (plusp (length id)) (dom:get-element-by-id (n this) id)))))
     (defmethod* ctx dp "querySelector" 1 (this a)
-      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
+      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0))))
+            (css:*target-id* (node-target-id ctx (n this))))
         (let ((m (and sl (qs-first (n this) sl)))) (if m (wrap ctx m) js:*null*))))
     (defmethod* ctx dp "querySelectorAll" 1 (this a)
-      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0)))))
-        (make-collection ctx (lambda () (and sl (qs-all (n this) sl))) nil :nodelist)))
+      (let ((sl (parse-selector-or-throw ctx (jstr (arg a 0))))
+            (tid (node-target-id ctx (n this))))
+        (make-collection ctx (lambda () (let ((css:*target-id* tid))
+                                          (and sl (qs-all (n this) sl)))) nil :nodelist)))
     (defmethod* ctx dp "getElementsByTagName" 1 (this a)
       (let ((node (n this)) (tag (string-downcase (jstr (arg a 0)))))
         (make-collection ctx (lambda () (remove node (dom:get-elements-by-tag-name node tag))))))

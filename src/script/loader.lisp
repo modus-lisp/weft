@@ -306,7 +306,8 @@
    parsed as XML: a well-formed one runs its http://www.w3.org/1999/xhtml scripts
    against the parent realm; a malformed one runs none.  Never signals — a load
    failure must not take the page's script down."
-  (let ((content (handler-case (nth-value 1 (load-resource ctx url)) (error () nil))))
+  (let ((content (handler-case (nth-value 1 (load-resource ctx url)) (error () nil)))
+        (frag (let ((h (position #\# url))) (and h (subseq url (1+ h))))))
     (setf (gethash element (context-iframe-docs ctx))
           (cond
             ((and content (xhtml-content-p content))
@@ -315,6 +316,10 @@
                doc))
             (content (parse-into-document content))
             (t (let ((d (h:make-document))) (h:dom-append d (h:make-element "html")) d))))
+    (when (and frag (plusp (length frag)))
+      (setf (gethash (gethash element (context-iframe-docs ctx))
+                     (context-frame-fragments ctx))
+            frag))
     (fire-event-later ctx element "load")))
 
 ;;; ---- document.open / write / close (full document replacement) ------------

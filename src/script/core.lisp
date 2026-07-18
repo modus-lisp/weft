@@ -31,6 +31,7 @@
   (timer-seq 0)             ; monotonic timer id source
   (now 0)                   ; virtual clock (ms) for the timer queue
   (iframe-docs (make-hash-table :test 'eq)) ; iframe/object dnode -> its content document
+  (frame-fragments (make-hash-table :test 'eq)) ; content document -> its URL fragment (sans '#'), for :target
   (canvas-ctxs (make-hash-table :test 'eq)) ; <canvas> dnode -> its CanvasRenderingContext2D host object
   (listeners (make-hash-table :test 'eq))   ; dnode -> list of (type listener capture) entries
   (events (make-hash-table :test 'eq))      ; event wrapper object -> its EVT struct

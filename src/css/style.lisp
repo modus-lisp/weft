@@ -23,6 +23,9 @@
   (text-decoration nil) (list-style "disc")
   (max-width :none) (min-width 0.0) (margin-left-auto nil) (margin-right-auto nil)
   (margin-top-auto nil) (margin-bottom-auto nil)   ; auto block-axis margins (flex/grid)
+  ;; deferred percentage margins (NIL = none) — (:percent N) forms kept symbolic so
+  ;; layout can resolve them against the containing block inline size (CSS 2.1 §8.3).
+  (margin-top-pct nil) (margin-right-pct nil) (margin-bottom-pct nil) (margin-left-pct nil)
   (float "none") (clear "none") (position "static") (box-sizing "content-box") (overflow "visible")
   (vertical-align nil)  ; NIL=baseline | ("top"|"middle"|"bottom"|"sub"|"super") | (num "px"|"em"|"%") — not inherited
   (flex-direction "row") (justify-content "flex-start") (align-items "stretch") (align-content "stretch")
@@ -1209,10 +1212,10 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
                   (when (autop 3) (setf (cstyle-margin-left-auto cs) t)))))
            (apply-box value fs cs #'(setf cstyle-margin-top) #'(setf cstyle-margin-right) #'(setf cstyle-margin-bottom) #'(setf cstyle-margin-left))))
         ((string= prop "padding") (apply-pad-box value fs cs #'(setf cstyle-padding-top) #'(setf cstyle-padding-right) #'(setf cstyle-padding-bottom) #'(setf cstyle-padding-left)))
-        ((string= prop "margin-top") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-top-auto cs) t) (let ((v (len))) (when v (setf (cstyle-margin-top cs) v (cstyle-margin-top-auto cs) nil)))))
-        ((string= prop "margin-right") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-right-auto cs) t) (let ((v (len))) (when v (setf (cstyle-margin-right cs) v (cstyle-margin-right-auto cs) nil)))))
-        ((string= prop "margin-bottom") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-bottom-auto cs) t) (let ((v (len))) (when v (setf (cstyle-margin-bottom cs) v (cstyle-margin-bottom-auto cs) nil)))))
-        ((string= prop "margin-left") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-left-auto cs) t) (let ((v (len))) (when v (setf (cstyle-margin-left cs) v (cstyle-margin-left-auto cs) nil)))))
+        ((string= prop "margin-top") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-top-auto cs) t) (let ((v (margin-len value fs))) (when v (set-margin-edge cs :top v) (setf (cstyle-margin-top-auto cs) nil)))))
+        ((string= prop "margin-right") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-right-auto cs) t) (let ((v (margin-len value fs))) (when v (set-margin-edge cs :right v) (setf (cstyle-margin-right-auto cs) nil)))))
+        ((string= prop "margin-bottom") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-bottom-auto cs) t) (let ((v (margin-len value fs))) (when v (set-margin-edge cs :bottom v) (setf (cstyle-margin-bottom-auto cs) nil)))))
+        ((string= prop "margin-left") (if (string-equal (string-trim '(#\Space) value) "auto") (setf (cstyle-margin-left-auto cs) t) (let ((v (margin-len value fs))) (when v (set-margin-edge cs :left v) (setf (cstyle-margin-left-auto cs) nil)))))
         ((string= prop "padding-top") (setf (cstyle-padding-top cs) (pad-len value fs)))
         ((string= prop "padding-right") (setf (cstyle-padding-right cs) (pad-len value fs)))
         ((string= prop "padding-bottom") (setf (cstyle-padding-bottom cs) (pad-len value fs)))
@@ -1303,12 +1306,42 @@ rather than splitting the colour on the spaces inside its parens."
     (when (> n start) (push (subseq s start n) out))
     (nreverse out)))
 
+(defun margin-len (tok fs)
+  "A margin value: a percentage is kept symbolic as (:percent N) (may be negative) —
+it resolves at layout against the containing block's inline size (CSS 2.1 §8.3) —
+`auto` yields :auto; otherwise a resolved length, defaulting to 0."
+  (let ((tt (string-trim '(#\Space #\Tab #\Newline) tok)))
+    (cond ((string-equal tt "auto") :auto)
+          ((and (> (length tt) 1) (char= (char tt (1- (length tt))) #\%))
+           (let ((n (ignore-errors (read-from-string (subseq tt 0 (1- (length tt)))))))
+             (if (realp n) (list :percent (float n)) 0.0)))
+          (t (resolve-len tt fs)))))
+
+(defun set-margin-edge (cs edge spec)
+  "Store a parsed margin value SPEC (number | (:percent N) | :auto) into the numeric
+and percentage slots for EDGE (:top/:right/:bottom/:left).  A percentage keeps its
+symbolic form in the -pct slot (numeric slot 0 until layout resolves it); a length
+clears the -pct slot.  Auto flags are managed by the caller."
+  (multiple-value-bind (num pct)
+      (if (and (consp spec) (eq (car spec) :percent))
+          (values 0.0 spec)
+          (values (if (numberp spec) spec 0.0) nil))
+    (ecase edge
+      (:top    (setf (cstyle-margin-top cs) num    (cstyle-margin-top-pct cs) pct))
+      (:right  (setf (cstyle-margin-right cs) num   (cstyle-margin-right-pct cs) pct))
+      (:bottom (setf (cstyle-margin-bottom cs) num  (cstyle-margin-bottom-pct cs) pct))
+      (:left   (setf (cstyle-margin-left cs) num    (cstyle-margin-left-pct cs) pct)))))
+
 (defun apply-box (value fs cs top right bottom left)
-  "Apply a 1-4 value box shorthand (top right bottom left CSS order)."
+  "Apply the margin 1-4 value box shorthand (top right bottom left CSS order),
+keeping percentages symbolic in the -pct slots.  TOP/RIGHT/BOTTOM/LEFT setters are
+accepted for signature compatibility but percentages route through SET-MARGIN-EDGE."
+  (declare (ignore top right bottom left))
   (let* ((parts (split-tokens (string-trim '(#\Space) value)))
-         (vals (mapcar (lambda (p) (or (resolve-len p fs) 0.0)) parts)))
+         (vals (mapcar (lambda (p) (or (margin-len p fs) 0.0)) parts)))
     (destructuring-bind (&optional (a 0.0) (b a) (c a) (d b)) vals
-      (funcall top a cs) (funcall right b cs) (funcall bottom c cs) (funcall left d cs))))
+      (set-margin-edge cs :top a) (set-margin-edge cs :right b)
+      (set-margin-edge cs :bottom c) (set-margin-edge cs :left d))))
 
 (defun pad-len (tok fs)
   "A padding value: a percentage is kept symbolic as (:percent N) — it resolves at
@@ -1338,6 +1371,18 @@ unparseable, so a caller with no width still gets a safe number."
          (if (numberp avail) (* avail (/ (second spec) 100.0)) 0.0))
         ((consp spec) (or (resolve-deferred spec avail) 0.0))
         (t 0.0)))
+
+(defun resolve-pct-margins (cs avail)
+  "Resolve CS's deferred percentage margins against inline size AVAIL (px), writing
+the used px into the numeric margin slots (CSS 2.1 §8.3: margin percentages resolve
+against the containing block inline size, block-axis margins included).  Only edges
+carrying a -pct form are touched, and the -pct forms are kept so this is idempotent."
+  (when (numberp avail)
+    (flet ((rz (pct) (* avail (/ (second pct) 100.0))))
+      (let ((p (cstyle-margin-top-pct cs)))    (when p (setf (cstyle-margin-top cs)    (rz p))))
+      (let ((p (cstyle-margin-right-pct cs)))  (when p (setf (cstyle-margin-right cs)  (rz p))))
+      (let ((p (cstyle-margin-bottom-pct cs))) (when p (setf (cstyle-margin-bottom cs) (rz p))))
+      (let ((p (cstyle-margin-left-pct cs)))   (when p (setf (cstyle-margin-left cs)   (rz p)))))))
 
 (defparameter *border-styles*
   '("none" "hidden" "solid" "dotted" "dashed" "double" "groove" "ridge" "inset" "outset"))

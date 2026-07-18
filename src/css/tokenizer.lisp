@@ -85,6 +85,11 @@
         (let ((c (char s i)))
           (cond
             ((and (char= c #\/) (eql (la 1) #\*)) (consume-comment))
+            ;; CDO `<!--` and CDC `-->` (CSS Syntax §4.3.1): SGML comment delimiters,
+            ;; historically wrapped around a stylesheet's rules.  Skip them (they are
+            ;; discarded at the stylesheet top level) so `<!-- div{...} -->` parses.
+            ((and (char= c #\<) (eql (la 1) #\!) (eql (la 2) #\-) (eql (la 3) #\-)) (incf i 4))
+            ((and (char= c #\-) (eql (la 1) #\-) (eql (la 2) #\>)) (incf i 3))
             ((ws-p c) (loop while (and (< i n) (ws-p (char s i))) do (incf i)) (emit :ws))
             ((or (char= c #\") (char= c #\')) (consume-string c))
             ((char= c #\#)

@@ -84,9 +84,11 @@
                  (try-parse-num str))))
          ;; RGB/RGBA parser
          (parse-rgb ()
+           ;; A missing close paren is not fatal: at EOF an open function auto-closes
+           ;; (CSS Syntax §5.4.9), so `rgb(0, 128, 0` yields the components up to end.
            (let* ((open (position #\( s))
                   (close (when open (position #\) s :start open)))
-                  (content (and close (> close open) (subseq s (1+ open) close)))
+                  (content (and open (subseq s (1+ open) (or close (length s)))))
                   (parts (and content (split-comps content)))
                   (n (length parts)))
              (unless (or (= n 3) (= n 4))

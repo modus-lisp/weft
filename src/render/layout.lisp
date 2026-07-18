@@ -2564,12 +2564,16 @@ HN's logo cell is width:18px yet holds a 20px (bordered) <img>, so the column
 must be 20, not 18 (matching how the browser widens the column to fit it).  A
 box-sizing:border-box width already includes padding+border."
   (let* ((cs (st styles cell)) (w (and cs (css:cstyle-width cs)))
-         (bb (and cs (string= (css:cstyle-box-sizing cs) "border-box"))))
+         (bb (and cs (string= (css:cstyle-box-sizing cs) "border-box")))
+         ;; a scroll container (overflow:auto/scroll) has an automatic minimum
+         ;; size of zero: its overflowing content scrolls and does not widen the
+         ;; column (CSS Sizing 3 §5.1).
+         (scroll (and cs (member (css:cstyle-overflow cs) '("auto" "scroll") :test #'equal)))
+         (cmin (if scroll 0 (min-content-width cell styles avail 0 t))))
     (max 0 (if (numberp w)
-               (let ((cmin (min-content-width cell styles avail 0 t)))
-                 (if bb (max w (+ cmin (cell-pad-bord cs)))
-                     (+ (cell-pad-bord cs) (max w cmin))))
-               (+ (cell-pad-bord cs) (min-content-width cell styles avail 0 t))))))
+               (if bb (max w (+ cmin (cell-pad-bord cs)))
+                   (+ (cell-pad-bord cs) (max w cmin)))
+               (+ (cell-pad-bord cs) cmin)))))
 
 (defun cell-spec-width (cell styles)
   "Specified column width contributed by CELL: NIL, a border-box px number, or

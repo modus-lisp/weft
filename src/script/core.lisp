@@ -82,7 +82,7 @@
   (case (h:dnode-kind node)
     (:element (if (eq (h:dnode-namespace node) :svg) :svg-element :element))
     (:document :document) (:text :text) (:cdata :text)
-    (:comment :comment) (:processing-instruction :text)
+    (:comment :comment) (:processing-instruction :pi)
     (:fragment :fragment) (:doctype :doctype) (t :node)))
 
 (defun wrapper-proto (ctx node)

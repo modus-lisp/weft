@@ -450,6 +450,8 @@ replaceChildren + the query surface) plus getElementById (DOM §4.2.7)."
       js:*undefined*)))
 
 (defun copy-dnode (node deep)
+  "A structural copy of NODE (deep when DEEP) without the per-context namespace
+   metadata — used by Range extract/clone where ctx is not threaded."
   (let ((c (ecase (h:dnode-kind node)
              (:element (h:make-element (h:dnode-name node)
                                        (copy-alist (h:dnode-attrs node))
@@ -464,8 +466,46 @@ replaceChildren + the query surface) plus getElementById (DOM §4.2.7)."
              (:fragment (h:make-fragment))
              (:document (h:make-document)))))
     (when (and deep (not (char-data-p node)))
+      (loop for ch across (h:dnode-children node) do (h:dom-append c (copy-dnode ch t))))
+    c))
+
+(defun clone-dnode (ctx node deep)
+  "DOM §\"clone a node\": a copy of NODE (deep when DEEP), preserving the
+   createElementNS namespace metadata, per-attribute namespace records, and a
+   document's content type / about:blank flag."
+  (let ((c (ecase (h:dnode-kind node)
+             (:element (h:make-element (h:dnode-name node)
+                                       (copy-alist (h:dnode-attrs node))
+                                       (h:dnode-namespace node)))
+             (:text (h:make-text (h:dnode-data node)))
+             (:comment (h:make-comment (h:dnode-data node)))
+             (:cdata (h:make-cdata (h:dnode-data node)))
+             (:processing-instruction
+              (h:make-processing-instruction (h:dnode-name node) (h:dnode-data node)))
+             (:doctype (h:make-doctype (h:dnode-name node) (h:dnode-public node)
+                                       (h:dnode-system node)))
+             (:fragment (h:make-fragment))
+             (:document (h:make-document)))))
+    (when (eq (h:dnode-kind node) :element)
+      (let ((info (gethash node (context-ns-info ctx))))
+        (when info (setf (gethash c (context-ns-info ctx)) (copy-list info))))
+      ;; Carry each attribute's namespace record onto the clone's fresh cons cell.
+      (loop for orig in (h:dnode-attrs node)
+            for clone in (h:dnode-attrs c)
+            for rec = (gethash orig (context-attr-recs ctx))
+            when rec do (setf (gethash clone (context-attr-recs ctx))
+                              (make-attr-rec :cell clone :ns (attr-rec-ns rec)
+                                             :prefix (attr-rec-prefix rec)
+                                             :local (attr-rec-local rec) :owner c))))
+    (when (eq (h:dnode-kind node) :document)
+      (let ((ct (gethash node (context-doc-content-types ctx))))
+        (when ct (setf (gethash c (context-doc-content-types ctx)) ct)))
+      (when (gethash node (context-blank-url-docs ctx))
+        (setf (gethash c (context-blank-url-docs ctx)) t))
+      (setf (h:dnode-mode c) (h:dnode-mode node)))
+    (when (and deep (not (char-data-p node)))
       (loop for ch across (h:dnode-children node)
-            do (h:dom-append c (copy-dnode ch t))))
+            do (h:dom-append c (clone-dnode ctx ch t))))
     c))
 
 (defun attrs-equal-p (ctx a b)
@@ -742,7 +782,8 @@ of the other)."
     (cond ((equal ns "http://www.w3.org/2000/svg") (proto ctx :svg-element))
           ((equal ns *html-ns*)
            (let ((tbl (proto ctx :html-tag-protos)))
-             (or (and tbl (gethash (h:dnode-name el) tbl))
+             ;; Key on the local name (createElementNS "foo:div" -> "div").
+             (or (and tbl (gethash (element-local ctx el) tbl))
                  (proto ctx :html-unknown))))
           (t (proto ctx :element)))))
 
@@ -939,6 +980,13 @@ of the other)."
     (defmethod* ctx ap "getRootNode" 1 (this a) (declare (ignore a))
       ;; An Attr has no parent, so it is its own root (DOM §).
       this)
+    ;; Cloning an Attr yields a detached Attr with the same namespace/name/value.
+    (defmethod* ctx ap "cloneNode" 1 (this a) (declare (ignore a))
+      (let* ((r (rec this)) (cell (attr-rec-cell r)) (nc (cons (car cell) (cdr cell))))
+        (setf (gethash nc (context-attr-recs ctx))
+              (make-attr-rec :cell nc :ns (attr-rec-ns r) :prefix (attr-rec-prefix r)
+                             :local (attr-rec-local r) :owner nil))
+        (wrap-attr ctx nc)))
     ;; DOM §Node.isSameNode/isEqualNode for Attr (identity / ns+local+value).
     (defmethod* ctx ap "isSameNode" 1 (this a) (jbool (eq this (arg a 0))))
     (defmethod* ctx ap "isEqualNode" 1 (this a)
@@ -1300,7 +1348,12 @@ of the other)."
     (defmethod* ctx np "normalize" 0 (this a) (declare (ignore a))
       (normalize-node ctx (n this)) (setf (context-dirty ctx) t) js:*undefined*)
     (defmethod* ctx np "cloneNode" 1 (this a)
-      (wrap ctx (copy-dnode (n this) (truthy (arg a 0)))))
+      (let* ((node (n this)) (clone (clone-dnode ctx node (truthy (arg a 0)))))
+        ;; The clone's node document is the original's (DOM §clone) — record it so
+        ;; ownerDocument is right while the clone is detached.
+        (unless (eq (h:dnode-kind node) :document)
+          (setf (gethash clone (context-owner-docs ctx)) (node-document ctx node)))
+        (wrap ctx clone)))
     (defmethod* ctx np "contains" 1 (this a)
       (let ((node (n this)) (other (node-of ctx (arg a 0))))
         (jbool (and other (loop for p = other then (h:dnode-parent p)

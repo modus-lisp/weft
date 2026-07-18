@@ -114,6 +114,33 @@ instead of once per rule removes an O(elements x rules) cost on rule-heavy pages
   (if (zerop a) (= index b)
       (let ((q (/ (- index b) a))) (and (integerp q) (>= q 0)))))
 
+(defun split-nth-of (arg)
+  "Split an nth-child()/nth-last-child() argument on the `of` keyword (Selectors 4
+§6.6.1).  Returns (values nth-part of-part) where OF-PART is the selector-list
+string after a whitespace-delimited `of`, or NIL when absent."
+  (let ((n (length arg)) (i 1))
+    (loop while (< i n) do
+      (if (and (css-ws-p (char arg (1- i)))
+               (<= (+ i 2) n)
+               (char-equal (char arg i) #\o) (char-equal (char arg (1+ i)) #\f)
+               (or (= (+ i 2) n) (css-ws-p (char arg (+ i 2)))))
+          (return-from split-nth-of
+            (values (subseq arg 0 i)
+                    (string-trim '(#\Space #\Tab #\Newline #\Return) (subseq arg (+ i 2)))))
+          (incf i)))
+    (values arg nil)))
+
+(defun nth-of-index (n sel-list from-end)
+  "1-based index of N among its element siblings matching SEL-LIST (a list of CX),
+counted from the start (or end when FROM-END).  0 if N does not match SEL-LIST."
+  (let* ((p (el-parent n))
+         (sibs (if p (element-children p) (list n)))
+         (sibs (if from-end (reverse sibs) sibs))
+         (cnt 0))
+    (dolist (c sibs 0)
+      (when (some (lambda (cx) (match-cx cx c)) sel-list) (incf cnt))
+      (when (eq c n) (return (if (some (lambda (cx) (match-cx cx n)) sel-list) cnt 0))))))
+
 (defvar *target-id* nil
   "The current document's URL fragment (sans '#'), bound by the DOM Selectors API
 so :target can match the element with that id; NIL disables :target (cascade path).")
@@ -291,9 +318,17 @@ begins with a digit is a <number> token, not an <ident>, invalidating the rule).
          (or (null p) (eq n (car (last (remove (el-name n) (element-children p)
                                                :key #'el-name :test (complement #'string=))))))))
       ((string= nm "nth-child")
-       (multiple-value-bind (a b) (parse-nth arg) (and a (nth-match-p (el-index n) a b))))
+       (multiple-value-bind (nth of) (split-nth-of arg)
+         (multiple-value-bind (a b) (parse-nth nth)
+           (and a (if of (let ((idx (nth-of-index n (parse-selector-list of) nil)))
+                           (and (plusp idx) (nth-match-p idx a b)))
+                      (nth-match-p (el-index n) a b))))))
       ((string= nm "nth-last-child")
-       (multiple-value-bind (a b) (parse-nth arg) (and a (nth-match-p (el-index-from-end n) a b))))
+       (multiple-value-bind (nth of) (split-nth-of arg)
+         (multiple-value-bind (a b) (parse-nth nth)
+           (and a (if of (let ((idx (nth-of-index n (parse-selector-list of) t)))
+                           (and (plusp idx) (nth-match-p idx a b)))
+                      (nth-match-p (el-index-from-end n) a b))))))
       ((string= nm "nth-of-type")
        (multiple-value-bind (a b) (parse-nth arg) (and a (nth-match-p (el-index-of-type n) a b))))
       ((string= nm "nth-last-of-type")

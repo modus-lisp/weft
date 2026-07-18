@@ -3555,7 +3555,10 @@ z-index keeps tree order (stable)."
 within AVAIL (= box-dim - image-dim).  Honors px and % (and 0); other units 0."
   (if (and (consp comp) (>= (length comp) 2))
       (let ((val (first comp)) (unit (second comp)))
-        (cond ((string= unit "%") (round (* (/ val 100.0) (max 0 avail))))
+        ;; CSS 2.1 §14.2.1: position % = percentage * (area - image), which is
+        ;; NEGATIVE when the image is larger than the positioning area (the image
+        ;; is pulled partly off the near edge).  Do NOT clamp AVAIL to 0.
+        (cond ((string= unit "%") (round (* (/ val 100.0) avail)))
               ((or (string= unit "px") (string= unit "")) (round val))
               (t 0)))
       0))

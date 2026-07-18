@@ -678,14 +678,26 @@ where KIND is :normal (positioned by baseline), :top or :bottom (line-relative).
         ((equal va '("bottom")) (values h 0 :bottom))
         (t (baseline))))))
 
+(defun full-transform (word table simple-fn)
+  "Map each char of WORD to its full Unicode case mapping (a 1->N replacement in
+TABLE, per CSS Text 3 §2.1 / Unicode SpecialCasing), else SIMPLE-FN of the char."
+  (let ((out (make-string-output-stream)))
+    (loop for c across word do
+      (let ((m (gethash (char-code c) table)))
+        (if m (write-string m out) (write-char (funcall simple-fn c) out))))
+    (get-output-stream-string out)))
+
 (defun apply-text-transform (word transform)
   "Apply CSS text-transform to WORD (a whitespace-delimited token, so `capitalize`
-   upper-cases the token's first character)."
+   upper-cases the token's first character).  Uppercase/lowercase use the full
+   Unicode case mapping (SBCL's CHAR-UPCASE/DOWNCASE are bijective-only and miss
+   1->N and non-reversible cases such as ss/i-dotless/sharp-s)."
   (cond ((or (null transform) (string= transform "none")) word)
-        ((string= transform "uppercase") (string-upcase word))
-        ((string= transform "lowercase") (string-downcase word))
+        ((string= transform "uppercase") (full-transform word *full-upcase-map* #'char-upcase))
+        ((string= transform "lowercase") (full-transform word *full-downcase-map* #'char-downcase))
         ((and (string= transform "capitalize") (plusp (length word)))
-         (concatenate 'string (string (char-upcase (char word 0))) (subseq word 1)))
+         (let ((m (gethash (char-code (char word 0)) *full-upcase-map*)))
+           (concatenate 'string (or m (string (char-upcase (char word 0)))) (subseq word 1))))
         (t word)))
 
 (defun word-w (word &optional style)

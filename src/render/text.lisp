@@ -393,9 +393,11 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                                             (when (> c 0d0)
                                               (scribe:blend-coverage scv px py c color)))))))))))
                           (incf penx (+ xadv letter-spacing))))))))
-              (when underline
+              (when (and underline (plusp alpha))
                 ;; underline to UNDERLINE-END-X when given (so a multi-word link's
                 ;; underline runs continuously across the spaces), else to the pen.
+                ;; ALPHA gate: a transparent text colour (currentColor) paints no
+                ;; decoration — fill-rect is opaque, so skip it entirely at alpha 0.
                 (let ((uy (min (1- cy1) (+ baseline (max 1 (round (* 0.12d0 ppem))))))
                       (uend (if underline-end-x (round underline-end-x) (round penx))))
                   (fill-rect cv x uy (max 0 (- uend x)) (max 1 (round (* 0.06d0 ppem))) color)))

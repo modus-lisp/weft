@@ -242,11 +242,12 @@
          (cp (js:make-object :proto np))     ; CharacterData (Text/Comment)
          (evp (js:make-object :proto op))    ; Event.prototype
          (dtp (js:make-object :proto np))    ; DocumentType.prototype
+         (fp (js:make-object :proto np))     ; DocumentFragment.prototype (inherits Node)
          (svgep (js:make-object :proto ep))  ; SVGElement.prototype (inherits Element)
          (window (js:eval-script realm "globalThis")))
     (setf (context-protos ctx)
           (list :node np :element ep :document dp :text cp :comment cp
-                :fragment np :event evp :doctype dtp :svg-element svgep :window window))
+                :fragment fp :event evp :doctype dtp :svg-element svgep :window window))
     (install-node-proto ctx np)
     (install-element-proto ctx ep)
     (install-svg-element-proto ctx svgep)
@@ -259,6 +260,7 @@
     ;; leaking these methods onto every node.)
     (install-parent-node-methods ctx ep)
     (install-parent-node-methods ctx dp)
+    (install-fragment-proto ctx fp)
     (install-child-node-methods ctx ep)
     (install-child-node-methods ctx cp)
     (install-child-node-methods ctx dtp)

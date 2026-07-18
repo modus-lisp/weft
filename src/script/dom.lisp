@@ -199,6 +199,32 @@ children; a Text/Comment/CDATA/PI/DocumentType parent throws HierarchyRequestErr
         (setf (context-dirty ctx) t))
       js:*undefined*)))
 
+(defun install-parent-node-queries (ctx proto)
+  "ParentNode query surface (DOM §4.2.6): children / first|lastElementChild /
+childElementCount / querySelector / querySelectorAll.  Shared by Element,
+Document and DocumentFragment prototypes."
+  (macrolet ((n (this) `(require-node ctx ,this)))
+    (defget ctx proto "children" (this)
+      (let ((node (n this))) (make-collection ctx (lambda () (element-children-list node)))))
+    (defget ctx proto "firstElementChild" (this) (wrap ctx (dom:first-element-child (n this))))
+    (defget ctx proto "lastElementChild" (this) (wrap ctx (dom:last-element-child (n this))))
+    (defget ctx proto "childElementCount" (this) (num (dom:child-element-count (n this))))
+    (defmethod* ctx proto "querySelector" 1 (this a)
+      (let ((sl (ignore-errors (css:parse-selector-list (jstr (arg a 0))))))
+        (let ((m (and sl (qs-first (n this) sl)))) (if m (wrap ctx m) js:*null*))))
+    (defmethod* ctx proto "querySelectorAll" 1 (this a)
+      (let ((sl (ignore-errors (css:parse-selector-list (jstr (arg a 0))))))
+        (make-collection ctx (lambda () (and sl (qs-all (n this) sl))))))))
+
+(defun install-fragment-proto (ctx fp)
+  "DocumentFragment.prototype: the ParentNode mixin (append/prepend/
+replaceChildren + the query surface) plus getElementById (DOM §4.2.7)."
+  (macrolet ((n (this) `(require-node ctx ,this)))
+    (install-parent-node-methods ctx fp)
+    (install-parent-node-queries ctx fp)
+    (defmethod* ctx fp "getElementById" 1 (this a)
+      (let ((m (dom:get-element-by-id (n this) (jstr (arg a 0))))) (if m (wrap ctx m) js:*null*)))))
+
 (defun install-child-node-methods (ctx proto)
   "ChildNode mixin (DOM §4.2.7): before / after / replaceWith / remove."
   (macrolet ((n (this) `(require-node ctx ,this)))
@@ -499,7 +525,26 @@ of the other)."
                  ((and (stringp key) (string= key "namedItem")) named)
                  ((and name-fn (stringp key) (funcall name-fn key))
                   (wrap ctx (funcall name-fn key)))
-                 (t (js:js-get (js:js-object-proto o) key o))))))))
+                 (t (js:js-get (js:js-object-proto o) key o)))))
+      ;; [[HasProperty]] so `"length" in coll`, `0 in coll` and named lookups
+      ;; work (assert_array_equals probes `"length" in actual`).
+      :has (lambda (o key)
+             (let ((key (js:to-property-key key)))
+               (or (and (stringp key)
+                        (or (string= key "length") (string= key "item") (string= key "namedItem")))
+                   (and (index-string-p key) (< (parse-integer key) (length (funcall list-fn))))
+                   (and name-fn (stringp key) (funcall name-fn key) t)
+                   (js:js-has (js:js-object-proto o) key))))
+      ;; own enumerable keys: the integer indices then any exposed names.
+      :own-keys (lambda (o) (declare (ignore o))
+                  (let ((l (funcall list-fn)))
+                    (append (loop for i from 0 below (length l)
+                                  collect (princ-to-string i))
+                            (when name-fn
+                              (loop for node in l
+                                    for nm = (or (dom:get-attribute node "id")
+                                                 (dom:get-attribute node "name"))
+                                    when (and nm (plusp (length nm))) collect nm))))))))
 
 (defparameter +form-control-tags+
   '("input" "button" "select" "textarea" "fieldset" "object" "output"))

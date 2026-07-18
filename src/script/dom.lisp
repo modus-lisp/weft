@@ -770,12 +770,37 @@ of the other)."
 (defun index-string-p (k)
   (and (stringp k) (plusp (length k)) (every #'digit-char-p k)))
 
+(defun collection-named-node (ctx list name)
+  "HTMLCollection namedItem (DOM §): the first element with id=NAME, else the first
+   HTML-namespace element with name=NAME."
+  (or (find-if (lambda (el) (equal (dom:get-attribute el "id") name)) list)
+      (find-if (lambda (el) (and (equal (element-real-ns ctx el) *html-ns*)
+                                 (equal (dom:get-attribute el "name") name)))
+               list)))
+
+(defun collection-supported-names (ctx list)
+  "HTMLCollection supported property names (DOM §): each element's id, then (for
+   HTML elements) its name, in tree order, de-duplicated."
+  (let ((seen '()) (out '()))
+    (flet ((add (v) (when (and v (plusp (length v)) (not (member v seen :test #'string=)))
+                      (push v seen) (push v out))))
+      (dolist (el list (nreverse out))
+        (add (dom:get-attribute el "id"))
+        (when (equal (element-real-ns ctx el) *html-ns*) (add (dom:get-attribute el "name")))))))
+
 (defun make-collection (ctx list-fn &optional name-fn (kind :htmlcollection))
   "A live NodeList/HTMLCollection: length + integer indexing + item(), reading
-   LIST-FN (-> a fresh CL list of weft nodes) on every access. If NAME-FN is
-   given, an unknown string key is looked up by name (namedItem semantics).
-   KIND (:htmlcollection or :nodelist) selects the interface prototype."
+   LIST-FN (-> a fresh CL list of weft nodes) on every access.  For an
+   :htmlcollection, NAME-FN overrides namedItem semantics (form controls); when
+   omitted the standard id/name lookup applies.  KIND selects the prototype and
+   whether named access + supported property names are exposed."
   (let* ((realm (context-realm ctx))
+         (html (eq kind :htmlcollection))
+         (lookup (cond (name-fn (lambda (nm) (funcall name-fn nm)))
+                       (html (lambda (nm) (collection-named-node ctx (funcall list-fn) nm)))
+                       (t (constantly nil))))
+         (names (if html (lambda () (collection-supported-names ctx (funcall list-fn)))
+                    (constantly nil)))
          (item (js:native-function realm "item"
                  (lambda (this a) (declare (ignore this))
                    (let ((i (int-arg a 0)) (l (funcall list-fn)))
@@ -783,23 +808,23 @@ of the other)."
                  1))
          (named (js:native-function realm "namedItem"
                   (lambda (this a) (declare (ignore this))
-                    (let ((node (and name-fn (funcall name-fn (jstr (arg a 0))))))
+                    (let ((node (funcall lookup (jstr (arg a 0)))))
                       (if node (wrap ctx node) js:*null*)))
-                  1)))
-    (js:make-host-object realm
+                  1))
+         (m (js:make-host-object realm
       :proto (or (proto ctx kind) (js:eval-script realm "Object.prototype"))
       :get (lambda (o key rcv) (declare (ignore rcv))
              (let ((key (js:to-property-key key)))   ; obj[0] arrives as a number
                (cond
                  ((and (stringp key) (string= key "length"))
                   (num (length (funcall list-fn))))
+                 ((and (stringp key) (string= key "item")) item)
+                 ((and (stringp key) (string= key "namedItem")) named)
                  ((index-string-p key)
                   (let ((i (parse-integer key)) (l (funcall list-fn)))
                     (if (< i (length l)) (wrap ctx (nth i l)) js:*undefined*)))
-                 ((and (stringp key) (string= key "item")) item)
-                 ((and (stringp key) (string= key "namedItem")) named)
-                 ((and name-fn (stringp key) (funcall name-fn key))
-                  (wrap ctx (funcall name-fn key)))
+                 ((and html (stringp key) (funcall lookup key))
+                  (wrap ctx (funcall lookup key)))
                  (t (js:js-get (js:js-object-proto o) key o)))))
       ;; [[HasProperty]] so `"length" in coll`, `0 in coll` and named lookups
       ;; work (assert_array_equals probes `"length" in actual`).
@@ -808,18 +833,27 @@ of the other)."
                (or (and (stringp key)
                         (or (string= key "length") (string= key "item") (string= key "namedItem")))
                    (and (index-string-p key) (< (parse-integer key) (length (funcall list-fn))))
-                   (and name-fn (stringp key) (funcall name-fn key) t)
+                   (and html (stringp key) (funcall lookup key) t)
                    (js:js-has (js:js-object-proto o) key))))
-      ;; own enumerable keys: the integer indices then any exposed names.
+      ;; own keys: the integer indices then the supported property names.
       :own-keys (lambda (o) (declare (ignore o))
-                  (let ((l (funcall list-fn)))
-                    (append (loop for i from 0 below (length l)
-                                  collect (princ-to-string i))
-                            (when name-fn
-                              (loop for node in l
-                                    for nm = (or (dom:get-attribute node "id")
-                                                 (dom:get-attribute node "name"))
-                                    when (and nm (plusp (length nm))) collect nm))))))))
+                  (append (loop for i from 0 below (length (funcall list-fn))
+                                collect (princ-to-string i))
+                          (funcall names))))))
+    ;; [[GetOwnProperty]]: indices are enumerable; named properties are not
+    ;; ([LegacyUnenumerableNamedProperties] on HTMLCollection).
+    (setf (getf (js::js-object-internal m) :get-own-property)
+          (lambda (o key) (declare (ignore o))
+            (let ((l (funcall list-fn)))
+              (cond
+                ((and (index-string-p key) (< (parse-integer key) (length l)))
+                 (js::make-prop :value (wrap ctx (nth (parse-integer key) l))
+                                :enumerable t :configurable t :writable nil))
+                ((and html (stringp key) (member key (funcall names) :test #'string=))
+                 (js::make-prop :value (wrap ctx (funcall lookup key))
+                                :enumerable nil :configurable t :writable nil))
+                (t nil)))))
+    m))
 
 (defparameter +form-control-tags+
   '("input" "button" "select" "textarea" "fieldset" "object" "output"))
@@ -1354,6 +1388,25 @@ of the other)."
       (defgetset ctx cp "data" (this) (cd-data this)
         (v) (store this (null->empty v)))     ; [LegacyNullToEmptyString]
       (defget ctx cp "length" (this) (num (length (cd-data this))))
+      ;; Text.wholeText (DOM §Text): concatenated data of the run of Text nodes
+      ;; contiguous with THIS (previous + this + following), in tree order.
+      (defget ctx cp "wholeText" (this)
+        (let ((node (n this)))
+          (if (member (h:dnode-kind node) '(:text :cdata))
+              (let* ((p (h:dnode-parent node)))
+                (if (null p) (or (h:dnode-data node) "")
+                    (let* ((sibs (h:dnode-children p)) (idx (position node sibs))
+                           (start idx) (end idx))
+                      (loop while (and (> start 0)
+                                       (member (h:dnode-kind (aref sibs (1- start))) '(:text :cdata)))
+                            do (decf start))
+                      (loop while (and (< (1+ end) (length sibs))
+                                       (member (h:dnode-kind (aref sibs (1+ end))) '(:text :cdata)))
+                            do (incf end))
+                      (with-output-to-string (o)
+                        (loop for k from start to end
+                              do (write-string (or (h:dnode-data (aref sibs k)) "") o))))))
+              (cd-data this))))
       (defmethod* ctx cp "appendData" 1 (this a)
         (need a 1)
         (store this (concatenate 'string (cd-data this) (jstr (arg a 0))))
@@ -1395,6 +1448,9 @@ of the other)."
   (macrolet ((n (this) `(require-node ctx ,this)))
     (defget ctx dp "documentElement" (this)
       (wrap ctx (dom:first-element-child (n this))))
+    (defget ctx dp "doctype" (this)
+      (wrap ctx (find-if (lambda (c) (eq (h:dnode-kind c) :doctype))
+                         (h:dnode-children (n this)))))
     (defget ctx dp "body" (this) (wrap ctx (find-tag (n this) "body")))
     (defget ctx dp "head" (this) (wrap ctx (find-tag (n this) "head")))
     (defget ctx dp "forms" (this)
@@ -1537,7 +1593,13 @@ of the other)."
             (document-replace ctx doc buf)
             (remhash doc (context-write-buffers ctx)))))
       js:*undefined*)
-    (defget ctx dp "implementation" (this) (dom-implementation ctx))))
+    ;; document.implementation is per-document and [SameObject] (DOM §Document):
+    ;; memoize the DOMImplementation on the document's own wrapper.
+    (defget ctx dp "implementation" (this)
+      (let ((existing (js:js-get this "__weft_impl")))
+        (if (js:js-object-p existing) existing
+            (let ((impl (js:make-object :proto (proto ctx :domimplementation))))
+              (js:put this "__weft_impl" impl :enumerable nil :configurable t) impl))))))
 
 (defun document-write* (ctx doc source)
   "document.write: buffer into an open() document, else splice at the running
@@ -1560,11 +1622,10 @@ of the other)."
                   (name-start-char-p (char qname (1+ colon))))
              (name-start-char-p (char qname 0))))))
 
-(defun dom-implementation (ctx)
-  "The shared DOMImplementation object for this context."
-  (or (proto ctx :implementation)
-      (let ((impl (js:make-object :proto (js:eval-script (context-realm ctx) "Object.prototype"))))
-        (setf (proto ctx :implementation) impl)
+(defun install-dom-implementation-proto (ctx impl)
+  "DOMImplementation.prototype — the factory methods are context-scoped and
+   ignore their receiver, so all per-document instances share this prototype."
+  (progn
         (defmethod* ctx impl "hasFeature" 2 (this a) js:*true*)
         (defmethod* ctx impl "createDocument" 3 (this a)
           (let* ((d (h:make-document)) (qn (arg a 1)) (dt (arg a 2))
@@ -1603,7 +1664,7 @@ of the other)."
             (unless (valid-qname-p qname)
               (throw-dom ctx "NamespaceError" 14 "malformed qualified name"))
             (wrap ctx (h:make-doctype qname (jstr (arg a 1)) (jstr (arg a 2))))))
-        impl)))
+        impl))
 
 (defun dom-write (ctx str)
   "document.write: parse STR as an HTML fragment and splice its body-level nodes

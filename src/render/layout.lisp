@@ -257,6 +257,13 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                        (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
                          (declare (ignore adv))
                          (atom! lb n)))
+                      ;; an inline-table is an atomic inline (CSS 2.1 §9.2.1 / §17.2):
+                      ;; it lays out with the full table algorithm and participates in
+                      ;; the line as a shrink-to-fit box, like an inline-block.
+                      ((and cs (string= (cdisplay cs) "inline-table"))
+                       (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
+                         (declare (ignore adv))
+                         (when lb (atom! lb n))))
                       ;; A block-level flex/table/grid inside an inline run is not an
                       ;; atomic inline: it breaks the run and lays out as a block
                       ;; (block-in-inline, CSS 2.1 §9.2.1.1).  Hoisted for the enclosing
@@ -1863,7 +1870,15 @@ Returns (values lbox advance-height)."
                           bh))
                  (lb (make-lbox :x box-x :y box-y :w width :h box-h :style cs :node node
                                 :kind :block :children boxes)))
-            (return-from %layout-core (values lb (+ mt box-h mb) mt mb)))))
+            ;; A table box (display:table/-inline-table) may carry table-caption
+            ;; children, which sit above/below the grid inside an anonymous table
+            ;; wrapper box (CSS 2.1 §17.4).  For a caption-less table (and for flex/
+            ;; grid) this returns LB unchanged.
+            (if (member (cdisplay cs) '("table" "inline-table") :test #'string=)
+                (multiple-value-bind (wbox adv)
+                    (wrap-table-captions node styles lb box-x box-y width mt mb)
+                  (return-from %layout-core (values wbox adv mt mb)))
+                (return-from %layout-core (values lb (+ mt box-h mb) mt mb))))))
       ;; multi-column container: fragment the in-flow content into columns
       ;; (css3-multicol).  Gated on *MULTICOL-MEASURING* so the single-column
       ;; measuring pass inside LAYOUT-MULTICOL lays the content out normally.
@@ -3168,6 +3183,51 @@ is taken proportionally from auto columns' shrink room (fixed columns kept)."
               (round (cond ((numberp (css:cstyle-top cs)) (css:cstyle-top cs))
                            ((numberp (css:cstyle-bottom cs)) (- (css:cstyle-bottom cs))) (t 0))))
       (values 0 0)))
+
+(defun table-caption-boxes (node styles)
+  "Direct display:table-caption element children of table NODE (CSS 2.1 §17.4)."
+  (loop for c in (effective-child-elements node styles)
+        when (let ((cs (st styles c))) (and cs (string= (cdisplay cs) "table-caption")))
+          collect c))
+
+(defun wrap-table-captions (node styles lb box-x box-y width mt mb)
+  "Lay out NODE's table-caption children above / below its already-built grid box
+LB (border box at BOX-X/BOX-Y, border-box WIDTH) per each caption's inherited
+caption-side, and return (values box outer-advance).  A table with no captions is
+returned unchanged (LB, its own advance) so ordinary tables keep their exact box
+structure (CSS 2.1 §17.4.1).  The wrapper is an anonymous box (NIL style) so the
+table element's own background/border stays on the grid box only — the caption
+sits outside the table box but inside the table wrapper box."
+  (let ((caps (table-caption-boxes node styles)))
+    (if (null caps)
+        (values lb (+ mt (lbox-h lb) mb))
+        (let ((tops '()) (bots '()))
+          (dolist (cap caps)
+            (let* ((ccs (st styles cap))
+                   (bottom (and ccs (string= (css:cstyle-caption-side ccs) "bottom"))))
+              (if bottom (push cap bots) (push cap tops))))
+          (setf tops (nreverse tops) bots (nreverse bots))
+          (let ((y box-y) (kids '()) (top-h 0))
+            (dolist (cap tops)
+              (multiple-value-bind (clb adv) (layout-node cap styles box-x y width)
+                (when clb (push clb kids) (incf y adv) (incf top-h adv))))
+            ;; drop the grid down past the top captions, then stack bottom ones below
+            (shift-box lb 0 (round (- y (lbox-y lb))))
+            (push lb kids)
+            (incf y (lbox-h lb))
+            (let ((bot-h 0))
+              (dolist (cap bots)
+                (multiple-value-bind (clb adv) (layout-node cap styles box-x y width)
+                  (when clb (push clb kids) (incf y adv) (incf bot-h adv))))
+              (let* ((total-h (+ top-h (lbox-h lb) bot-h))
+                     ;; anonymous table-wrapper box: a fresh style with no background
+                     ;; or border, so the table element's own painting stays on the
+                     ;; grid box LB while an inline-table's atomic placement (which
+                     ;; dereferences the box style) still finds a valid CSTYLE.
+                     (wrapper (make-lbox :x box-x :y box-y :w width :h total-h
+                                         :style (css::make-cstyle) :node node :kind :block
+                                         :children (nreverse kids))))
+                (values wrapper (+ mt total-h mb)))))))))
 
 (defun layout-table (node styles cx cy content-w base-cs &optional target-h)
   "Automatic table layout (CSS 2.1 17.5.2): columns sized to their content (or a

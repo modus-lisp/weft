@@ -69,6 +69,9 @@
   ;; depth (NIL = UA default / not set), used to resolve open-quote/close-quote.
   ;; Inherited.
   (quotes nil)
+  ;; CSS 2.1 §17.4.1 caption-side: top | bottom (inherited); applies to
+  ;; table-caption boxes, positioning the caption above or below the table box.
+  (caption-side "top")
   (content nil))      ; generated-content string (or (:tmpl seg...) template) for ::before/::after (NIL = no box)
 
 ;;; ---- UA defaults --------------------------------------------------------
@@ -103,6 +106,7 @@
             (cstyle-writing-mode cs) (cstyle-writing-mode parent-cs)
             (cstyle-direction cs) (cstyle-direction parent-cs)
             (cstyle-quotes cs) (cstyle-quotes parent-cs)
+            (cstyle-caption-side cs) (cstyle-caption-side parent-cs)
             (cstyle-list-style cs) (cstyle-list-style parent-cs)))
     (cond ((member tag *none-tags* :test #'string=) (setf (cstyle-display cs) "none"))
           ((string= tag "li") (setf (cstyle-display cs) "list-item"))
@@ -936,6 +940,10 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
          (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
            (when (member v '("visible" "hidden" "collapse") :test #'string=)
              (setf (cstyle-visibility cs) v))))
+        ((string= prop "caption-side")
+         (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
+           (when (member v '("top" "bottom") :test #'string=)
+             (setf (cstyle-caption-side cs) v))))
         ((member prop '("letter-spacing" "word-spacing") :test #'string=)
          (let ((v (if (string-equal (string-trim '(#\Space #\Tab #\Newline #\Return) value) "normal") 0.0
                       (parse-size value fs nil))))     ; a <length>; `normal` is 0

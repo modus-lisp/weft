@@ -56,22 +56,28 @@ instead of once per rule removes an O(elements x rules) cost on rule-heavy pages
 ;;;   (:attr name op value)  op in (nil = ~ \| ^ $ *)
 ;;;   (:pseudo name arg)     arg = string or sub-selector-list
 
-(defun match-attr (n name op value)
-  (let ((have (el-attr n name)))
-    (cond ((null op) (and have t))
-          ((null have) nil)
-          ((string= op "=") (string= have value))
-          ((string= op "~=") (member value (split-ws have) :test #'string=))
-          ((string= op "|=") (or (string= have value)
-                                 (and (> (length have) (length value))
-                                      (string= value (subseq have 0 (length value)))
-                                      (char= (char have (length value)) #\-))))
-          ((string= op "^=") (and (plusp (length value)) (<= (length value) (length have))
-                                  (string= value (subseq have 0 (length value)))))
-          ((string= op "$=") (and (plusp (length value)) (<= (length value) (length have))
-                                  (string= value (subseq have (- (length have) (length value))))))
-          ((string= op "*=") (and (plusp (length value)) (search value have) t))
-          (t nil))))
+(defun match-attr (n name op value &optional ci)
+  "CI (Selectors 4 attribute case-insensitivity, the `i` flag) compares the value
+   ASCII-case-insensitively."
+  (let ((have (el-attr n name))
+        (test (if ci #'char-equal #'char=)))
+    (flet ((s= (a b) (and (= (length a) (length b)) (every test a b)))
+           (pre (a b) (and (<= (length a) (length b)) (every test a (subseq b 0 (length a)))))
+           (suf (a b) (and (<= (length a) (length b))
+                           (every test a (subseq b (- (length b) (length a))))))
+           (has (a b) (search a b :test test)))
+      (cond ((null op) (and have t))
+            ((null have) nil)
+            ((string= op "=") (s= have value))
+            ((string= op "~=") (member value (split-ws have) :test (if ci #'string-equal #'string=)))
+            ((string= op "|=") (or (s= have value)
+                                   (and (> (length have) (length value))
+                                        (pre value have)
+                                        (char= (char have (length value)) #\-))))
+            ((string= op "^=") (and (plusp (length value)) (pre value have)))
+            ((string= op "$=") (and (plusp (length value)) (suf value have)))
+            ((string= op "*=") (and (plusp (length value)) (has value have) t))
+            (t nil)))))
 
 (defun parse-nth (arg)
   "Parse an An+B argument; return (values a b) or NIL."
@@ -175,7 +181,7 @@ instead of once per rule removes an O(elements x rules) cost on rule-heavy pages
     (:type (string-equal (el-name n) (second simple)))
     (:class (member (second simple) (el-classes n) :test #'string=))
     (:id (let ((id (el-attr n "id"))) (and id (string= id (second simple)))))
-    (:attr (match-attr n (second simple) (third simple) (fourth simple)))
+    (:attr (match-attr n (second simple) (third simple) (fourth simple) (fifth simple)))
     (:pseudo (match-pseudo n (second simple) (third simple)))))
 
 (defun match-compound (compound n)
@@ -409,7 +415,8 @@ list is built — each rule is keyed to exactly one bucket, so no duplicates."
                         ((and (< i end) (char= (char s i) #\=)) (incf i) "=")
                         (t nil))))
           (loop while (and (< i end) (member (char s i) '(#\Space))) do (incf i))
-          (let ((val (cond ((and (< i end) (member (char s i) '(#\" #\')))
+          (let* ((quoted (and (< i end) (member (char s i) '(#\" #\'))))
+                 (val (cond (quoted
                             (let ((q (char s i)) (start (1+ i)))
                               (incf i) (loop while (and (< i end) (not (char= (char s i) q))) do (incf i))
                               (prog1 (subseq s start i) (when (< i end) (incf i)))))
@@ -428,9 +435,24 @@ list is built — each rule is keyed to exactly one bucket, so no duplicates."
                                         ((char= c #\]) (return))
                                         (t (write-char c out) (incf i))))
                                 (string-trim '(#\Space #\Tab #\Newline)
-                                             (get-output-stream-string out)))))))
+                                             (get-output-stream-string out))))))
+                 (ci nil))
+            ;; Selectors 4 attribute-value flag: a trailing `i`/`s` (whitespace-
+            ;; separated) before ']'.  For a quoted value it sits after the close
+            ;; quote; for an unquoted value it is the last space-separated token.
+            (if quoted
+                (progn
+                  (loop while (and (< i end) (member (char s i) '(#\Space #\Tab #\Newline))) do (incf i))
+                  (when (and (< i end) (member (char s i) '(#\i #\I #\s #\S))
+                             (or (>= (1+ i) end)
+                                 (member (char s (1+ i)) '(#\Space #\Tab #\Newline #\]))))
+                    (setf ci (member (char s i) '(#\i #\I))) (incf i)))
+                (let ((sp (position #\Space val :from-end t)))
+                  (when (and sp (member (subseq val (1+ sp)) '("i" "I" "s" "S") :test #'string=))
+                    (setf ci (member (subseq val (1+ sp)) '("i" "I") :test #'string=)
+                          val (string-right-trim '(#\Space #\Tab #\Newline) (subseq val 0 sp))))))
             (loop while (and (< i end) (not (char= (char s i) #\]))) do (incf i))
-            (values (list :attr name op val) (if (< i end) (1+ i) i)))))))
+            (values (list :attr name op val (and ci t)) (if (< i end) (1+ i) i)))))))
 
 (defun read-pseudo (s i end)
   "I points at ':' (one or two)."

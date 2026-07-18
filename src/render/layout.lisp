@@ -1759,10 +1759,19 @@ Returns (values lbox advance-height)."
            ;; margin:auto centering when width is constrained — a definite width, a
            ;; definite max-width, or a width transferred from a definite height through
            ;; an aspect-ratio (all leave leftover inline space for the auto margins).
-           (ml (if (and (css:cstyle-margin-left-auto cs) (css:cstyle-margin-right-auto cs)
-                        (or (numberp spec-w) (numberp max-w) (and ar used-h (null spec-w)))
-                        (< width avail-w))
-                   (max 0 (floor (- avail-w width) 2)) ml))
+           (ml (cond ((and (css:cstyle-margin-left-auto cs) (css:cstyle-margin-right-auto cs)
+                           (or (numberp spec-w) (numberp max-w) (and ar used-h (null spec-w)))
+                           (< width avail-w))
+                      (max 0 (floor (- avail-w width) 2)))
+                     ;; a single auto left margin absorbs all leftover inline space
+                     ;; (CSS 2.1 §10.3.3): margin-left = cb - border-box-width -
+                     ;; margin-right.  WIDTH is already the border-box width, so this
+                     ;; correctly uses the used content width even under border-box.
+                     ((and (css:cstyle-margin-left-auto cs)
+                           (or (numberp spec-w) (numberp max-w) (and ar used-h (null spec-w)))
+                           (< (+ width (if (numberp mr) mr 0)) avail-w))
+                      (max 0 (- avail-w width (if (numberp mr) mr 0))))
+                     (t ml)))
            (content-w (max 0 (- width pad-bord)))
            ;; aspect-ratio-derived content-box height: when the box has a ratio
            ;; and an auto height, its content-box height is width/ratio (min/max
@@ -2098,7 +2107,11 @@ Returns (values lbox advance-height)."
       ;; CONTENT-H below zero — clamp so the border-bottom sits at the content top,
       ;; not pulled up through it (gives em its 24px yellow-over-black mouth).
       (let* ((content-final (cond ((numberp exp-h)
-                                   (let ((eh (if border-box (- exp-h pad-bord) exp-h)))
+                                   ;; border-box height -> content-box strips the
+                                   ;; VERTICAL padding+border (pt pb bt bb), not the
+                                   ;; horizontal PAD-BORD (a box with padding-left/right
+                                   ;; only must keep its full height — box-sizing-001).
+                                   (let ((eh (if border-box (- exp-h pt pb bt bb) exp-h)))
                                      ;; a table cell's `height` is only a MINIMUM (CSS 2.1
                                      ;; 17.5.3): it always grows to fit its content, so a
                                      ;; short height:10px cell (HN's top-bar nav) still
@@ -4023,6 +4036,43 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
           (when (plusp bl) (fill-poly cv (list (cons x0 y0) (cons ix0 iy0) (cons ix0 iy1) (cons x0 y1)) cl))
           (when (plusp br) (fill-poly cv (list (cons x1 y0) (cons x1 y1) (cons ix1 iy1) (cons ix1 iy0)) crr))))))
 
+(defun paint-outline (cv lb cs)
+  "Paint the CSS-UI outline: a uniform ring just outside the border edge, offset
+outward by outline-offset (may be negative).  Outlines do not affect layout and
+are not clipped by the element's own overflow.  Any non-none/hidden style
+(including `auto`) paints as a solid ring (weft has no dotted/dashed rasteriser;
+this matches how weft paints those border styles too)."
+  (let ((sty (css:cstyle-outline-style cs))
+        ;; used outline-width rounds a sub-1px width UP to 1px (an outline must be
+        ;; visible if it has any width) and a >=1px width DOWN to a whole pixel
+        ;; (CSS-UI computed outline-width; subpixel-outline-width test).
+        (w (let ((rw (css:cstyle-outline-width cs)))
+             (cond ((<= rw 0) 0) ((< rw 1) 1) (t (ffloor rw)))))
+        (off (css:cstyle-outline-offset cs)))
+    (when (and sty (not (member sty '("none" "hidden") :test #'string=)) (plusp w))
+      (let* ((raw (css:cstyle-outline-color cs))
+             ;; resolve the used outline color: :auto -> accent-color for an
+             ;; auto-style outline (CSS-UI-4), else currentColor; NIL -> currentColor.
+             (rc (cond ((eq raw :auto)
+                        (or (and (string= sty "auto") (css:cstyle-accent-color cs))
+                            (css:cstyle-color cs)))
+                       ((null raw) (css:cstyle-color cs))
+                       (t raw))))
+       ;; a fully transparent outline (alpha 0) paints nothing — e.g. an ancestor's
+       ;; `outline-color: transparent` must not paint over a descendant's outline
+       ;; (outlines paint after children).
+       (when (or (< (length rc) 4) (plusp (fourth rc)))
+        (let* ((col (rgb rc))
+             (x0 (lbox-x lb)) (y0 (lbox-y lb))
+             (x1 (+ x0 (lbox-w lb))) (y1 (+ y0 (lbox-h lb)))
+             (ix0 (- x0 off)) (iy0 (- y0 off)) (ix1 (+ x1 off)) (iy1 (+ y1 off))
+             (ox0 (- ix0 w)) (ow (max 0 (- (+ ix1 w) ox0)))
+             (ih (max 0 (- iy1 iy0))))
+        (fill-rect cv ox0 (- iy0 w) ow w col)   ; top
+        (fill-rect cv ox0 iy1 ow w col)          ; bottom
+        (fill-rect cv ox0 iy0 w ih col)          ; left
+        (fill-rect cv ix1 iy0 w ih col)))))))    ; right
+
 (defun box-visible-p (cs)
   "NIL when CS is visibility:hidden/collapse — such a box paints nothing of its
    own (background, border, image, text) but keeps its layout space, and visible
@@ -4106,7 +4156,10 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                             (round (- (+ (lbox-x lb) (lbox-w lb)) (used-border cs :r)))
                             (round (- (+ (lbox-y lb) (lbox-h lb)) (used-border cs :b))))))
                (paint-children cv (lbox-children lb)))
-             (paint-children cv (lbox-children lb))))))
+             (paint-children cv (lbox-children lb)))
+         ;; outline paints on top of the box + descendants, and is NOT clipped by
+         ;; this box's own overflow (CSS-UI §outline; CSS 2.1 appendix E step 10).
+         (when cs (paint-outline cv lb cs)))))
       (:line
        (loop for cell on (lbox-children lb)
              for it = (car cell)

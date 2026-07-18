@@ -2521,6 +2521,16 @@ token (word or atomic box)."
                            (word-min-width (car wd) (tok-meta wd) (tok-node wd)))))))
     w))
 
+(defun intrinsic-margin (m)
+  "The inline-axis margin contribution of M when sizing a container to its
+content (CSS Sizing 3 §intrinsic-contribution): a fixed length counts, a bare
+percentage resolves to zero, and a percentage-bearing calc() contributes only its
+fixed length part (its percentage resolves to zero).  Negative contributions are
+clamped to zero, matching the numeric path."
+  (cond ((numberp m) (max 0 m))
+        ((and (consp m) (eq (first m) :calc)) (max 0 (second m)))
+        (t 0)))
+
 (defun min-content-width (node styles content-w &optional (depth 0) skip-own-width)
   "Min-content CONTENT width of element NODE (widest unbreakable run).  With
 SKIP-OWN-WIDTH, NODE's own definite width does NOT fix its min-content — used when a
@@ -2555,8 +2565,8 @@ intrinsic min, which overflowing content can exceed (a width:100px cell with a
                 (if block-kids
                      (loop for k in block-kids
                            for kcs = (st styles k)
-                           maximize (+ (let ((m (css:cstyle-margin-left kcs))) (if (numberp m) (max 0 m) 0))
-                                       (let ((m (css:cstyle-margin-right kcs))) (if (numberp m) (max 0 m) 0))
+                           maximize (+ (intrinsic-margin (css:cstyle-margin-left kcs))
+                                       (intrinsic-margin (css:cstyle-margin-right kcs))
                                        (css::resolve-pad (css:cstyle-padding-left kcs) content-w) (css::resolve-pad (css:cstyle-padding-right kcs) content-w)
                                        (used-border kcs :l) (used-border kcs :r)
                                        (min-content-width k styles content-w (1+ depth))))

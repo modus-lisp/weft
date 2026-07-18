@@ -1564,7 +1564,12 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
         ;; pseudo = NIL | :before | :after; match-cx is the cx to match (pseudo-element stripped).
         (rindex (build-rindex
                  (loop for r in stylesheet for order from 0
-                       unless (font-face-rule-p r)   ; at-rule descriptor sets aren't selectors
+                       ;; A style rule whose selector list contains ANY invalid
+                       ;; selector is dropped in its entirety (CSS 2.1 §4.1.7 error
+                       ;; recovery / Selectors 4 §3.1) — an invalid member does not
+                       ;; merely drop itself and leave its valid siblings in force.
+                       unless (or (font-face-rule-p r)   ; at-rule descriptor sets aren't selectors
+                                  (not (selector-list-valid-p (css-rule-selector r))))
                        append (loop for cx in (parse-selector-list (css-rule-selector r))
                                     collect (multiple-value-bind (pe mcx) (cx-pseudo-element cx)
                                               (list mcx pe (specificity cx) order (css-rule-decls r))))))))

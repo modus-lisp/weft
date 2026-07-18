@@ -540,6 +540,9 @@ whose children are the fragment nodes."
         (when (>= i ntok) (return))
         (let* ((tk (aref toks i)) (ty (tok-type tk)))
           (setf reconsume nil)
+          ;; Fragment parsing: at EOF, "stop parsing" — never let a mode's EOF
+          ;; fallthrough pop the synthetic root or synthesize a <body>/<head>.
+          (when (and context (eq ty :eof)) (return))
           (ecase mode
             (:initial
              (cond ((eq ty :doctype)

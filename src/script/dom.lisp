@@ -53,11 +53,13 @@
     ("DATA_CLONE_ERR" . 25)))
 
 (defun make-dom-exception (ctx name code message)
-  (let ((o (js:make-object :proto (js:eval-script (context-realm ctx) "Error.prototype"))))
+  ;; Proto = the real DOMException.prototype (installed in bridge.lisp) so that
+  ;; `e instanceof DOMException` and testharness's `e.constructor === DOMException`
+  ;; hold; the legacy numeric code constants are inherited from that prototype.
+  (let ((o (js:make-object :proto (js:eval-script (context-realm ctx) "DOMException.prototype"))))
     (js:put o "name" name :enumerable nil)
     (js:put o "message" message :enumerable nil)
     (js:put o "code" (num code) :enumerable nil)
-    (dolist (p +dom-codes+) (js:put o (car p) (num (cdr p)) :enumerable nil :writable nil))
     o))
 
 (defun throw-dom (ctx name code message)
@@ -103,9 +105,22 @@
   (loop for c across (copy-seq (h:dnode-children fragment))
         do (h:dom-remove c) (h:dom-append node c)))
 
+(defun mark-fragment-scripts-started (ctx fragment)
+  "Set the 'already started' flag on every <script> parsed as part of FRAGMENT
+(HTML §fragment parsing / §innerHTML) so it never executes, even after a later
+insertion into a connected tree."
+  (labels ((walk (n)
+             (when (eq (h:dnode-kind n) :element)
+               (when (string-equal (h:dnode-name n) "script")
+                 (setf (gethash n (context-ran-scripts ctx)) t))
+               (loop for c across (h:dnode-children n) do (walk c)))))
+    (loop for c across (h:dnode-children fragment) do (walk c))))
+
 (defun adopt-fragment-owners (ctx fragment doc)
   "Record DOC as the owner document for FRAGMENT's top-level children (so a
-detached subtree still answers ownerDocument correctly)."
+detached subtree still answers ownerDocument correctly) and neuter any parsed
+scripts so they never run."
+  (mark-fragment-scripts-started ctx fragment)
   (loop for c across (h:dnode-children fragment)
         unless (gethash c (context-owner-docs ctx))
           do (setf (gethash c (context-owner-docs ctx)) doc)))

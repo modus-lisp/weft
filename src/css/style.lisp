@@ -361,6 +361,13 @@ IS the multiplier; `normal` -> :NORMAL; a <percentage> -> its fraction; a <lengt
        (let ((n (ignore-errors (read-from-string (subseq tt 0 (1- (length tt))))))) (when (numberp n) (list :percent (float n)))))
       (t (resolve-len tt font-size)))))
 
+(defun size-nonneg-p (spec)
+  "NIL when SPEC (a PARSE-SIZE result) is a negative length or negative percentage.
+Negative values are invalid for width/height/min-/max- (CSS 2.1 §10.2/10.4/10.5/10.7)
+so the declaration is dropped and the prior cascaded value is kept."
+  (not (or (and (numberp spec) (minusp spec))
+           (and (consp spec) (eq (first spec) :percent) (numberp (second spec)) (minusp (second spec))))))
+
 (defun bg-size-comp (tok fs)
   "One background-size component -> :auto | px number | (:percent N)."
   (cond ((string= tok "auto") :auto)
@@ -777,16 +784,16 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
          (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
            (when (member v '("normal" "break-all" "keep-all") :test #'string=)
              (setf (cstyle-word-break cs) v))))
-        ((string= prop "width") (let ((w (parse-size value fs t))) (when w (setf (cstyle-width cs) w))))
-        ((string= prop "height") (let ((h (parse-size value fs t))) (when h (setf (cstyle-height cs) h))))
+        ((string= prop "width") (let ((w (parse-size value fs t))) (when (and w (size-nonneg-p w)) (setf (cstyle-width cs) w))))
+        ((string= prop "height") (let ((h (parse-size value fs t))) (when (and h (size-nonneg-p h)) (setf (cstyle-height cs) h))))
         ((string= prop "max-width") (if (string-equal (string-trim '(#\Space) value) "none") (setf (cstyle-max-width cs) :none)
-                                        (let ((w (parse-size value fs nil))) (when w (setf (cstyle-max-width cs) w)))))
-        ((string= prop "min-width") (let ((w (parse-size value fs nil))) (when w (setf (cstyle-min-width cs) w))))
+                                        (let ((w (parse-size value fs nil))) (when (and w (size-nonneg-p w)) (setf (cstyle-max-width cs) w)))))
+        ((string= prop "min-width") (let ((w (parse-size value fs nil))) (when (and w (size-nonneg-p w)) (setf (cstyle-min-width cs) w))))
         ((string= prop "min-height") (let ((h (parse-size value fs nil)))   ; px or (:percent N)
-                                       (when (or (numberp h) (consp h)) (setf (cstyle-min-height cs) h))))
+                                       (when (and (or (numberp h) (consp h)) (size-nonneg-p h)) (setf (cstyle-min-height cs) h))))
         ((string= prop "max-height") (if (string-equal (string-trim '(#\Space) value) "none") (setf (cstyle-max-height cs) :none)
                                          (let ((h (parse-size value fs nil)))   ; px or (:percent N)
-                                           (when (or (numberp h) (consp h)) (setf (cstyle-max-height cs) h)))))
+                                           (when (and (or (numberp h) (consp h)) (size-nonneg-p h)) (setf (cstyle-max-height cs) h)))))
         ((string= prop "float")
          ;; `float:inherit` (used by Acid2's smile) copies the parent's computed
          ;; float; otherwise parse the keyword normally.

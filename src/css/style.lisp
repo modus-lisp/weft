@@ -95,7 +95,8 @@
             (cstyle-overflow-wrap cs) (cstyle-overflow-wrap parent-cs)
             (cstyle-word-break cs) (cstyle-word-break parent-cs)
             (cstyle-writing-mode cs) (cstyle-writing-mode parent-cs)
-            (cstyle-direction cs) (cstyle-direction parent-cs)))
+            (cstyle-direction cs) (cstyle-direction parent-cs)
+            (cstyle-list-style cs) (cstyle-list-style parent-cs)))
     (cond ((member tag *none-tags* :test #'string=) (setf (cstyle-display cs) "none"))
           ((string= tag "li") (setf (cstyle-display cs) "list-item"))
           ((string= tag "table") (setf (cstyle-display cs) "table"))
@@ -720,6 +721,14 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
              (let ((v (parse-value "text-decoration" value))) (when (listp v) (setf (cstyle-text-decoration cs) v)))))
         ((string= prop "list-style-type")
          (let ((v (parse-value "list-style-type" value))) (when (stringp v) (setf (cstyle-list-style cs) v))))
+        ;; list-style shorthand: pick out the <list-style-type> keyword (position and
+        ;; image components are ignored); `none` sets the marker type to none.
+        ((string= prop "list-style")
+         (dolist (tok (remove "" (split-ws (string-downcase value)) :test #'string=))
+           (when (member tok '("none" "disc" "circle" "square" "decimal" "decimal-leading-zero"
+                               "lower-alpha" "upper-alpha" "lower-latin" "upper-latin"
+                               "lower-roman" "upper-roman" "lower-greek") :test #'string=)
+             (setf (cstyle-list-style cs) tok))))
         ((string= prop "white-space")
          ;; validate against the keyword grammar so an invalid value (e.g. a
          ;; later `white-space: x-bogus`) is ignored and the last VALID value wins.

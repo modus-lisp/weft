@@ -1652,9 +1652,13 @@ of the other)."
                 (setf (gethash el (context-owner-docs ctx)) d)))
             (wrap ctx d)))
         (defmethod* ctx impl "createHTMLDocument" 1 (this a)
-          (let* ((d (h:make-document)) (html (h:make-element "html"))
+          ;; DOM §createHTMLDocument appends a `html` doctype first, then the
+          ;; html>head(>title?)>body skeleton.
+          (let* ((d (h:make-document)) (dt (h:make-doctype "html"))
+                 (html (h:make-element "html"))
                  (head (h:make-element "head")) (title (h:make-element "title"))
                  (body (h:make-element "body")))
+            (h:dom-append d dt) (setf (gethash dt (context-owner-docs ctx)) d)
             (h:dom-append d html) (h:dom-append html head)
             (h:dom-append head title) (h:dom-append html body)
             (unless (js:js-undefined-p (arg a 0))

@@ -2298,6 +2298,10 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                           (multiple-value-bind (boxes line-h) (layout-line litems lbases lgrows lshrinks (round cy))
                             (push (cons boxes line-h) laid))))
                       (setf laid (nreverse laid))
+                      ;; flex-wrap:wrap-reverse swaps the cross-start and cross-end
+                      ;; directions (CSS Flexbox §5.3): the first flex line is placed at
+                      ;; the cross-END, so stack the lines in reverse cross order.
+                      (when (string= wrap "wrap-reverse") (setf laid (nreverse laid)))
                       (let* ((nlines (length laid))
                              (total (+ (reduce #'+ (mapcar #'cdr laid)) (* cross-gap (max 0 (1- nlines)))))
                              (ac (css:cstyle-align-content base-cs))

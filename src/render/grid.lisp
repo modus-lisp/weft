@@ -74,8 +74,19 @@ whole so their inner commas/spaces survive."
 ;;; ---- item measurement ---------------------------------------------------
 
 (defun grid-item-max-width (item styles content-w)
-  "Max-content outer (border+padding+margin) width of a grid ITEM."
-  (pref-border-width item styles content-w 0))
+  "Max-content outer (border+padding+margin) width of a grid ITEM.  An auto,
+content-box width floors its content contribution at the item's specified min-width
+(CSS Grid §11.5 / Sizing 3): the item's used width never drops below min-width, so
+the track it max-content-sizes must be wide enough to hold it."
+  (let ((base (pref-border-width item styles content-w 0))
+        (cs (st styles item)))
+    (if (and cs (numberp (css:cstyle-min-width cs)) (plusp (css:cstyle-min-width cs))
+             (not (numberp (css:cstyle-width cs)))
+             (not (equal (css:cstyle-box-sizing cs) "border-box")))
+        (let ((content (pref-content-width item styles content-w 0))
+              (minw (css:cstyle-min-width cs)))
+          (max base (+ base (max 0.0 (- minw content)))))
+        base)))
 
 (defun grid-item-min-width (item styles content-w)
   "Min-content outer width of a grid ITEM."

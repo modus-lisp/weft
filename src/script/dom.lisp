@@ -94,6 +94,11 @@
         (when (plusp (length text))
           (h:dom-append node (h:make-text text))))))
 
+(defun nullable-string (v)
+  "A nullable DOMString attribute setter value: null or undefined -> \"\" (DOM
+   §nodeValue/§textContent setters), else the usual stringification."
+  (if (nullish v) "" (jstr v)))
+
 (defun null->empty (v)
   "WebIDL [LegacyNullToEmptyString]: a JS null becomes \"\" (used by the
 innerHTML/outerHTML setters); everything else stringifies normally."
@@ -1164,9 +1169,9 @@ of the other)."
               nl))))
     (defgetset ctx np "nodeValue" (this)
       (if (char-data-p (n this)) (h:dnode-data (n this)) js:*null*)
-      ;; DOM §nodeValue setter: a null value acts as the empty string.
+      ;; DOM §nodeValue setter: a null/undefined value acts as the empty string.
       (v) (when (char-data-p (n this))
-            (setf (h:dnode-data (n this)) (null->empty v)) (setf (context-dirty ctx) t)))
+            (setf (h:dnode-data (n this)) (nullable-string v)) (setf (context-dirty ctx) t)))
     (defgetset ctx np "textContent" (this)
       ;; DOM §textContent: a CharacterData/PI node returns its own data; Document /
       ;; DocumentType return null; other nodes return descendant text concatenated.
@@ -1174,8 +1179,11 @@ of the other)."
         (cond ((member (h:dnode-kind node) '(:document :doctype)) js:*null*)
               ((char-data-p node) (h:dnode-data node))
               (t (dom:text-content node))))
-      ;; DOM §textContent setter: a null value acts as the empty string.
-      (v) (progn (set-text-content (n this) (null->empty v)) (setf (context-dirty ctx) t)))
+      ;; DOM §textContent setter: null/undefined acts as the empty string; on a
+      ;; Document or DocumentType it does nothing.
+      (v) (let ((node (n this)))
+            (unless (member (h:dnode-kind node) '(:document :doctype))
+              (set-text-content node (nullable-string v)) (setf (context-dirty ctx) t))))
 
     (defmethod* ctx np "hasChildNodes" 0 (this a)
       (jbool (plusp (length (h:dnode-children (n this))))))
@@ -1696,6 +1704,8 @@ of the other)."
       (defgetset ctx cp "data" (this) (cd-data this)
         (v) (store this (null->empty v)))     ; [LegacyNullToEmptyString]
       (defget ctx cp "length" (this) (num (length (cd-data this))))
+      ;; ProcessingInstruction.target (DOM §PI) — the PI's target name.
+      (defget ctx cp "target" (this) (or (h:dnode-name (n this)) ""))
       ;; Text.wholeText (DOM §Text): concatenated data of the run of Text nodes
       ;; contiguous with THIS (previous + this + following), in tree order.
       (defget ctx cp "wholeText" (this)
@@ -1715,6 +1725,14 @@ of the other)."
                         (loop for k from start to end
                               do (write-string (or (h:dnode-data (aref sibs k)) "") o))))))
               (cd-data this))))
+      ;; Text.splitText (DOM §Text): split at OFFSET, returning the new second
+      ;; half (inserted as the next sibling); offset > length -> IndexSizeError.
+      (defmethod* ctx cp "splitText" 1 (this a)
+        (need a 1)
+        (let* ((node (n this)) (len (length (cd-data this)))
+               (off (mod (int-arg a 0) (expt 2 32))))
+          (when (> off len) (throw-dom ctx "IndexSizeError" 1 "offset > length"))
+          (wrap ctx (split-text ctx node off))))
       (defmethod* ctx cp "appendData" 1 (this a)
         (need a 1)
         (store this (concatenate 'string (cd-data this) (jstr (arg a 0))))

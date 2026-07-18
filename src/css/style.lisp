@@ -1228,7 +1228,7 @@ this is applied before author rules."
     (when (string= tag "body")
       (let ((tx (el-attr node "text")))
         (when tx (let ((c (resolve-color tx))) (when c (setf (cstyle-color cs) c))))))
-    (when (member tag '("table" "td" "th" "col" "colgroup" "hr") :test #'string=)
+    (when (member tag '("table" "td" "th" "col" "colgroup" "hr" "iframe" "embed") :test #'string=)
       (let ((w (el-attr node "width")))
         (when w (let ((pw (parse-size w (cstyle-font-size cs) nil))) (when pw (setf (cstyle-width cs) pw)))))
       (let ((hh (el-attr node "height")))

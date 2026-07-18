@@ -146,8 +146,10 @@
       ((and (eq sc ec) (= so eo)) frag)                       ; collapsed
       ((and (eq sc ec) (char-data-p sc))                      ; within one text node
        (h:dom-append frag (h:make-text (subseq (h:dnode-data sc) so eo)))
-       (when movep (setf (h:dnode-data sc)
-                         (concatenate 'string (subseq (h:dnode-data sc) 0 so) (subseq (h:dnode-data sc) eo))))
+       (when movep
+         (mo-record-chardata sc (h:dnode-data sc))            ; the trim is a characterData mutation
+         (setf (h:dnode-data sc)
+               (concatenate 'string (subseq (h:dnode-data sc) 0 so) (subseq (h:dnode-data sc) eo))))
        frag)
       (t
        (let* ((common (loop for a = sc then (h:dnode-parent a) when (incl-anc-p a ec) return a))
@@ -158,7 +160,9 @@
          (cond
            ((and first-pc (char-data-p first-pc))
             (h:dom-append frag (h:make-text (subseq (h:dnode-data first-pc) so)))
-            (when movep (setf (h:dnode-data first-pc) (subseq (h:dnode-data first-pc) 0 so))))
+            (when movep
+              (mo-record-chardata first-pc (h:dnode-data first-pc))
+              (setf (h:dnode-data first-pc) (subseq (h:dnode-data first-pc) 0 so))))
            (first-pc
             (let ((clone (copy-dnode first-pc nil)))
               (h:dom-append frag clone)
@@ -175,7 +179,9 @@
          (cond
            ((and last-pc (char-data-p last-pc))
             (h:dom-append frag (h:make-text (subseq (h:dnode-data last-pc) 0 eo)))
-            (when movep (setf (h:dnode-data last-pc) (subseq (h:dnode-data last-pc) eo))))
+            (when movep
+              (mo-record-chardata last-pc (h:dnode-data last-pc))
+              (setf (h:dnode-data last-pc) (subseq (h:dnode-data last-pc) eo))))
            (last-pc
             (let ((clone (copy-dnode last-pc nil)))
               (h:dom-append frag clone)

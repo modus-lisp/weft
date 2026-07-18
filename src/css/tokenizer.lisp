@@ -125,7 +125,14 @@
                  (t (emit :ident name)))))
             ((char= c #\@)
              (incf i)
-             (if (and (< i n) (or (name-start-p (char s i)) (char= (char s i) #\-)))
+             ;; @ starts an at-keyword only when the following chars would start an
+             ;; identifier (CSS Syntax §4.3.3): a name-start, or `-` + (name-start /
+             ;; `-` / escape).  `@-1import` (a `-` then a digit) is NOT an ident
+             ;; start, so the @ is a lone delim and `-1import` follows separately.
+             (if (and (< i n)
+                      (or (name-start-p (char s i))
+                          (and (char= (char s i) #\-)
+                               (or (name-start-p (la 1)) (eql (la 1) #\-) (eql (la 1) #\\)))))
                  (emit :at-keyword (consume-name))
                  (emit :delim "@")))
             ((char= c #\() (incf i) (emit :lparen))

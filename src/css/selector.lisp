@@ -695,6 +695,17 @@ list of CX, each anchored by a leading :has-scope compound.  Invalid entries dro
   ;; An ident may not start with a digit (`.5cm` is invalid, CSS Syntax §4.3.11).
   (or (alpha-char-p c) (member c '(#\- #\_)) (char= c #\\) (> (char-code c) 127)))
 
+(defun ident-start2-p (s i n)
+  "True when S[i:] begins a valid CSS identifier (CSS Syntax §4.3.11): a name-start
+code point or escape, or a `-` followed by a name-start / `-` / escape.  A lone `-`
+or `-`+digit (e.g. the attribute name in `[-1foo]`) is NOT an identifier."
+  (and (< i n)
+       (let ((c (char s i)))
+         (or (name-start-p c) (char= c #\\)
+             (and (char= c #\-) (< (1+ i) n)
+                  (let ((d (char s (1+ i))))
+                    (or (name-start-p d) (char= d #\-) (char= d #\\))))))))
+
 (defparameter *known-pseudo-classes*
   '("root" "empty" "first-child" "last-child" "only-child" "first-of-type"
     "last-of-type" "only-of-type" "enabled" "disabled" "checked" "indeterminate"
@@ -727,7 +738,7 @@ non-relative).  :has() is excluded: its argument is a RELATIVE selector list
 (defun sv-read-ident (s i n)
   "Read an ident starting at S[i] (escapes included).  Return (values ok new-i).
 OK requires a valid ident-start char and at least one char consumed."
-  (if (or (>= i n) (not (ident-start-p (char s i))))
+  (if (not (ident-start2-p s i n))
       (values nil i)
       (progn
         (loop while (< i n) do
@@ -776,7 +787,7 @@ namespaces) → invalid; `*|` and `|` (any / no namespace) are accepted."
              (if (and (< (1+ i) n) (char= (char s (1+ i)) #\|)) (incf i 2)
                  (return-from sv-attr (values nil i))))   ; bare '*' is no name ([*=v])
             ((char= (char s i) #\|) (incf i))
-            ((ident-start-p (char s i))
+            ((ident-start2-p s i n)
              (multiple-value-bind (ok j) (sv-read-ident s i n)
                (declare (ignore ok)) (setf i j)
                (when (and (< i n) (char= (char s i) #\|)

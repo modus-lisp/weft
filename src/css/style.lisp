@@ -508,7 +508,8 @@ escapes in quoted runs are already decoded by the tokenizer's string reader."
     (cond
       ((or (string-equal v "none") (string-equal v "normal")) nil)
       ((not (or (search "counter(" v :test #'char-equal)
-                (search "counters(" v :test #'char-equal)))
+                (search "counters(" v :test #'char-equal)
+                (search "attr(" v :test #'char-equal)))
        ;; no counter reference: concatenated quoted strings -> a flat string
        ;; (attr()/url() and other bare tokens still yield an empty-but-present box).
        (if (and (plusp (length v)) (member (char v 0) '(#\' #\")))
@@ -547,6 +548,19 @@ escapes in quoted runs are already decoded by the tokenizer's string reader."
                     (push (list :counter (string-downcase (string-trim '(#\Space) (first parts)))
                                 (and (second parts) (string-downcase (string-trim '(#\Space) (second parts)))))
                           segs)
+                    (setf i (1+ close))))
+                 ((ci-prefix "attr(")
+                  ;; attr(<name> [<type>]? [, <fallback>]?) — CSS 2.1 uses attr(name)
+                  ;; yielding the attribute's string value (empty when absent).
+                  (let* ((close (or (position #\) v :start i) n))
+                         (args (subseq v (+ i 5) close))
+                         (parts (split-counter-args args))
+                         (head (string-trim '(#\Space #\Tab) (or (first parts) "")))
+                         ;; strip an optional type keyword after the name
+                         (name (subseq head 0 (or (position-if (lambda (c) (member c '(#\Space #\Tab))) head)
+                                                  (length head))))
+                         (fallback (and (second parts) (string-trim '(#\Space #\Tab) (second parts)))))
+                    (push (list :attr name (or fallback "")) segs)
                     (setf i (1+ close))))
                  (t (incf i))))))
          (cons :tmpl (nreverse segs)))))))
@@ -1523,7 +1537,7 @@ content template (:tmpl ...) in STYLES to a final string."
                           (loop while (and s (>= (cdr (first s)) depth)) do (pop s))
                           (setf (gethash name stacks) s))
                         stacks))
-             (resolve (cs)
+             (resolve (cs node)
                (when (and cs (consp (cstyle-content cs)) (eq (car (cstyle-content cs)) :tmpl))
                  (setf (cstyle-content cs)
                        (with-output-to-string (o)
@@ -1531,6 +1545,11 @@ content template (:tmpl ...) in STYLES to a final string."
                            (cond ((stringp seg) (write-string seg o))
                                  ((eq (car seg) :counter)
                                   (write-string (format-counter (counter-val (second seg)) (third seg)) o))
+                                 ((eq (car seg) :attr)
+                                  ;; attr() resolves against the pseudo's originating
+                                  ;; element (CSS 2.1 §12.2); missing attr -> fallback/"".
+                                  (let ((val (and node (el-attr node (second seg)))))
+                                    (write-string (or val (third seg) "") o)))
                                  ((eq (car seg) :counters)
                                   (loop for e in (reverse (gethash (second seg) stacks)) for first = t then nil do
                                     (unless first (write-string (third seg) o))
@@ -1545,12 +1564,12 @@ content template (:tmpl ...) in STYLES to a final string."
                    ;; generates no boxes, so it neither creates, resets nor increments
                    ;; a counter; likewise a non-generated (display:none) pseudo-element.
                    (unless (none-p cs)
-                     (do-reset (cstyle-counter-reset cs) depth) (do-incr (cstyle-counter-increment cs)) (resolve cs)
+                     (do-reset (cstyle-counter-reset cs) depth) (do-incr (cstyle-counter-increment cs)) (resolve cs n)
                      (when (and bcs (not (none-p bcs)))
-                       (do-reset (cstyle-counter-reset bcs) (1+ depth)) (do-incr (cstyle-counter-increment bcs)) (resolve bcs))
+                       (do-reset (cstyle-counter-reset bcs) (1+ depth)) (do-incr (cstyle-counter-increment bcs)) (resolve bcs n))
                      (loop for c across (weft.html:dnode-children n) do (walk c (1+ depth)))
                      (when (and acs (not (none-p acs)))
-                       (do-reset (cstyle-counter-reset acs) (1+ depth)) (do-incr (cstyle-counter-increment acs)) (resolve acs))
+                       (do-reset (cstyle-counter-reset acs) (1+ depth)) (do-incr (cstyle-counter-increment acs)) (resolve acs n))
                      (pop-deeper (1+ depth)))))))
       (loop for c across (weft.html:dnode-children document) do (walk c 0)))))
 

@@ -39,11 +39,32 @@ collapsing `\"` into an ambiguous bare quote."
       s))
 
 (defun toks-text (toks start end)
-  "Reconstruct source-ish text from token range [start,end)."
+  "Reconstruct source-ish text from token range [start,end).  A comment in the
+source leaves no token, so two source tokens it separated become adjacent in the
+stream; CSS requires such tokens stay separated (a comment is a token boundary,
+not glue), so a space is inserted between two adjacent word-like tokens — e.g.
+`1/**/0px` reconstructs to `1 0px` (invalid), not `10px` (valid)."
   (with-output-to-string (o)
-    (loop for k from start below end
+    (let ((prev nil))                   ; the previous emitted token
+     (loop for k from start below end
           for tk = (aref toks k)
-          do (case (ctok-type tk)
+          for ty = (ctok-type tk)
+          for pty = (and prev (ctok-type prev))
+          do (when (or ;; word-like glued to word-like: only pairs that CANNOT be
+                       ;; adjacent in source without a separator (so a comment sat
+                       ;; between them and must be preserved as a boundary), e.g.
+                       ;; `1/**/0px` -> `1 0px`, `div/**/p` -> `div p`.  A #hash or
+                       ;; function token is self-delimiting (`.class#id` is one
+                       ;; compound), so it never takes a leading space.
+                       (and (member pty '(:ident :number :dimension :percentage :at-keyword))
+                            (member ty '(:ident :number :dimension :percentage)))
+                       ;; a sign / dot delim glued to a number would re-tokenize as a
+                       ;; signed number (e.g. `-/**/10px` -> `- 10px`, invalid)
+                       (and (eq pty :delim) (member (ctok-value prev) '("+" "-" ".") :test #'string=)
+                            (member ty '(:number :dimension :percentage))))
+               (write-char #\Space o))
+             (setf prev tk)
+             (case ty
                (:ws (write-char #\Space o))
                (:ident (write-string (css-escape-ident (ctok-value tk)) o))
                (:function (format o "~a(" (ctok-value tk)))
@@ -59,7 +80,7 @@ collapsing `\"` into an ambiguous bare quote."
                (:semicolon (write-char #\; o))
                (:lparen (write-char #\( o)) (:rparen (write-char #\) o))
                (:lbracket (write-char #\[ o)) (:rbracket (write-char #\] o))
-               (:lbrace (write-char #\{ o)) (:rbrace (write-char #\} o))))))
+               (:lbrace (write-char #\{ o)) (:rbrace (write-char #\} o)))))))
 
 (defun parse-declarations (toks start end)
   "Parse a declaration block token range into a list of CSS-DECLs."

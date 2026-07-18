@@ -145,6 +145,9 @@
       (iface "DocumentFragment" :fragment
              (lambda (this args) (declare (ignore this args))
                (new-node ctx docobj (h:make-fragment))))
+      ;; ProcessingInstruction (abstract): its prototype chains CharacterData so
+      ;; `pi instanceof ProcessingInstruction` and cloneNode's type check hold.
+      (iface "ProcessingInstruction" :pi)
       ;; Live-collection interfaces (abstract): make `coll instanceof
       ;; NodeList/HTMLCollection` hold.  Their prototypes back make-collection.
       (iface "NodeList" :nodelist)
@@ -350,6 +353,7 @@
          (ep (js:make-object :proto np))     ; Element.prototype
          (dp (js:make-object :proto np))     ; Document.prototype
          (cp (js:make-object :proto np))     ; CharacterData (Text/Comment)
+         (pip (js:make-object :proto cp))    ; ProcessingInstruction.prototype (<- CharacterData)
          (evp (js:make-object :proto op))    ; Event.prototype
          (dtp (js:make-object :proto np))    ; DocumentType.prototype
          (fp (js:make-object :proto np))     ; DocumentFragment.prototype (inherits Node)
@@ -361,7 +365,7 @@
          (dip (js:make-object :proto op))    ; DOMImplementation.prototype
          (window (js:eval-script realm "globalThis")))
     (setf (context-protos ctx)
-          (list :node np :element ep :document dp :text cp :comment cp
+          (list :node np :element ep :document dp :text cp :comment cp :pi pip
                 :fragment fp :event evp :doctype dtp :svg-element svgep :window window
                 :nodelist nlp :htmlcollection hcp :attr ap :namednodemap nnmp
                 :domimplementation dip))

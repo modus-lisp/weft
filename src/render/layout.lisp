@@ -195,6 +195,7 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                        (cond
                          ((and keep-nl (char= c #\Newline)) (flush) (push (list :break nil nil 0 node) words))
                          ((member c '(#\Space #\Tab #\Newline #\Return)) (flush) (setf pend t))
+                         ((format-control-p c) nil)   ; invisible bidi/format control: no glyph
                          (t (write-char c b) (setf any t)))))
                    (flush))))
              (rec (n owner onode)
@@ -677,6 +678,22 @@ where KIND is :normal (positioned by baseline), :top or :bottom (line-relative).
         ((equal va '("top"))    (values h 0 :top))
         ((equal va '("bottom")) (values h 0 :bottom))
         (t (baseline))))))
+
+(defun format-control-p (c)
+  "T if C is a zero-width, invisible bidi/format control (Unicode Default_Ignorable
+of the bidi-control class): it produces no glyph and no advance when rendered
+(CSS Text 3 / Unicode Bidi).  Soft hyphen and ZWSP are excluded — they carry
+line-break semantics handled elsewhere."
+  (let ((u (char-code c)))
+    (or (= u #x200E) (= u #x200F)       ; LRM RLM
+        (= u #x061C)                    ; ALM
+        (<= #x202A u #x202E)            ; LRE RLE PDF LRO RLO
+        (<= #x2066 u #x2069)            ; LRI RLI FSI PDI
+        (= u #x2060) (= u #xFEFF))))    ; WORD JOINER, ZWNBSP/BOM
+
+(defun strip-format-controls (s)
+  "Remove invisible bidi/format controls from S (see FORMAT-CONTROL-P)."
+  (if (find-if #'format-control-p s) (remove-if #'format-control-p s) s))
 
 (defun full-transform (word table simple-fn)
   "Map each char of WORD to its full Unicode case mapping (a 1->N replacement in
@@ -1613,7 +1630,8 @@ Returns (values lbox advance-height)."
                      (setf frags '() lx cx) (incf yy lh) (incf content-h lh)))
             (dolist (seg segs)
               (destructuring-bind (txt st snode) seg
-                (loop for part in (split-newlines txt) for i from 0 do
+                (loop for raw in (split-newlines txt) for i from 0
+                      for part = (strip-format-controls raw) do
                   (when (plusp i) (emit-line))                 ; newline -> next line
                   (when (plusp (length part))
                     (let ((ww (word-w part st)))

@@ -79,9 +79,13 @@ instead of once per rule removes an O(elements x rules) cost on rule-heavy pages
             ((string= op "*=") (and (plusp (length value)) (has value have) t))
             (t nil)))))
 
+(defun css-ws-p (c)
+  "CSS whitespace (CSS Syntax §4): space, tab, newline, carriage return, form feed."
+  (member c '(#\Space #\Tab #\Newline #\Return #\Page)))
+
 (defun parse-nth (arg)
   "Parse an An+B argument; return (values a b) or NIL."
-  (let ((s (string-downcase (remove #\Space arg))))
+  (let ((s (string-downcase (remove-if #'css-ws-p arg))))
     (cond
       ((string= s "odd") (values 2 1))
       ((string= s "even") (values 2 0))
@@ -404,17 +408,17 @@ list is built — each rule is keyed to exactly one bucket, so no duplicates."
 
 (defun read-attr (s i end)
   "I points just after '['.  Returns (values (:attr name op value) new-i)."
-  (loop while (and (< i end) (member (char s i) '(#\Space))) do (incf i))
+  (loop while (and (< i end) (css-ws-p (char s i))) do (incf i))
   (multiple-value-bind (name j) (read-ident s i end)
     (setf i j)
-    (loop while (and (< i end) (member (char s i) '(#\Space))) do (incf i))
+    (loop while (and (< i end) (css-ws-p (char s i))) do (incf i))
     (if (and (< i end) (char= (char s i) #\]))
         (values (list :attr name nil nil) (1+ i))
         (let ((op (cond ((and (< (1+ i) end) (member (char s i) '(#\~ #\| #\^ #\$ #\*)) (char= (char s (1+ i)) #\=))
                          (prog1 (subseq s i (+ i 2)) (incf i 2)))
                         ((and (< i end) (char= (char s i) #\=)) (incf i) "=")
                         (t nil))))
-          (loop while (and (< i end) (member (char s i) '(#\Space))) do (incf i))
+          (loop while (and (< i end) (css-ws-p (char s i))) do (incf i))
           (let* ((quoted (and (< i end) (member (char s i) '(#\" #\'))))
                  (val (cond (quoted
                             (let ((q (char s i)) (start (1+ i)))
@@ -476,7 +480,7 @@ list is built — each rule is keyed to exactly one bucket, so no duplicates."
     (loop while (< i n) do
       (let ((c (char s i)))
         (cond
-          ((member c '(#\Space #\Tab #\Newline)) (incf i) (unless (or first explicit) (setf pending :descendant)))
+          ((css-ws-p c) (incf i) (unless (or first explicit) (setf pending :descendant)))
           ((char= c #\>) (incf i) (setf pending :child explicit t))
           ((char= c #\+) (incf i) (setf pending :adjacent explicit t))
           ((char= c #\~) (incf i) (setf pending :sibling explicit t))
@@ -501,8 +505,8 @@ list is built — each rule is keyed to exactly one bucket, so no duplicates."
 An escaped trailing space (`#\\ ` — an odd run of backslashes before it) is part of
 the identifier and is kept, so `#\\ ` still selects id=\" \"."
   (let ((start 0) (end (length s)))
-    (loop while (and (< start end) (member (char s start) '(#\Space #\Tab #\Newline))) do (incf start))
-    (loop while (and (> end start) (member (char s (1- end)) '(#\Space #\Tab #\Newline))
+    (loop while (and (< start end) (css-ws-p (char s start))) do (incf start))
+    (loop while (and (> end start) (css-ws-p (char s (1- end)))
                      (evenp (loop for k downfrom (- end 2) to start
                                   while (char= (char s k) #\\) count t)))
           do (decf end))

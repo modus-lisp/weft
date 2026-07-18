@@ -264,6 +264,11 @@ children; a Text/Comment/CDATA/PI/DocumentType parent throws HierarchyRequestErr
 (defun owner-doc-node (ctx node)
   (or (gethash node (context-owner-docs ctx)) (context-document ctx)))
 
+(defun adopt-subtree (ctx node doc)
+  "Set NODE's (and every descendant's) recorded node document to DOC (DOM §adopt)."
+  (setf (gethash node (context-owner-docs ctx)) doc)
+  (loop for c across (h:dnode-children node) do (adopt-subtree ctx c doc)))
+
 (defun insert-adjacent (ctx element where node)
   "DOM §\"insert adjacent\": place NODE relative to ELEMENT per WHERE (ASCII
    case-insensitive).  Returns NODE, or NIL for a before/after position when
@@ -1916,6 +1921,34 @@ of the other)."
         (make-collection ctx (lambda ()
                                (remove-if-not (lambda (e) (dom:has-attribute e "name"))
                                               (dom:get-elements-by-tag-name node "a"))))))
+    ;; DOM §Document.importNode: a clone of an external node into this document.
+    (defmethod* ctx dp "importNode" 2 (this a)
+      (let* ((obj (arg a 0)) (doc (n this))
+             (arec (and (js:js-object-p obj) (gethash obj (context-attr-of ctx))))
+             (src (node-of ctx obj)))
+        (cond
+          (arec (let ((nc (cons (car (attr-rec-cell arec)) (cdr (attr-rec-cell arec)))))
+                  (setf (gethash nc (context-attr-recs ctx))
+                        (make-attr-rec :cell nc :ns (attr-rec-ns arec)
+                                       :prefix (attr-rec-prefix arec)
+                                       :local (attr-rec-local arec) :owner nil))
+                  (wrap-attr ctx nc)))
+          ((or (null src) (member (h:dnode-kind src) '(:document)))
+           (throw-dom ctx "NotSupportedError" 9 "cannot import this node"))
+          (t (let ((clone (clone-dnode ctx src (truthy (arg a 1)))))
+               (adopt-subtree ctx clone doc)
+               (wrap ctx clone))))))
+    ;; DOM §Document.adoptNode: move an external node into this document.
+    (defmethod* ctx dp "adoptNode" 1 (this a)
+      (let* ((obj (arg a 0)) (doc (n this))
+             (arec (and (js:js-object-p obj) (gethash obj (context-attr-of ctx))))
+             (src (node-of ctx obj)))
+        (cond
+          (arec (setf (attr-rec-owner arec) nil) obj)
+          ((null src) (throw-dom ctx "NotSupportedError" 9 "cannot adopt this node"))
+          ((eq (h:dnode-kind src) :document)
+           (throw-dom ctx "NotSupportedError" 9 "cannot adopt a document"))
+          (t (dom-detach src) (adopt-subtree ctx src doc) (wrap ctx src)))))
     (defget ctx dp "defaultView" (this) (proto ctx :window))
     (defget ctx dp "styleSheets" (this) (make-stylesheet-list ctx (n this)))
     (defget ctx dp "readyState" (this) "complete")

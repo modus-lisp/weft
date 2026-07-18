@@ -1503,6 +1503,38 @@ of :normal|:italic.  Rules lacking a family or any src url are dropped."
         (loop while (> m 0) do (decf m) (push (code-char (+ base (mod m 26))) chars) (setf m (floor m 26)))
         (coerce chars 'string))))
 
+(defun int->greek (n)
+  "Lower-greek alphabetic numbering (CSS 2.1 §12.4.1): base-24 over the classical
+lowercase Greek letters α..ω, omitting final sigma (ς)."
+  (if (<= n 0) (format nil "~d" n)
+      (let ((letters "αβγδεζηθικλμνξοπρστυφχψω") (chars '()) (m n))
+        (loop while (> m 0) do (decf m) (push (char letters (mod m 24)) chars) (setf m (floor m 24)))
+        (coerce chars 'string))))
+
+(defun int->additive (n table fallback)
+  "Additive numeral system (CSS 2.1 §12.4.1 armenian/georgian): TABLE is a
+descending list of (value . char); emit each char as many times as it divides
+the remainder.  Values outside [1, max] fall back to FALLBACK (decimal)."
+  (if (or (<= n 0) (> n (caar table))) (format nil "~d" n)
+      (with-output-to-string (s)
+        (declare (ignore fallback))
+        (let ((m n))
+          (dolist (p table)
+            (loop while (>= m (car p)) do (write-char (cdr p) s) (decf m (car p))))))))
+
+(defparameter *armenian-digits*
+  ;; U+0531.. uppercase Armenian letters as numerals (ones/tens/hundreds/thousands)
+  '((9000 . #\Ք) (8000 . #\Փ) (7000 . #\Ւ) (6000 . #\Ց) (5000 . #\Ր) (4000 . #\Տ) (3000 . #\Վ) (2000 . #\Ս) (1000 . #\Ռ)
+    (900 . #\Ջ) (800 . #\Պ) (700 . #\Չ) (600 . #\Ո) (500 . #\Շ) (400 . #\Ն) (300 . #\Յ) (200 . #\Մ) (100 . #\Ճ)
+    (90 . #\Ղ) (80 . #\Ձ) (70 . #\Հ) (60 . #\Կ) (50 . #\Ծ) (40 . #\Խ) (30 . #\Լ) (20 . #\Ի) (10 . #\Ժ)
+    (9 . #\Թ) (8 . #\Ը) (7 . #\Է) (6 . #\Զ) (5 . #\Ե) (4 . #\Դ) (3 . #\Գ) (2 . #\Բ) (1 . #\Ա)))
+
+(defparameter *georgian-digits*
+  '((10000 . #\ჵ) (9000 . #\ჰ) (8000 . #\ჯ) (7000 . #\ჴ) (6000 . #\ხ) (5000 . #\ჭ) (4000 . #\წ) (3000 . #\ძ) (2000 . #\ც) (1000 . #\ჩ)
+    (900 . #\შ) (800 . #\ყ) (700 . #\ღ) (600 . #\ქ) (500 . #\ფ) (400 . #\ჳ) (300 . #\ტ) (200 . #\ს) (100 . #\რ)
+    (90 . #\ჟ) (80 . #\პ) (70 . #\ო) (60 . #\ჲ) (50 . #\ნ) (40 . #\მ) (30 . #\ლ) (20 . #\კ) (10 . #\ი)
+    (9 . #\თ) (8 . #\ჱ) (7 . #\ზ) (6 . #\ვ) (5 . #\ე) (4 . #\დ) (3 . #\გ) (2 . #\ბ) (1 . #\ა)))
+
 (defun format-counter (n style)
   "Format counter value N (an integer) with counter STYLE (a list-style-type
 name; NIL = decimal), per CSS 2.1 §12.4.1."
@@ -1513,6 +1545,13 @@ name; NIL = decimal), per CSS 2.1 §12.4.1."
         ((string= style "upper-roman") (int->roman n t))
         ((member style '("lower-alpha" "lower-latin") :test #'string=) (int->alpha n nil))
         ((member style '("upper-alpha" "upper-latin") :test #'string=) (int->alpha n t))
+        ((string= style "lower-greek") (int->greek n))
+        ((string= style "armenian") (int->additive n *armenian-digits* nil))
+        ((string= style "georgian") (int->additive n *georgian-digits* nil))
+        ;; glyph list-styles render a fixed bullet, independent of N.
+        ((string= style "disc") (string (code-char #x2022)))
+        ((string= style "circle") (string (code-char #x25E6)))
+        ((string= style "square") (string (code-char #x25AA)))
         ((string= style "none") "")
         (t (format nil "~d" n))))
 

@@ -38,6 +38,7 @@
   (ranges (make-hash-table :test 'eq))      ; Range wrapper -> its RG struct
   (ns-info (make-hash-table :test 'eq))     ; element dnode -> (:ns uri :prefix p :local l) for createElementNS
   (owner-docs (make-hash-table :test 'eq))  ; created node -> its owner document (even while detached)
+  (doc-content-types (make-hash-table :test 'eq)) ; document dnode -> its contentType (default text/html)
   (input-values (make-hash-table :test 'eq)) ; <input> node -> its independent value property
   (on-handlers (make-hash-table :test 'eq))  ; node -> (equal hash "type" -> handler fn)
   (write-buffers (make-hash-table :test 'eq)) ; document node -> pending document.write buffer (open())

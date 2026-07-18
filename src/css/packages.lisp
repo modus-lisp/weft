@@ -31,6 +31,7 @@
            #:cstyle-flex-direction #:cstyle-justify-content #:cstyle-align-items #:cstyle-align-content
            #:cstyle-flex-wrap #:cstyle-flex-grow #:cstyle-flex-shrink #:cstyle-flex-basis #:cstyle-order #:cstyle-gap
            #:cstyle-grid-template-columns #:cstyle-grid-template-rows #:cstyle-grid-auto-rows
+           #:cstyle-grid-auto-columns
            #:cstyle-grid-auto-flow #:cstyle-grid-column #:cstyle-grid-row
            #:cstyle-grid-area #:cstyle-grid-template-areas
            #:cstyle-row-gap #:cstyle-column-gap

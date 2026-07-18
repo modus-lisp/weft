@@ -275,11 +275,27 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
                         '((:auto))))
          (row-specs (grid-parse-track-list (css:cstyle-grid-template-rows base-cs) fs))
          (auto-row (first (grid-parse-track-list (css:cstyle-grid-auto-rows base-cs) fs)))
-         (ncols (length col-specs))
+         (auto-col (first (grid-parse-track-list (css:cstyle-grid-auto-columns base-cs) fs)))
          (items (remove-if-not
                  (lambda (k) (let ((c (st styles k))) (and c (not (string= (css:cstyle-display c) "none")))))
                  (child-elements node))))
     (when (null items) (return-from layout-grid (values nil 0)))
+    ;; Implicit columns (CSS Grid §7.5): grow the column count to cover any item
+    ;; explicitly placed past the template's last column line; the extra tracks are
+    ;; sized by grid-auto-columns (default auto).
+    (let ((explicit-ncols (length col-specs)))
+      (let ((need explicit-ncols))
+        (dolist (it items)
+          (let ((cs (st styles it)))
+            (when cs
+              (multiple-value-bind (cline cspan) (grid-placement (css:cstyle-grid-column cs))
+                (when (and cline (>= cline 1))
+                  (setf need (max need (+ (1- cline) (max 1 cspan)))))))))
+        (when (> need explicit-ncols)
+          (setf col-specs (append col-specs
+                                   (make-list (- need explicit-ncols)
+                                              :initial-element (or auto-col '(:auto))))))))
+    (let ((ncols (length col-specs)))
     ;; Resolve grid items' percentage margins against the grid's inline content size
     ;; (CSS 2.1 §8.3 / CSS Grid §item-margins) before track sizing and item layout,
     ;; so both intrinsic-width contributions and final placement see the used px.
@@ -395,4 +411,4 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
                         (push lb boxes)))))
                 (values (nreverse boxes)
                         (+ (loop for r below nrows sum (aref rbase r))
-                           (* rgap (max 0 (1- nrows)))))))))))))
+                           (* rgap (max 0 (1- nrows))))))))))))))

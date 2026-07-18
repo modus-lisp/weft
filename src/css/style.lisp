@@ -31,7 +31,7 @@
   (flex-direction "row") (justify-content "flex-start") (align-items "stretch") (align-content "stretch")
   (flex-wrap "nowrap") (flex-grow 0.0) (flex-shrink 1.0) (flex-basis "auto") (order 0) (gap 0.0)
   ;; CSS Grid (raw template/placement strings, parsed at layout time; see grid.lisp)
-  (grid-template-columns nil) (grid-template-rows nil) (grid-auto-rows nil)
+  (grid-template-columns nil) (grid-template-rows nil) (grid-auto-rows nil) (grid-auto-columns nil)
   (grid-auto-flow "row") (grid-column nil) (grid-row nil)
   (grid-area nil) (grid-template-areas nil)   ; item area name; container NAME->(r0 c0 rspan cspan) map
   (row-gap 0.0) (column-gap 0.0)          ; distinct gaps (the `gap` slot mirrors row-gap for flex)
@@ -1032,12 +1032,13 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
              (cond ((string= prop "justify-items") (setf (cstyle-justify-items cs) v))
                    ((string= prop "justify-self") (setf (cstyle-justify-self cs) v))
                    (t (setf (cstyle-align-self cs) v))))))
-        ((member prop '("grid-template-columns" "grid-template-rows" "grid-auto-rows") :test #'string=)
+        ((member prop '("grid-template-columns" "grid-template-rows" "grid-auto-rows" "grid-auto-columns") :test #'string=)
          ;; keep the raw track-list string; parse-track-list expands it at layout time.
          (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
            (unless (member v '("none" "" "auto") :test #'string=)
              (cond ((string= prop "grid-template-columns") (setf (cstyle-grid-template-columns cs) v))
                    ((string= prop "grid-template-rows") (setf (cstyle-grid-template-rows cs) v))
+                   ((string= prop "grid-auto-columns") (setf (cstyle-grid-auto-columns cs) v))
                    (t (setf (cstyle-grid-auto-rows cs) v))))))
         ((string= prop "grid-template-areas")
          (let ((m (parse-grid-areas value)))

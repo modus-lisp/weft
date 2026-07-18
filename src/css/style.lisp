@@ -1495,6 +1495,27 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                                     (member (cstyle-display cs) '("block" "table" "list-item" "flex" "grid")
                                             :test #'string=))
                            (setf (cstyle-margin-left-auto cs) t (cstyle-margin-right-auto cs) t)))
+                       ;; CSS 2.1 §8.3 / §17.5: margins do not apply to the internal
+                       ;; table boxes (row/row-group/column/column-group/cell), and
+                       ;; padding does not apply to the non-cell internal table boxes
+                       ;; (it DOES apply to table-cell).  Force them to zero so no
+                       ;; layout path shifts these boxes (e.g. margin-left on a
+                       ;; table-cell must not push the cell right).
+                       (let ((d (cstyle-display cs)))
+                         (when (member d '("table-row-group" "table-header-group"
+                                           "table-footer-group" "table-row"
+                                           "table-column-group" "table-column" "table-cell")
+                                       :test #'string=)
+                           (setf (cstyle-margin-top cs) 0.0 (cstyle-margin-bottom cs) 0.0
+                                 (cstyle-margin-left cs) 0.0 (cstyle-margin-right cs) 0.0
+                                 (cstyle-margin-top-auto cs) nil (cstyle-margin-bottom-auto cs) nil
+                                 (cstyle-margin-left-auto cs) nil (cstyle-margin-right-auto cs) nil))
+                         (when (member d '("table-row-group" "table-header-group"
+                                           "table-footer-group" "table-row"
+                                           "table-column-group" "table-column")
+                                       :test #'string=)
+                           (setf (cstyle-padding-top cs) 0.0 (cstyle-padding-bottom cs) 0.0
+                                 (cstyle-padding-left cs) 0.0 (cstyle-padding-right cs) 0.0)))
                        (setf (gethash n styles) cs)
                        ;; generated content (computed after the element's own style is known)
                        (let ((bs (pseudo-style cs m-before vars)) (as (pseudo-style cs m-after vars)))

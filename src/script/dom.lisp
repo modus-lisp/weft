@@ -1153,8 +1153,15 @@ of the other)."
     (defget ctx np "previousSibling" (this)
       (let* ((node (n this)) (p (h:dnode-parent node)))
         (wrap ctx (and p (h:dom-prev-sibling p node)))))
+    ;; childNodes is [SameObject] (DOM §Node): memoize the live NodeList on the
+    ;; wrapper so `node.childNodes === node.childNodes`.
     (defget ctx np "childNodes" (this)
-      (let ((node (n this))) (make-collection ctx (lambda () (children-list node)) nil :nodelist)))
+      (let ((existing (js:js-get this "__weft_childNodes")))
+        (if (js:js-object-p existing) existing
+            (let* ((node (n this))
+                   (nl (make-collection ctx (lambda () (children-list node)) nil :nodelist)))
+              (js:put this "__weft_childNodes" nl :enumerable nil :configurable t)
+              nl))))
     (defgetset ctx np "nodeValue" (this)
       (if (char-data-p (n this)) (h:dnode-data (n this)) js:*null*)
       ;; DOM §nodeValue setter: a null value acts as the empty string.

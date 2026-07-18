@@ -624,35 +624,28 @@ of the other)."
 
 (defun make-class-list (ctx node)
   "A live DOMTokenList over NODE's class attribute (DOM §DOMTokenList): reads and
-   writes the attribute on every operation so it always reflects the current value."
+   writes the attribute on every operation so it always reflects the current value.
+   Integer indexing is served through a host-object [[Get]] trap."
   (let* ((realm (context-realm ctx))
-         (op (js:eval-script realm "Object.prototype"))
-         (tl (js:make-object :proto op)))
+         (methods (make-hash-table :test 'equal))
+         tl)
     (labels ((toks () (ordered-set (split-tokens (get-attr node "class"))))
              (store (list)
-               (set-attr node "class" (format nil "~{~a~^ ~}" list))
-               (setf (context-dirty ctx) t))
-             (check (tk)
-               (when (zerop (length tk))
-                 (throw-dom ctx "SyntaxError" 12 "empty token"))
-               (when (some #'ascii-ws-p tk)
-                 (throw-dom ctx "InvalidCharacterError" 5 "token contains whitespace"))
-               tk)
-             (meth (name arity fn) (js:put tl name (js:native-function realm name fn arity)
-                                           :enumerable nil)))
-      (js:put-accessor tl "length"
-        :get (js:native-function realm "get length"
-               (lambda (this ig) (declare (ignore this ig)) (num (length (toks)))) 0)
-        :enumerable t :configurable t)
-      (js:put-accessor tl "value"
-        :get (js:native-function realm "get value"
-               (lambda (this ig) (declare (ignore this ig)) (or (get-attr node "class") "")) 0)
-        :set (js:native-function realm "set value"
-               (lambda (this a) (declare (ignore this)) (set-attr node "class" (jstr (arg a 0)))
-                 (setf (context-dirty ctx) t) js:*undefined*) 1)
-        :enumerable t :configurable t)
+               ;; DOM §DOMTokenList update steps: an absent attribute with an empty
+               ;; token set stays absent (do not materialize class="").
+               (if (and (null list) (not (dom:has-attribute node "class")))
+                   nil
+                   (progn (set-attr node "class" (format nil "~{~a~^ ~}" list))
+                          (setf (context-dirty ctx) t))))
+             (empty-check (tk) (when (zerop (length tk))
+                                 (throw-dom ctx "SyntaxError" 12 "empty token")) tk)
+             (ws-check (tk) (when (some #'ascii-ws-p tk)
+                              (throw-dom ctx "InvalidCharacterError" 5 "token contains whitespace")) tk)
+             (check (tk) (empty-check tk) (ws-check tk) tk)
+             (meth (name arity fn)
+               (setf (gethash name methods) (js:native-function realm name fn arity))))
       (meth "item" 1 (lambda (this a) (declare (ignore this))
-                       (let* ((i (truncate (js:to-number (arg a 0)))) (ts (toks)))
+                       (let* ((i (int-arg a 0)) (ts (toks)))
                          (if (and (>= i 0) (< i (length ts))) (nth i ts) js:*null*))))
       (meth "contains" 1 (lambda (this a) (declare (ignore this))
                            (jbool (member (jstr (arg a 0)) (toks) :test #'string=))))
@@ -676,28 +669,55 @@ of the other)."
                                   (store (append ts (list tk))) js:*true*)
                                  (t (jbool present))))))
       (meth "replace" 2 (lambda (this a) (declare (ignore this))
-                          (let* ((old (check (jstr (arg a 0)))) (new (check (jstr (arg a 1))))
-                                 (ts (toks)))
-                            (if (member old ts :test #'string=)
-                                (progn (store (ordered-set (substitute new old ts :test #'string=)))
-                                       js:*true*)
-                                js:*false*))))
+                          ;; Empty checks (SyntaxError) precede whitespace checks
+                          ;; (InvalidCharacterError) for BOTH tokens (DOM §replace).
+                          (let ((old (jstr (arg a 0))) (new (jstr (arg a 1))))
+                            (empty-check old) (empty-check new) (ws-check old) (ws-check new)
+                            (let ((ts (toks)))
+                              (if (member old ts :test #'string=)
+                                  (progn (store (ordered-set (substitute new old ts :test #'string=)))
+                                         js:*true*)
+                                  js:*false*)))))
+      ;; classList has no defined set of supported tokens, so .supports() must
+      ;; throw TypeError (DOM §) — leaving it unimplemented gives exactly that.
       (meth "toString" 0 (lambda (this a) (declare (ignore this a)) (or (get-attr node "class") "")))
-      (meth "forEach" 1 (lambda (this a) (declare (ignore this))
-                          (let ((cb (arg a 0)) (i 0))
-                            (dolist (tk (toks)) (js:js-call cb (arg a 1) (list tk (num i) tl)) (incf i)))
-                          js:*undefined*))
-      ;; Integer-indexed getter (classList[0]) and length are surfaced as own
-      ;; data properties; the DOMTokenList is live, so refresh them whenever the
-      ;; class attribute is (re)read.  A closure over TL installs the stringifier
-      ;; tag and the iteration protocol (Symbol.iterator/keys/values/entries).
+      (setf tl (js:make-host-object realm
+        :proto (js:eval-script realm "Object.prototype")
+        :get (lambda (o key rcv) (declare (ignore rcv))
+               (let ((key (js:to-property-key key)))
+                 (cond
+                   ((and (stringp key) (string= key "length")) (num (length (toks))))
+                   ((and (stringp key) (string= key "value")) (or (get-attr node "class") ""))
+                   ((and (stringp key) (gethash key methods)) (gethash key methods))
+                   ((index-string-p key)
+                    (let ((i (parse-integer key)) (ts (toks)))
+                      (if (< i (length ts)) (nth i ts) js:*undefined*)))
+                   ;; Own props (Symbol.toStringTag + the installed iterator
+                   ;; methods) then the prototype chain.
+                   (t (js::ordinary-get o key o)))))
+        :set (lambda (o key val rcv)
+               (let ((k (js:to-property-key key)))
+                 (if (and (stringp k) (string= k "value"))
+                     (progn (set-attr node "class" (jstr val)) (setf (context-dirty ctx) t) t)
+                     ;; Other writes (Symbol.iterator/keys/... from the installer)
+                     ;; take the ordinary path so they land as own properties.
+                     (js::ordinary-set o key val (or rcv o)))))
+        :has (lambda (o key)
+               (let ((k (js:to-property-key key)))
+                 (or (and (stringp k)
+                          (or (string= k "length") (string= k "value") (gethash k methods) nil))
+                     (and (index-string-p k) (< (parse-integer k) (length (toks))))
+                     (js::ordinary-has o key))))))
+      ;; Per WebIDL a DOMTokenList's iterator surface is Array.prototype's own
+      ;; functions (the tests assert `classList.keys === Array.prototype.keys`);
+      ;; they are generic over the live length/index [[Get]] traps.
       (let ((installer (js:eval-script realm "(function(tl){
         tl[Symbol.toStringTag]='DOMTokenList';
-        function arr(){var a=[];for(var i=0,n=tl.length;i<n;i++)a.push(tl.item(i));return a;}
-        tl[Symbol.iterator]=function(){return arr()[Symbol.iterator]();};
-        tl.keys=function(){return arr().map(function(_,i){return i;})[Symbol.iterator]();};
-        tl.values=function(){return arr()[Symbol.iterator]();};
-        tl.entries=function(){return arr().map(function(v,i){return [i,v];})[Symbol.iterator]();};
+        tl[Symbol.iterator]=Array.prototype[Symbol.iterator];
+        tl.keys=Array.prototype.keys;
+        tl.values=Array.prototype.values;
+        tl.entries=Array.prototype.entries;
+        tl.forEach=Array.prototype.forEach;
       })")))
         (js:js-call installer js:*undefined* (list tl)))
       tl)))
@@ -1438,13 +1458,15 @@ of the other)."
     (defgetset ctx ep "className" (this) (or (get-attr (n this) "class") "")
       (v) (progn (set-attr (n this) "class" v) (setf (context-dirty ctx) t)))
     ;; classList: a live DOMTokenList (DOM §Element), memoized on the wrapper so
-    ;; el.classList === el.classList (SameObject) holds.
-    (defget ctx ep "classList" (this)
+    ;; el.classList === el.classList (SameObject) holds.  [PutForwards=value]:
+    ;; `el.classList = x` assigns the class attribute.
+    (defgetset ctx ep "classList" (this)
       (let ((existing (js:js-get this "__weft_classList")))
         (if (js:js-object-p existing) existing
             (let ((tl (make-class-list ctx (n this))))
               (js:put this "__weft_classList" tl :enumerable nil :configurable t)
-              tl))))
+              tl)))
+      (v) (progn (set-attr (n this) "class" (jstr v)) (setf (context-dirty ctx) t)))
     ;; Reflected IDL attributes whose property name differs from the content
     ;; attribute (DOM2 HTML): htmlFor<->for, httpEquiv<->http-equiv.
     (defgetset ctx ep "name" (this) (or (get-attr (n this) "name") "")

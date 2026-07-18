@@ -223,7 +223,7 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                       ;; <svg> / <canvas>: replaced vector content, sized to its
                       ;; intrinsic box (viewBox/width/height for SVG; width/height
                       ;; attrs for canvas) and composited during paint.
-                      ((string= (h:dnode-name n) "svg")
+                      ((string= (local-name (h:dnode-name n)) "svg")
                        (atom! (svg-box n cs) n))
                       ((string= (h:dnode-name n) "canvas")
                        (atom! (canvas-box n cs) n))
@@ -1163,7 +1163,7 @@ shift it to its final top/left."
   (when (eq (h:dnode-kind node) :element)
     (let ((name (h:dnode-name node)))
       (cond ((string-equal name "img") (img-box node cs avail-w avail-h))
-            ((string-equal name "svg") (svg-box node cs))
+            ((string-equal (local-name name) "svg") (svg-box node cs))
             ((string-equal name "canvas") (canvas-box node cs))
             ((and (string-equal name "object") (object-data-image node))
              (object-box node cs (object-data-image node)))

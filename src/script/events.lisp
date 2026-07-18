@@ -45,11 +45,22 @@
       (setf (evt-stopped (e this)) t) js:*undefined*)
     (defmethod* ctx ep "stopImmediatePropagation" 0 (this a)
       (let ((ev (e this))) (setf (evt-stopped ev) t (evt-stop-immediate ev) t) js:*undefined*))
+    ;; Legacy alias for the stop-propagation flag (DOM §Event cancelBubble).
+    (defgetset ctx ep "cancelBubble" (this) (jbool (evt-stopped (e this)))
+      (v) (when (js:js-truthy v) (setf (evt-stopped (e this)) t)))
+    ;; Legacy alias for the canceled flag, inverted (DOM §Event returnValue).
+    (defgetset ctx ep "returnValue" (this) (jbool (not (evt-default-prevented (e this))))
+      (v) (let ((ev (e this)))
+            (when (and (not (js:js-truthy v)) (evt-cancelable ev))
+              (setf (evt-default-prevented ev) t))))
     (defmethod* ctx ep "initEvent" 3 (this a)
       (let ((ev (e this)))
         (setf (evt-type ev) (jstr (arg a 0))
               (evt-bubbles ev) (js:js-truthy (arg a 1))
-              (evt-cancelable ev) (js:js-truthy (arg a 2))))
+              (evt-cancelable ev) (js:js-truthy (arg a 2))
+              ;; initialize the flags (DOM §Event initialize): un-stop, un-cancel.
+              (evt-stopped ev) nil (evt-stop-immediate ev) nil
+              (evt-default-prevented ev) nil))
       js:*undefined*)
     (defmethod* ctx ep "initUIEvent" 5 (this a)
       (let ((ev (e this)))

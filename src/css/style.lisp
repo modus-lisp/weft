@@ -957,6 +957,12 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
          ;; (position:sticky); numeric consumers ignore the form as they did :auto.
          (let* ((tv (string-trim '(#\Space) value))
                 (v (cond ((string-equal tv "auto") :auto)
+                         ;; CSS-wide keywords: `initial`/`unset` reset a non-inherited
+                         ;; inset to its initial value `auto` (`unset` == initial here);
+                         ;; a dynamic `style.top = 'initial'` (CSS Position dynamic
+                         ;; static-position tests) must drop a prior length back to the
+                         ;; static position rather than being ignored.
+                         ((member tv '("initial" "unset") :test #'string-equal) :auto)
                          ((and (> (length tv) 1) (char= (char tv (1- (length tv))) #\%))
                           (let ((n (ignore-errors (read-from-string (subseq tv 0 (1- (length tv)))))))
                             (if (numberp n) (list :percent (float n)) (len))))

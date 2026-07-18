@@ -230,6 +230,27 @@ container's align-items)."
   (let ((a (and cs (css:cstyle-align-self cs))))
     (grid-norm-align (if (or (null a) (string= a "auto")) (css:cstyle-align-items container-cs) a))))
 
+(defun grid-content-offsets (n bases gap free dist origin)
+  "Vector of N track start positions measured from ORIGIN, applying the grid
+content-distribution DIST (justify-content / align-content) over FREE leftover px
+(CSS Align 3 §content-distribution).  normal / stretch / start / flex-start / left
+and unknown values pack tightly from ORIGIN (weft does not grow tracks for stretch)."
+  (let ((offs (make-array n :initial-element (float origin)))
+        (free (max 0.0 free)))
+    (multiple-value-bind (lead extra)
+        (cond ((zerop free) (values 0.0 0.0))
+              ((string= dist "center") (values (/ free 2) 0.0))
+              ((member dist '("end" "flex-end" "right") :test #'string=) (values free 0.0))
+              ((string= dist "space-between") (if (> n 1) (values 0.0 (/ free (1- n))) (values 0.0 0.0)))
+              ((string= dist "space-around") (if (> n 0) (values (/ free (* 2 n)) (/ free n)) (values 0.0 0.0)))
+              ((string= dist "space-evenly") (values (/ free (1+ n)) (/ free (1+ n))))
+              (t (values 0.0 0.0)))
+      (loop with pos = (+ origin lead)
+            for i from 0 below n do
+        (setf (aref offs i) pos)
+        (incf pos (+ (aref bases i) gap extra))))
+    offs))
+
 ;;; ---- the container layout ----------------------------------------------
 
 (defun layout-grid (node styles cx cy content-w base-cs &optional avail-h)
@@ -261,10 +282,11 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
           (declare (ignore r rspan))
           (when (= cspan 1) (push it (aref items-by-col c)))))
       (let* ((colw (grid-size-columns col-specs content-w cgap items-by-col styles))
-             ;; column left offsets (content-box relative)
-             (colx (make-array ncols :initial-element 0.0)))
-        (loop for i from 1 below ncols do
-          (setf (aref colx i) (+ (aref colx (1- i)) (aref colw (1- i)) cgap)))
+             ;; column left offsets (content-box relative), applying justify-content
+             ;; distribution over the leftover inline space (CSS Align 3).
+             (col-used (+ (loop for i below ncols sum (aref colw i)) (* cgap (max 0 (1- ncols)))))
+             (colx (grid-content-offsets ncols colw cgap (- content-w col-used)
+                                         (css:cstyle-justify-content base-cs) 0.0)))
         ;; lay each item out at its final width (justify decides fill vs shrink).
         ;; Item margins offset the border box inside its grid area and shrink the
         ;; space its width fills (CSS Grid §11.8 / CSS 2.1 §8.3): alignment positions
@@ -337,11 +359,12 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
                   (let ((unit (/ free sum-fr)))
                     (loop for r below nrows when (aref rflex r) do
                       (incf (aref rbase r) (* unit (aref rflex r))))))))
-            ;; row top offsets
-            (let ((roff (make-array nrows :initial-element 0.0)))
-              (setf (aref roff 0) cy)
-              (loop for r from 1 below nrows do
-                (setf (aref roff r) (+ (aref roff (1- r)) (aref rbase (1- r)) rgap)))
+            ;; row top offsets, applying align-content distribution over the
+            ;; leftover block space when the grid has a definite height (CSS Align 3).
+            (let* ((row-used (+ (loop for r below nrows sum (aref rbase r)) (* rgap (max 0 (1- nrows)))))
+                   (row-free (if (numberp avail-h) (- avail-h row-used) 0.0))
+                   (roff (grid-content-offsets nrows rbase rgap row-free
+                                               (css:cstyle-align-content base-cs) cy)))
               ;; ---- position each item in its cell ----
               (let ((boxes '()))
                 (dolist (cell cells)

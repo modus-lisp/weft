@@ -11,6 +11,11 @@
 ;;; ---- DOM access (via weft.html dnode) ----------------------------------
 (defun el-p (n) (eq (weft.html:dnode-kind n) :element))
 (defun el-name (n) (weft.html:dnode-name n))
+(defun local-tag (name)
+  "Local part of a namespace-qualified tag name (`svg:rect` -> `rect`); NAME
+unchanged when unprefixed.  A type selector `svg` should match an XHTML
+`<svg:svg>` element."
+  (let ((c (position #\: name))) (if c (subseq name (1+ c)) name)))
 (defun el-attr (n a) (cdr (assoc a (weft.html:dnode-attrs n) :test #'string-equal)))
 (defun el-parent (n) (weft.html:dnode-parent n))
 (defun el-children (n) (weft.html:dnode-children n))
@@ -244,7 +249,9 @@ the full complex matcher, which verifies the combinator chain back to the anchor
 (defun match-simple (n simple)
   (ecase (first simple)
     (:universal t)
-    (:type (string-equal (el-name n) (second simple)))
+    (:type (let ((en (el-name n)))
+             (or (string-equal en (second simple))
+                 (string-equal (local-tag en) (second simple)))))
     (:class (member (second simple) (el-classes n) :test #'string=))
     (:id (let ((id (el-attr n "id"))) (and id (string= id (second simple)))))
     (:attr (match-attr n (second simple) (third simple) (fourth simple) (fifth simple)))
@@ -429,7 +436,12 @@ list is built — each rule is keyed to exactly one bucket, so no duplicates."
     (when id (dolist (ru (gethash id (rindex-by-id idx))) (funcall fn ru))))
   (dolist (c (el-classes n))
     (dolist (ru (gethash c (rindex-by-class idx))) (funcall fn ru)))
-  (dolist (ru (gethash tag (rindex-by-tag idx))) (funcall fn ru)))
+  (dolist (ru (gethash tag (rindex-by-tag idx))) (funcall fn ru))
+  ;; a namespace-qualified element (`svg:svg`) is also a candidate for rules
+  ;; keyed on its local name (`svg`), so XHTML type selectors match.
+  (let ((lt (local-tag tag)))
+    (unless (string= lt tag)
+      (dolist (ru (gethash lt (rindex-by-tag idx))) (funcall fn ru)))))
 
 ;;; ---- selector parsing --------------------------------------------------
 (defun parse-compound (s i end)

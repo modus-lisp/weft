@@ -381,7 +381,10 @@
     (defget ctx ep "nextElementSibling" (this) (wrap ctx (dom:next-element-sibling (n this))))
     (defget ctx ep "previousElementSibling" (this) (wrap ctx (dom:previous-element-sibling (n this))))
     (defget ctx ep "childElementCount" (this) (num (dom:child-element-count (n this))))
-    (defget ctx ep "style" (this) (element-style-object ctx (n this)))
+    ;; the style IDL attribute is [PutForwards=cssText] (CSSOM §6.4): `el.style = s`
+    ;; forwards to `el.style.cssText = s`, i.e. replaces the inline style declaration.
+    (defgetset ctx ep "style" (this) (element-style-object ctx (n this))
+      (v) (progn (set-attr (n this) "style" (jstr v)) (setf (context-dirty ctx) t)))
     ;; src/data reflect their attribute and, for a browsing context (iframe/
     ;; object/frame), start loading the referenced document.
     (defgetset ctx ep "src" (this) (or (get-attr (n this) "src") "")

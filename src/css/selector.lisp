@@ -153,6 +153,85 @@ the full complex matcher, which verifies the combinator chain back to the anchor
                   nil))
           (return t))))))
 
+;;; ---- :lang() — RFC 4647 §3.3.2 extended filtering (Selectors 4 §the-lang) ---
+(defun css-unescape (str)
+  "Resolve CSS backslash escapes: `\\HHHHHH` hex + optional trailing ws → codepoint,
+`\\c` (non-hex) → the literal character C."
+  (if (not (find #\\ str)) str
+      (let ((out (make-string-output-stream)) (i 0) (n (length str)))
+        (loop while (< i n) do
+          (let ((c (char str i)))
+            (if (and (char= c #\\) (< (1+ i) n))
+                (let ((d (char str (1+ i))))
+                  (if (digit-char-p d 16)
+                      (let ((j (1+ i)) (hex 0) (cnt 0))
+                        (loop while (and (< j n) (< cnt 6) (digit-char-p (char str j) 16))
+                              do (setf hex (+ (* hex 16) (digit-char-p (char str j) 16)))
+                                 (incf j) (incf cnt))
+                        (when (and (< j n) (member (char str j) '(#\Space #\Tab #\Newline #\Return)))
+                          (incf j))
+                        (write-char (code-char (if (or (zerop hex) (> hex #x10FFFF)) #xFFFD hex)) out)
+                        (setf i j))
+                      (progn (write-char d out) (incf i 2))))
+                (progn (write-char c out) (incf i)))))
+        (get-output-stream-string out))))
+
+(defun split-hyphens (str)
+  "Split STR on '-' into a list of subtag strings."
+  (let ((res '()) (start 0))
+    (dotimes (i (length str))
+      (when (char= (char str i) #\-) (push (subseq str start i) res) (setf start (1+ i))))
+    (push (subseq str start) res)
+    (nreverse res)))
+
+(defun parse-lang-ranges (arg)
+  "Split a :lang() argument into language ranges (unquoted, unescaped, lowercased).
+Returns NIL if the argument is syntactically invalid (e.g. an unquoted range that
+begins with a digit is a <number> token, not an <ident>, invalidating the rule)."
+  (let ((ranges '()) (start 0) (n (length arg)) (i 0) (q nil) (bad nil))
+    (flet ((emit (piece)
+             (let* ((p (string-trim '(#\Space #\Tab #\Newline #\Return) piece))
+                    (quoted (and (>= (length p) 2)
+                                 (member (char p 0) '(#\" #\'))
+                                 (char= (char p (1- (length p))) (char p 0)))))
+               (when quoted (setf p (subseq p 1 (1- (length p)))))
+               (when (and (not quoted) (plusp (length p))
+                          (or (digit-char-p (char p 0))
+                              (and (member (char p 0) '(#\+ #\-))
+                                   (> (length p) 1) (digit-char-p (char p 1)))))
+                 (setf bad t))
+               (setf p (string-downcase (css-unescape p)))
+               (when (plusp (length p)) (push p ranges)))))
+      (loop while (< i n) do
+        (let ((c (char arg i)))
+          (cond
+            (q (cond ((char= c #\\) (incf i 2))
+                     ((char= c q) (setf q nil) (incf i))
+                     (t (incf i))))
+            ((member c '(#\" #\')) (setf q c) (incf i))
+            ((char= c #\\) (incf i 2))
+            ((char= c #\,) (emit (subseq arg start i)) (setf start (1+ i)) (incf i))
+            (t (incf i)))))
+      (emit (subseq arg start n))
+      (unless bad (nreverse ranges)))))
+
+(defun lang-range-match (range tag)
+  "RFC 4647 §3.3.2 extended filtering.  RANGE and TAG are lowercase subtag lists."
+  (when (and range tag)
+    (let ((rs range) (ts tag))
+      (unless (or (string= (first rs) "*") (string= (first rs) (first ts)))
+        (return-from lang-range-match nil))
+      (pop rs) (pop ts)
+      (loop
+        (when (null rs) (return t))
+        (let ((r (first rs)))
+          (cond
+            ((string= r "*") (pop rs))
+            ((null ts) (return nil))
+            ((string= r (first ts)) (pop rs) (pop ts))
+            ((= (length (first ts)) 1) (return nil))
+            (t (pop ts))))))))
+
 (defun match-pseudo (n name arg)
   (let ((nm (string-downcase name)))
     (cond
@@ -165,7 +244,8 @@ the full complex matcher, which verifies the combinator chain back to the anchor
                             (t nil)))
               (el-children n)))
       ;; :first-child requires a parent element (the root, whose parent is the
-      ;; document, does not match).
+      ;; document, does not match — matches Acid3 test 35 / Selectors 3 legacy;
+      ;; Selectors 4 would let the root match but Acid3 pins the old behavior).
       ((string= nm "first-child")
        (and (el-parent n) (eq (weft.html:dnode-kind (el-parent n)) :element) (= (el-index n) 1)))
       ;; Form-control UI state.  With no interactivity every eligible control is
@@ -190,18 +270,19 @@ the full complex matcher, which verifies the combinator chain back to the anchor
            ((string= tag "option")
             (if wc (string= wc "1") (and (el-attr n "selected") t)))
            (t nil))))
-      ;; :lang(x) — the nearest ancestor lang attribute is x or an x-* subtag.
+      ;; :lang(range, …) — RFC 4647 extended filtering against the language of N
+      ;; (the nearest ancestor's lang attribute), matching any listed range.
       ((string= nm "lang")
-       (let ((want (string-downcase (or arg ""))))
-         (loop for a = n then (el-parent a) while a
-               for lang = (el-attr a "lang")
-               when lang do
-                 (let ((lang (string-downcase lang)))
-                   (return (or (string= lang want)
-                               (and (> (length lang) (length want))
-                                    (string= lang want :end1 (length want))
-                                    (char= (char lang (length want)) #\-)))))
-               finally (return nil))))
+       (let ((ranges (parse-lang-ranges (or arg ""))))
+         (and ranges
+              (loop for a = n then (el-parent a) while a
+                    for lv = (el-attr a "lang")
+                    when lv do
+                      (return (and (plusp (length lv))
+                                   (let ((tag (mapcar #'string-downcase (split-hyphens lv))))
+                                     (some (lambda (r) (lang-range-match (split-hyphens r) tag))
+                                           ranges))))
+                    finally (return nil)))))
       ((string= nm "last-child") (let ((p (el-parent n))) (or (null p) (eq n (car (last (element-children p)))))))
       ((string= nm "only-child") (let ((p (el-parent n))) (or (null p) (= 1 (length (element-children p))))))
       ((string= nm "first-of-type") (= (el-index-of-type n) 1))

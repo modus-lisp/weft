@@ -1474,6 +1474,16 @@ placed / positioned."
                    :test #'string=)
            (block-align-content cs))))
 
+(defun seals-own-margins-p (cs)
+  "True when a box with style CS does NOT collapse its top/bottom margins with its
+in-flow children (CSS 2.1 §8.3.1): any BFC-establishing box, plus floated and
+absolutely/fixed-positioned boxes (which establish a BFC too).  ESTABLISHES-BFC-P
+alone omits the latter two — they must still seal a first/last child's margin so it
+stays inside the box (e.g. an abspos box's margin never collapses with its child)."
+  (and cs (or (establishes-bfc-p cs)
+              (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)
+              (member (css:cstyle-float cs) '("left" "right") :test #'string=))))
+
 (defun %layout-node (node styles x y avail-w &optional avail-h)
   "Establish an absolute containing block for positioned elements, then lay the
 node out.  A positioned element (relative/absolute/fixed) is the containing block
@@ -1937,7 +1947,7 @@ Returns (values lbox advance-height)."
                                 ;; browsers place the body — Acid3's body{margin:-0.2em}).
                                 (top-collapse (and (not content-started)
                                                    (zerop bt) (zerop pt)
-                                                   (not (establishes-bfc-p cs))  ; a BFC seals its top margin
+                                                   (not (seals-own-margins-p cs))  ; a BFC / abspos / float seals its top margin
                                                    (let ((p (h:dnode-parent node)))
                                                      (and p (eq (h:dnode-kind p) :element)))))
                                 (gap (cond (prev-mb (+ (max (car prev-mb) (max 0 cmt))
@@ -1996,7 +2006,7 @@ Returns (values lbox advance-height)."
           (when prev-mb
             (let ((height-auto (not (numberp exp-h)))
                   (pm (+ (car prev-mb) (cdr prev-mb))))
-              (if (and height-auto (zerop bb) (zerop pb) (not (establishes-bfc-p cs)))
+              (if (and height-auto (zerop bb) (zerop pb) (not (seals-own-margins-p cs)))
                   (setf mb-eff (collapse-margins mb (car prev-mb) (cdr prev-mb)))
                   (incf content-h pm))))
           ;; parent/first-child collapse: first child's top margin bubbled up.
@@ -3942,6 +3952,61 @@ wins cascade ties, as a browser would)."
                  (loop for c across (h:dnode-children n) do (rec c)))))
       (loop for c across (h:dnode-children doc) do (rec c)))))
 
+(defun canvas-bg-style (cs)
+  "True when CS carries a background that participates in canvas propagation
+(CSS 2.1 §14.2 / css-backgrounds §3.11.3): a non-transparent colour, a bg image,
+or a bg gradient."
+  (and cs (or (css:cstyle-background cs) (css:cstyle-bg-image cs) (css:cstyle-bg-gradient cs))))
+
+(defun propagate-canvas-bg (cv pe-cs anchor-lb anchor-cs width height)
+  "Paint the propagation element PE-CS's background IMAGE and GRADIENT onto the
+canvas (CSS 2.1 §14.2).  The root element's — else the body's — background is
+transferred to the canvas: the PAINTING area is the whole canvas, but the
+POSITIONING area is the ROOT element's background positioning area (its padding
+box, ANCHOR-LB inset by ANCHOR-CS's borders) — NOT the canvas origin and NOT the
+supplying element's own box.  So the html's margin offsets the anchor, and a body
+background (used because the root is transparent) is positioned as if it were the
+root's.  The caller strips PE-CS's own image/gradient so paint-box does not repaint
+them at the element box.  Non-fixed image only; the colour is the canvas fill."
+  (when (and (css:cstyle-bg-gradient pe-cs) (gradient-visible-p (css:cstyle-bg-gradient pe-cs)))
+    (destructuring-bind (dir from to) (css:cstyle-bg-gradient pe-cs)
+      (fill-gradient cv 0 0 width height dir from to)))
+  (when (and anchor-lb (css:cstyle-bg-image pe-cs)
+             (not (string-equal (css:cstyle-bg-attachment pe-cs) "fixed")))
+    (let* ((url (css:cstyle-bg-image pe-cs))
+           (duri (if (find #\% url) (percent-decode url) url))
+           (img (if (and (>= (length duri) 5) (string-equal (subseq duri 0 5) "data:"))
+                    (ignore-errors (decode-image duri))
+                    (ignore-errors (fetch-image url)))))
+      (when (and img (plusp (img-w img)) (plusp (img-h img)))
+        (let* ((rep (css:cstyle-bg-repeat pe-cs))
+               (repx (member rep '("repeat" "repeat-x") :test #'string=))
+               (repy (member rep '("repeat" "repeat-y") :test #'string=))
+               ;; anchor = root element's background positioning area (padding box)
+               (ax0 (round (+ (lbox-x anchor-lb) (used-border anchor-cs :l))))
+               (ay0 (round (+ (lbox-y anchor-lb) (used-border anchor-cs :t))))
+               (aw (round (- (lbox-w anchor-lb) (used-border anchor-cs :l) (used-border anchor-cs :r))))
+               (ah (round (- (lbox-h anchor-lb) (used-border anchor-cs :t) (used-border anchor-cs :b)))))
+          (multiple-value-bind (iw ih) (bg-tile-size (css:cstyle-bg-size pe-cs) img aw ah)
+            (let* ((pos (css:cstyle-bg-position pe-cs))
+                   (offx (if pos (bg-pos-offset (first pos) (- aw iw)) 0))
+                   (offy (if pos (bg-pos-offset (second pos) (- ah ih)) 0))
+                   (ox (+ ax0 offx)) (oy (+ ay0 offy)))
+              (when (and (> iw 0) (> ih 0))
+                ;; painting area = whole canvas; tiles anchored at OX,OY
+                (let ((*clip* (clip-intersect 0 0 width height)))
+                  (let ((startx (if repx (- ox (* iw (ceiling ox iw))) ox))
+                        (starty (if repy (- oy (* ih (ceiling oy ih))) oy))
+                        (budget 200000))
+                    (block tiles
+                      (loop for ty = starty then (+ ty ih)
+                            while (and (< ty height) (or repy (= ty starty))) do
+                        (loop for tx = startx then (+ tx iw)
+                              while (and (< tx width) (or repx (= tx startx))) do
+                          (when (and (> (+ tx iw) 0) (> (+ ty ih) 0))
+                            (blit-img cv img tx ty iw ih)
+                            (when (<= (decf budget) 0) (return-from tiles))))))))))))))))
+
 (defun render-to-canvas (html css width &key (min-height 200) (max-height 20000)
                                               (viewport-height 600) scroll-to before-layout)
   "Parse HTML, gather CSS, cascade, lay out at WIDTH px, paint.  Returns the
@@ -3979,8 +4044,22 @@ Two height models:
       (let* ((content-h (if root (round (+ (lbox-y root) (lbox-h root) 8)) min-height))
              (height (if vph vph (min max-height (max min-height content-h))))
              (body (css:query-select doc "body"))
-             (bg (let ((cs (and body (gethash body styles)))) (and cs (css:cstyle-background cs))))
+             (root-el (css:query-select doc "html"))
+             (body-cs (and body (gethash body styles)))
+             (root-cs (and root-el (gethash root-el styles)))
+             ;; CSS 2.1 §14.2: the ROOT element's background propagates to the
+             ;; canvas; only when the root has NO background of its own does the
+             ;; BODY's background propagate instead.
+             (pe-cs (cond ((canvas-bg-style root-cs) root-cs)
+                          ((canvas-bg-style body-cs) body-cs)
+                          (t nil)))
+             (bg (and pe-cs (css:cstyle-background pe-cs)))
              (cv (make-canvas width height (if bg (rgb bg) '(255 255 255)))))
+        ;; propagate the element's background IMAGE/GRADIENT onto the canvas at the
+        ;; ICB origin, then strip them so paint-box does not repaint at the box.
+        (when (and pe-cs (or (css:cstyle-bg-image pe-cs) (css:cstyle-bg-gradient pe-cs)))
+          (propagate-canvas-bg cv pe-cs root root-cs width height)
+          (setf (css:cstyle-bg-image pe-cs) nil (css:cstyle-bg-gradient pe-cs) nil))
         (if vph
             (let ((*clip* (clip-intersect 0 0 width vph)))
               (paint-box cv root))

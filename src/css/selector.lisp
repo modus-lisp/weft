@@ -283,6 +283,14 @@ begins with a digit is a <number> token, not an <ident>, invalidating the rule).
                     :test #'string=)
             (let ((dis (and (el-attr n "disabled") t)))
               (if (string= nm "disabled") dis (not dis)))))
+      ;; :open / :closed — an element with open+closed states (details, dialog,
+      ;; select) in that state (Selectors 4 §open-state).  A host tracks live
+      ;; state in a reserved `weft-open` attribute; else the open content attr.
+      ((member nm '("open" "closed") :test #'string=)
+       (let ((tag (string-downcase (el-name n))) (wo (el-attr n "weft-open")))
+         (and (member tag '("details" "dialog" "select") :test #'string=)
+              (let ((openp (if wo (string= wo "1") (and (el-attr n "open") t))))
+                (if (string= nm "open") openp (not openp))))))
       ;; :checked — a checkbox/radio (or option) whose "checkedness" is set.  A
       ;; host (weft/script) tracks live state in a reserved `weft-checked`
       ;; attribute; with no scripting it falls back to the checked/selected

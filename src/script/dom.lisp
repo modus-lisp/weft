@@ -1966,6 +1966,10 @@ the context node when it is an element, else NIL (a document/fragment root makes
     (defgetset ctx ep "disabled" (this) (jbool (dom:has-attribute (n this) "disabled"))
       (v) (progn (if (js:js-truthy v) (set-attr (n this) "disabled" "") (remove-attr (n this) "disabled"))
                  (setf (context-dirty ctx) t)))
+    ;; details/dialog open state, reflected to the `open` content attribute.
+    (defgetset ctx ep "open" (this) (jbool (dom:has-attribute (n this) "open"))
+      (v) (progn (if (js:js-truthy v) (set-attr (n this) "open" "") (remove-attr (n this) "open"))
+                 (setf (context-dirty ctx) t)))
     (defgetset ctx ep "action" (this) (or (get-attr (n this) "action") "")
       (v) (progn (set-attr (n this) "action" (jstr v)) (setf (context-dirty ctx) t)))
     (defgetset ctx ep "method" (this) (or (get-attr (n this) "method") "")

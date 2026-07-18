@@ -157,6 +157,15 @@
 ;;; ---- value resolution ---------------------------------------------------
 (defvar *viewport-w* nil "Initial containing block width in px (for vw/vmin/vmax); NIL until set by the renderer.")
 (defvar *viewport-h* nil "Viewport height in px (for vh/vmin/vmax); NIL until set by the renderer.")
+(defvar *resolve-family* nil
+  "Font-family list of the element whose declaration is currently being resolved, so
+ex/ch use the right per-face metric (WPT's Ahem: x-height 0.8em, char advance 1.0em).")
+(defun ahem-family-p (fam)
+  "True when font-family list FAM names the Ahem test font (exact x-height/advance)."
+  (and (listp fam)
+       (some (lambda (f) (and (stringp f)
+                              (string-equal (string-trim '(#\Space #\" #\') f) "Ahem")))
+             fam)))
 
 (defun resolve-len (text font-size &optional (auto-ok nil))
   "Resolve a length string to px (float), or :auto, or NIL if unparseable."
@@ -202,8 +211,8 @@
                        ;; max-width) would otherwise be read as 65px and wrap every word.
                        ;; ch = advance of "0" (~0.55em for weft's Liberation faces),
                        ;; ex = x-height (~0.5em); approximated rather than measured.
-                       ((string= unit "ch") (* num font-size 0.55))
-                       ((string= unit "ex") (* num font-size 0.5))
+                       ((string= unit "ch") (* num font-size (if (ahem-family-p *resolve-family*) 1.0 0.55)))
+                       ((string= unit "ex") (* num font-size (if (ahem-family-p *resolve-family*) 0.8 0.5)))
                        ((member unit '("" ) :test #'string=) num)
                        (t num)))   ; treat unknown abs units as px-ish
                nil))))))
@@ -639,6 +648,9 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
 
 (defun apply-decl (cs prop value parent-cs)
   "Apply one declaration to CSTYLE CS (best-effort)."
+  ;; The element's font-family (inherited at init, or already set by an earlier `font`
+  ;; declaration) drives ex/ch resolution for this declaration's lengths.
+  (let ((*resolve-family* (cstyle-font-family cs)))
   ;; Logical box properties (margin/padding/border/inset -inline/-block[-start/end])
   ;; expand to their physical longhands before dispatch.
   (multiple-value-bind (mapped mode) (logical-box-remap prop)
@@ -1049,7 +1061,7 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
            (when (and vals (every #'numberp vals))
              (destructuring-bind (&optional (a 0.0) (b a) (c a) (d b)) vals
                (setf (cstyle-border-top-width cs) a (cstyle-border-right-width cs) b
-                     (cstyle-border-bottom-width cs) c (cstyle-border-left-width cs) d)))))))))
+                     (cstyle-border-bottom-width cs) c (cstyle-border-left-width cs) d))))))))))
 
 (defun first-token (s)
   "First whitespace-delimited token of S, but treating a parenthesised group as

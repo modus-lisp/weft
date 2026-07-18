@@ -1402,8 +1402,27 @@ Returns (values lbox advance-height)."
         ;; REPLACED-BOX builds the box at (0,0) with the bitmap on an inner content
         ;; child at coords relative to it; SHIFT-BOX moves the whole subtree so the
         ;; child ends up at absolute coords too (else the image blits at the origin).
-        (shift-box rb x y)
-        (return-from %layout-core (values rb (lbox-h rb) 0 0 0))))
+        (if (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)
+            ;; out-of-flow: the static-flow point is (x,y); RESOLVE-POSITIONED later
+            ;; applies its margins and offsets, so leave margins out here.
+            (progn (shift-box rb x y)
+                   (return-from %layout-core (values rb (lbox-h rb) 0 0 0)))
+            ;; in-flow block-level replaced element (e.g. `img{display:block}`): honor
+            ;; its margins (CSS 2.1 §10.3.3 / §10.6.2) — the border box stays at (x,y)
+            ;; for the caller to place, horizontal auto margins with a definite width
+            ;; center it, and the vertical margins are reported so they collapse with
+            ;; siblings (a block img's margin-bottom was previously dropped).
+            (let* ((mt (let ((m (css:cstyle-margin-top cs)))    (if (numberp m) m 0)))
+                   (mb (let ((m (css:cstyle-margin-bottom cs))) (if (numberp m) m 0)))
+                   (ml (css:cstyle-margin-left cs))
+                   (mla (css:cstyle-margin-left-auto cs)) (mra (css:cstyle-margin-right-auto cs))
+                   (free (max 0 (- avail-w (lbox-w rb))))
+                   (offx (cond ((and mla mra) (round (/ free 2.0)))
+                               (mla free)
+                               ((numberp ml) ml)
+                               (t 0))))
+              (shift-box rb (+ x offx) y)
+              (return-from %layout-core (values rb (lbox-h rb) mt mb 0))))))
     (let* ((mt (css:cstyle-margin-top cs)) (mb (css:cstyle-margin-bottom cs))
            (ml (css:cstyle-margin-left cs)) (mr (css:cstyle-margin-right cs))
            (pt (css::resolve-pad (css:cstyle-padding-top cs) avail-w)) (pb (css::resolve-pad (css:cstyle-padding-bottom cs) avail-w))

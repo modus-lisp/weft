@@ -26,6 +26,18 @@ and the selector parser sees it as a literal (type) identifier."
               (write-char c o)
               (progn (write-char #\\ o) (write-char c o)))))))
 
+(defun css-escape-string (s)
+  "Escape a string's contents for re-serialisation inside \"...\" delimiters:
+backslash and the double-quote delimiter are backslash-escaped so a value that
+round-trips through TOKS-TEXT (e.g. `quotes: '\"' ...`) is re-readable rather than
+collapsing `\"` into an ambiguous bare quote."
+  (if (find-if (lambda (c) (or (char= c #\\) (char= c #\"))) s)
+      (with-output-to-string (o)
+        (loop for c across s do
+          (when (or (char= c #\\) (char= c #\")) (write-char #\\ o))
+          (write-char c o)))
+      s))
+
 (defun toks-text (toks start end)
   "Reconstruct source-ish text from token range [start,end)."
   (with-output-to-string (o)
@@ -36,7 +48,7 @@ and the selector parser sees it as a literal (type) identifier."
                (:ident (write-string (css-escape-ident (ctok-value tk)) o))
                (:function (format o "~a(" (ctok-value tk)))
                (:hash (format o "#~a" (css-escape-ident (ctok-value tk))))
-               (:string (format o "\"~a\"" (ctok-value tk)))
+               (:string (format o "\"~a\"" (css-escape-string (ctok-value tk))))
                (:url (format o "url(~a)" (ctok-value tk)))
                (:number (format o "~a" (ctok-value tk)))
                (:percentage (format o "~a%" (ctok-value tk)))

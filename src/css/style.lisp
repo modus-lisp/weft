@@ -65,6 +65,10 @@
   (transform nil) (transform-origin nil)
   ;; CSS 2.1 §12.4 counters: each an alist of (name . integer) — NOT inherited.
   (counter-reset nil) (counter-increment nil)
+  ;; CSS 2.1 §12.3.1 quotes: a vector of (open . close) string pairs by nesting
+  ;; depth (NIL = UA default / not set), used to resolve open-quote/close-quote.
+  ;; Inherited.
+  (quotes nil)
   (content nil))      ; generated-content string (or (:tmpl seg...) template) for ::before/::after (NIL = no box)
 
 ;;; ---- UA defaults --------------------------------------------------------
@@ -98,6 +102,7 @@
             (cstyle-word-break cs) (cstyle-word-break parent-cs)
             (cstyle-writing-mode cs) (cstyle-writing-mode parent-cs)
             (cstyle-direction cs) (cstyle-direction parent-cs)
+            (cstyle-quotes cs) (cstyle-quotes parent-cs)
             (cstyle-list-style cs) (cstyle-list-style parent-cs)))
     (cond ((member tag *none-tags* :test #'string=) (setf (cstyle-display cs) "none"))
           ((string= tag "li") (setf (cstyle-display cs) "list-item"))
@@ -509,7 +514,9 @@ escapes in quoted runs are already decoded by the tokenizer's string reader."
       ((or (string-equal v "none") (string-equal v "normal")) nil)
       ((not (or (search "counter(" v :test #'char-equal)
                 (search "counters(" v :test #'char-equal)
-                (search "attr(" v :test #'char-equal)))
+                (search "attr(" v :test #'char-equal)
+                (search "open-quote" v :test #'char-equal)
+                (search "close-quote" v :test #'char-equal)))
        ;; no counter reference: concatenated quoted strings -> a flat string
        ;; (attr()/url() and other bare tokens still yield an empty-but-present box).
        (if (and (plusp (length v)) (member (char v 0) '(#\' #\")))
@@ -562,8 +569,31 @@ escapes in quoted runs are already decoded by the tokenizer's string reader."
                          (fallback (and (second parts) (string-trim '(#\Space #\Tab) (second parts)))))
                     (push (list :attr name (or fallback "")) segs)
                     (setf i (1+ close))))
+                 ((ci-prefix "no-open-quote")  (push '(:quote :no-open) segs)  (incf i 13))
+                 ((ci-prefix "no-close-quote") (push '(:quote :no-close) segs) (incf i 14))
+                 ((ci-prefix "open-quote")     (push '(:quote :open) segs)     (incf i 10))
+                 ((ci-prefix "close-quote")    (push '(:quote :close) segs)    (incf i 11))
                  (t (incf i))))))
          (cons :tmpl (nreverse segs)))))))
+
+(defun parse-quotes (value parent-cs)
+  "Parse the 'quotes' property (CSS 2.1 §12.3.1): `none` -> #() (open/close-quote
+emit nothing), `inherit` -> the parent's value, else a run of quoted strings
+paired into a vector of (open . close) by nesting depth."
+  (let ((v (string-trim '(#\Space #\Tab #\Newline #\Return) value)))
+    (cond
+      ((string-equal v "inherit") (and parent-cs (cstyle-quotes parent-cs)))
+      ((string-equal v "none") #())
+      ((or (string-equal v "auto") (zerop (length v))) nil)
+      (t (let ((strs '()) (i 0) (n (length v)))
+           (loop while (< i n) do
+             (if (member (char v i) '(#\' #\"))
+                 (multiple-value-bind (s j) (%read-css-string v i) (push s strs) (setf i j))
+                 (incf i)))
+           (let* ((flat (nreverse strs)) (pairs '()))
+             (loop while (cdr flat) do
+               (push (cons (first flat) (second flat)) pairs) (setf flat (cddr flat)))
+             (if pairs (coerce (nreverse pairs) 'vector) nil)))))))
 
 (defun split-counter-args (s)
   "Split a counter()/counters() argument list S on top-level commas, honouring
@@ -793,6 +823,7 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
                    (cstyle-display parent-cs)
                    (normalize-display value))))
         ((string= prop "content") (setf (cstyle-content cs) (parse-content value)))
+        ((string= prop "quotes") (setf (cstyle-quotes cs) (parse-quotes value parent-cs)))
         ((string= prop "counter-reset")
          (setf (cstyle-counter-reset cs)
                (mapcar (lambda (op) (cons (car op) (if (eq (cdr op) :default) 0 (cdr op))))
@@ -1560,7 +1591,8 @@ name; NIL = decimal), per CSS 2.1 §12.4.1."
 name, keyed by the DOM depth at which each was reset, so a reset's scope covers
 the element, its following siblings and their descendants), then resolve every
 content template (:tmpl ...) in STYLES to a final string."
-  (let ((stacks (make-hash-table :test 'equal)))   ; name -> list of (value . depth), innermost first
+  (let ((stacks (make-hash-table :test 'equal))   ; name -> list of (value . depth), innermost first
+        (qdepth 0))                                ; CSS 2.1 §12.3.2 quote nesting depth (document-wide)
     (labels ((counter-val (name) (let ((s (gethash name stacks))) (if s (car (first s)) 0)))
              (do-reset (ops depth)
                (dolist (op ops)
@@ -1593,6 +1625,19 @@ content template (:tmpl ...) in STYLES to a final string."
                                   ;; element (CSS 2.1 §12.2); missing attr -> fallback/"".
                                   (let ((val (and node (el-attr node (second seg)))))
                                     (write-string (or val (third seg) "") o)))
+                                 ((eq (car seg) :quote)
+                                  ;; open/close-quote resolve against the element's
+                                  ;; `quotes` at the current nesting depth (CSS 2.1 §12.3.2).
+                                  (let* ((q (cstyle-quotes cs))
+                                         (have (and q (plusp (length q))))
+                                         (maxi (if have (1- (length q)) 0)))
+                                    (ecase (second seg)
+                                      (:open  (when have (write-string (car (aref q (min qdepth maxi))) o))
+                                              (incf qdepth))
+                                      (:no-open (incf qdepth))
+                                      (:close (setf qdepth (max 0 (1- qdepth)))
+                                              (when have (write-string (cdr (aref q (min qdepth maxi))) o)))
+                                      (:no-close (setf qdepth (max 0 (1- qdepth)))))))
                                  ((eq (car seg) :counters)
                                   (loop for e in (reverse (gethash (second seg) stacks)) for first = t then nil do
                                     (unless first (write-string (third seg) o))
@@ -1644,7 +1689,8 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                (when matched
                  (let ((cs (make-cstyle :color (cstyle-color parent-cs) :font-size (cstyle-font-size parent-cs)
                                         :font-weight (cstyle-font-weight parent-cs) :line-height (cstyle-line-height parent-cs)
-                                        :font-family (cstyle-font-family parent-cs) :font-style (cstyle-font-style parent-cs))))
+                                        :font-family (cstyle-font-family parent-cs) :font-style (cstyle-font-style parent-cs)
+                                        :quotes (cstyle-quotes parent-cs))))
                    (dolist (m (sort-matched matched))
                      (dolist (d (third m))
                        (unless (custom-prop-p (css-decl-prop d))

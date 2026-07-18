@@ -153,38 +153,16 @@
               "NodeList" :enumerable nil :writable nil :configurable t)
       (js:put (proto ctx :htmlcollection) (js:eval-script realm "Symbol.toStringTag")
               "HTMLCollection" :enumerable nil :writable nil :configurable t)
-      ;; NodeList is iterable (DOM §) with forEach/keys/values/entries; drive them
-      ;; off the live [[Get]] length/index traps via a snapshot array.
+      ;; NodeList is iterable (DOM §); per WebIDL its values/keys/entries/forEach
+      ;; and @@iterator are the very same functions as Array.prototype's (the tests
+      ;; assert `list.keys === Array.prototype.keys`).  They are generic over any
+      ;; array-like, so they run against the live length/index [[Get]] traps.
       (let* ((nlp (proto ctx :nodelist))
-             (sym (js:eval-script realm "Symbol.iterator"))
-             (snap (lambda (this)
-                     (js::make-array-object
-                      (loop for i from 0 below (js-int (js:js-get this "length"))
-                            collect (js:js-get this (princ-to-string i)))))))
-        (flet ((put (name len fn) (js:put nlp name (js:native-function realm name fn len)
-                                          :enumerable nil :writable t :configurable t)))
-          (let ((iter (lambda (this a) (declare (ignore a))
-                        (let ((arr (funcall snap this))) (js:js-call (js:js-get arr sym) arr nil)))))
-            (js:put nlp sym (js:native-function realm "[Symbol.iterator]" iter 0)
-                    :enumerable nil :writable t :configurable t)
-            (put "values" 0 iter))
-          (put "keys" 0 (lambda (this a) (declare (ignore a))
-                          (let ((ks (js::make-array-object
-                                     (loop for i from 0 below (js-int (js:js-get this "length"))
-                                           collect (num i)))))
-                            (js:js-call (js:js-get ks sym) ks nil))))
-          (put "entries" 0 (lambda (this a) (declare (ignore a))
-                             (let ((es (js::make-array-object
-                                        (loop for i from 0 below (js-int (js:js-get this "length"))
-                                              collect (js::make-array-object
-                                                       (list (num i) (js:js-get this (princ-to-string i))))))))
-                               (js:js-call (js:js-get es sym) es nil))))
-          (put "forEach" 1 (lambda (this a)
-                             (let ((cb (arg a 0)) (ta (arg a 1))
-                                   (len (js-int (js:js-get this "length"))))
-                               (dotimes (i len)
-                                 (js:js-call cb ta (list (js:js-get this (princ-to-string i)) (num i) this)))
-                               js:*undefined*))))))
+             (arrp (js:eval-script realm "Array.prototype"))
+             (sym (js:eval-script realm "Symbol.iterator")))
+        (dolist (m '("values" "keys" "entries" "forEach"))
+          (js:put nlp m (js:js-get arrp m) :enumerable nil :writable t :configurable t))
+        (js:put nlp sym (js:js-get arrp sym) :enumerable nil :writable t :configurable t)))
     ;; URL / URLSearchParams / XMLHttpRequest / IntersectionObserver / ResizeObserver —
     ;; Web APIs real pages depend on.  URL parsing is delegated to weft.url (WHATWG)
     ;; through a native helper; the rest are JS polyfills.  IntersectionObserver /

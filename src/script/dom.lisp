@@ -1391,6 +1391,82 @@ the context node when it is an element, else NIL (a document/fragment root makes
                 (t nil)))))
     m))
 
+;;; ---- named access on the Window object (HTML §7.3.3) ----------------------
+;;; `window[name]` / the bare global `name` resolves to a "named object": any
+;;; element with id=NAME, plus the listed elements with a non-empty name=NAME.
+;;; ONE match -> that element; MANY -> a live HTMLCollection; NONE -> nothing (so
+;;; the name is not a named property).  This is a FALLBACK: a real own/prototype
+;;; property of the global (document, window, a user var/fn, a builtin) always
+;;; wins.  See INSTALL-WINDOW-NAMED-ACCESS for the priority wiring.
+(defparameter +window-named-tags+
+  '("a" "applet" "area" "embed" "form" "frame" "frameset" "iframe" "img" "object")
+  "Elements whose non-empty name= attribute exposes them as a Window named
+   property.  (An id= on ANY element exposes it too.)")
+
+(defun window-named-match-p (ctx el name)
+  (or (equal (dom:get-attribute el "id") name)
+      (and (member (h:dnode-name el) +window-named-tags+ :test #'string-equal)
+           (equal (element-real-ns ctx el) *html-ns*)
+           (equal (dom:get-attribute el "name") name))))
+
+(defun window-named-elements (ctx name)
+  "Elements exposing NAME as a Window named property, in tree order (live scan)."
+  (let ((out '()))
+    (labels ((walk (node)
+               (when (eq (h:dnode-kind node) :element)
+                 (when (window-named-match-p ctx node name) (push node out)))
+               (loop for c across (h:dnode-children node) do (walk c))))
+      (walk (context-document ctx)))
+    (nreverse out)))
+
+(defun window-named-value (ctx name)
+  "The Window named-property value for NAME: the element (one match) or a live
+   HTMLCollection (many); NIL when NAME names nothing (not a named property)."
+  (when (and (stringp name) (plusp (length name)))
+    (let ((els (window-named-elements ctx name)))
+      (cond ((null els) nil)
+            ((null (cdr els)) (wrap ctx (car els)))
+            (t (make-collection ctx (lambda () (window-named-elements ctx name))))))))
+
+(defun install-window-named-access (ctx window)
+  "Install HTML §7.3.3 named access on the global object WINDOW as a LOWEST-priority
+   fallback.  A real own or prototype property always wins; only a name that
+   resolves to nothing real falls through to a live document scan.  Wires both
+   entry points: `window.foo` (the [[Get]] trap) and the bare global `foo` (the
+   [[GetOwnProperty]] trap — the interpreter's unqualified-identifier resolution
+   consults js-get-own-property on the global to decide a name is a binding)."
+  (let ((internal (js::js-object-internal window)))
+    ;; [[Get]] — window.foo / foo["x"].  Ordinary chain first; only a genuinely
+    ;; absent property (undefined AND not present anywhere on the chain) falls back.
+    (setf (getf internal :get)
+          (lambda (o key rcv)
+            (let ((v (js::ordinary-get o key (or rcv o))))
+              (if (js:js-undefined-p v)
+                  (let ((k (js:to-property-key key)))
+                    (if (and (stringp k) (not (js::ordinary-has o k)))
+                        (or (window-named-value ctx k) v)
+                        v))
+                  v))))
+    ;; [[HasProperty]] — `"foo" in window`.
+    (setf (getf internal :has)
+          (lambda (o key)
+            (or (js::ordinary-has o key)
+                (let ((k (js:to-property-key key)))
+                  (and (stringp k) (window-named-value ctx k) t)))))
+    ;; [[GetOwnProperty]] — makes the bare identifier `foo` a resolvable global
+    ;; binding and backs getOwnPropertyDescriptor.  Ordinary own property first;
+    ;; else a configurable, non-enumerable named property (legacy unenumerable
+    ;; named properties).  KEY arrives already normalized (prop-key'd).
+    (setf (getf internal :get-own-property)
+          (lambda (o key)
+            (or (gethash key (js::js-object-props o))
+                (when (stringp key)
+                  (let ((val (window-named-value ctx key)))
+                    (when val
+                      (js::make-prop :value val :enumerable nil
+                                     :writable t :configurable t)))))))
+    (setf (js::js-object-internal window) internal)))
+
 (defparameter +form-control-tags+
   '("input" "button" "select" "textarea" "fieldset" "object" "output"))
 

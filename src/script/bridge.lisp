@@ -34,6 +34,8 @@
     (js:define-global realm "document" docobj)
     (js:define-global realm "window" window)
     (js:define-global realm "self" window)
+    ;; HTML §7.3.3 named access on the Window object (fallback below real globals).
+    (install-window-named-access ctx window)
     ;; Single browsing context: parent/top/frames resolve to this window, so a
     ;; frame document's script (run in this realm) reaches the parent globals.
     (js:define-global realm "parent" window)

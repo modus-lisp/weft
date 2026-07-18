@@ -2088,7 +2088,14 @@ container.  A run that is entirely collapsible white space generates no item."
                    (push (anon-flex-item r node styles) items)))
                (setf run '()))))
       (dolist (k kids)
-        (cond ((eq (h:dnode-kind k) :element) (flush) (push k items))
+        (cond ((eq (h:dnode-kind k) :element)
+               ;; a display:none element generates no box and is not laid out; it must
+               ;; NOT break a contiguous text run (CSS Flexbox §4), else the space around
+               ;; it would be lost — "a <span style=display:none></span>b" is one item.
+               (let ((cs (st styles k)))
+                 (if (and cs (string= (css:cstyle-display cs) "none"))
+                     nil
+                     (progn (flush) (push k items)))))
               ((eq (h:dnode-kind k) :text) (push k run))))
       (flush))
     (nreverse items)))

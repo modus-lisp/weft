@@ -176,9 +176,14 @@
       (defmethod* ctx np "dispatchEvent" 1 (this a)
         (dispatch-event ctx (n this) (arg a 0))))
     ;; Event / CustomEvent / UIEvent constructors.
+    ;; All event wrappers share one Event.prototype (EVP); pointing every
+    ;; constructor's .prototype at it makes `e instanceof Event` (and instanceof
+    ;; the specific interface) hold for constructed events (WebIDL §interface-object).
     (flet ((ctor (name)
              (let ((f (js:native-function realm name
                         (lambda (this args) (declare (ignore this))
                           (make-event-object ctx (jstr (arg args 0)) (arg args 1))) 1)))
+               (js:put f "prototype" (proto ctx :event) :enumerable nil :writable nil)
                (js:define-global realm name f))))
-      (ctor "Event") (ctor "CustomEvent") (ctor "UIEvent"))))
+      (ctor "Event") (ctor "CustomEvent") (ctor "UIEvent")
+      (ctor "MouseEvent") (ctor "KeyboardEvent"))))

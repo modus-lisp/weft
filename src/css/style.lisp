@@ -20,6 +20,14 @@
   (border-top-color nil) (border-right-color nil) (border-bottom-color nil) (border-left-color nil)
   (border-top-style nil) (border-right-style nil) (border-bottom-style nil) (border-left-style nil)
   (border-color '(0 0 0 1.0)) (text-align "left") (white-space "normal")
+  ;; CSS-UI outline: a ring painted just outside the border edge; does NOT
+  ;; affect layout.  OUTLINE-COLOR NIL = currentColor.  OUTLINE-STYLE NIL/"none"
+  ;; = no outline.  OUTLINE-OFFSET px (may be negative) is the gap between the
+  ;; border edge and the inner edge of the outline.
+  (outline-width 3.0) (outline-style nil) (outline-color nil) (outline-offset 0.0)
+  ;; CSS-UI-4 accent-color (inherited); NIL = auto.  An `outline-color: auto`
+  ;; (the :auto sentinel) with `outline-style: auto` resolves to accent-color.
+  (accent-color nil)
   (text-decoration nil) (list-style "disc")
   (max-width :none) (min-width 0.0) (margin-left-auto nil) (margin-right-auto nil)
   (margin-top-auto nil) (margin-bottom-auto nil)   ; auto block-axis margins (flex/grid)
@@ -114,7 +122,8 @@
             (cstyle-direction cs) (cstyle-direction parent-cs)
             (cstyle-quotes cs) (cstyle-quotes parent-cs)
             (cstyle-caption-side cs) (cstyle-caption-side parent-cs)
-            (cstyle-list-style cs) (cstyle-list-style parent-cs)))
+            (cstyle-list-style cs) (cstyle-list-style parent-cs)
+            (cstyle-accent-color cs) (cstyle-accent-color parent-cs)))
     (cond ((member tag *none-tags* :test #'string=) (setf (cstyle-display cs) "none"))
           ((string= tag "li") (setf (cstyle-display cs) "list-item"))
           ((string= tag "table") (setf (cstyle-display cs) "table"))
@@ -1237,6 +1246,44 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
         ((string= prop "border-left-style") (when (border-style-token-p value) (setf (cstyle-border-left-style cs) (string-downcase (string-trim '(#\Space) value)))))
         ((member prop '("border" "border-top" "border-bottom" "border-left" "border-right") :test #'string=)
          (apply-border cs prop value fs))
+        ((string= prop "outline")
+         (if (and parent-cs (string-equal (string-trim '(#\Space) value) "inherit"))
+             (setf (cstyle-outline-width cs) (cstyle-outline-width parent-cs)
+                   (cstyle-outline-style cs) (cstyle-outline-style parent-cs)
+                   (cstyle-outline-color cs) (cstyle-outline-color parent-cs)
+                   (cstyle-outline-offset cs) (cstyle-outline-offset parent-cs))
+             (apply-outline cs value fs)))
+        ((string= prop "outline-width")
+         (if (and parent-cs (string-equal (string-trim '(#\Space) value) "inherit"))
+             (setf (cstyle-outline-width cs) (cstyle-outline-width parent-cs))
+             (let ((px (resolve-border-width-token (string-trim '(#\Space) value) fs)))
+               (when (numberp px) (setf (cstyle-outline-width cs) px)))))
+        ((string= prop "outline-style")
+         (if (and parent-cs (string-equal (string-trim '(#\Space) value) "inherit"))
+             (setf (cstyle-outline-style cs) (cstyle-outline-style parent-cs))
+             (let ((v (string-downcase (string-trim '(#\Space) value))))
+               (when (or (border-style-token-p v) (string= v "auto"))
+                 (setf (cstyle-outline-style cs) v)))))
+        ((string= prop "outline-color")
+         (let ((v (string-trim '(#\Space) value)))
+           (cond ((and parent-cs (string-equal v "inherit"))
+                  (setf (cstyle-outline-color cs) (cstyle-outline-color parent-cs)))
+                 ((string-equal v "invert")
+                  (setf (cstyle-outline-color cs) nil))   ; treat invert as currentColor
+                 ((string-equal v "auto")
+                  (setf (cstyle-outline-color cs) :auto)) ; may resolve to accent-color
+                 (t (let ((c (resolve-border-color v cs))) (when c (setf (cstyle-outline-color cs) c)))))))
+        ((string= prop "accent-color")
+         (let ((v (string-trim '(#\Space) value)))
+           (cond ((and parent-cs (string-equal v "inherit"))
+                  (setf (cstyle-accent-color cs) (cstyle-accent-color parent-cs)))
+                 ((string-equal v "auto") (setf (cstyle-accent-color cs) nil))
+                 (t (let ((c (resolve-border-color v cs))) (when c (setf (cstyle-accent-color cs) c)))))))
+        ((string= prop "outline-offset")
+         (if (and parent-cs (string-equal (string-trim '(#\Space) value) "inherit"))
+             (setf (cstyle-outline-offset cs) (cstyle-outline-offset parent-cs))
+             (let ((px (resolve-len (string-trim '(#\Space) value) fs)))
+               (when (numberp px) (setf (cstyle-outline-offset cs) px)))))
         ((string= prop "border-width")
          ;; 1-4 value box shorthand (e.g. Acid2's `border-width: 0 2em`); each
          ;; value is a length or a thin/medium/thick keyword.
@@ -1290,7 +1337,10 @@ url(...) chunk removed (so its contents aren't mistaken for keywords)."
                 (let ((end (position #\) value :start (+ p 4))))
                   (if end (concatenate 'string (subseq value 0 p) " " (subseq value (1+ end))) value))
                 value)))
-    (remove "" (split-ws (string-downcase v)) :test #'string=)))
+    ;; SPLIT-TOKENS (not SPLIT-WS) so a functional color keeps its internal
+    ;; spaces — `background: rgba(0, 128, 0, 0.5)` is ONE color token, not four
+    ;; unresolvable fragments (which left the shorthand's bg color unset).
+    (remove "" (split-tokens (string-downcase v)) :test #'string=)))
 
 (defun split-tokens (s)
   "Split S on spaces, but keep parenthesised groups intact — so a value like
@@ -1455,6 +1505,24 @@ Invalid/unparseable components are left as NIL (= fall back to BORDER-COLOR)."
             ((string= prop "border-bottom") (setw :b) (setc :b) (sets :b))
             ((string= prop "border-left") (setw :l) (setc :l) (sets :l))
             ((string= prop "border-right") (setw :r) (setc :r) (sets :r))))))
+
+(defun apply-outline (cs value fs)
+  "The `outline` shorthand: width || style || color (CSS-UI §outline).  An omitted
+color resets to currentColor (NIL sentinel); an omitted style resets to none."
+  (let ((w nil) (col nil) (sty nil))
+    (dolist (tok (split-tokens value))
+      (let ((px (resolve-len tok fs)))
+        (cond ((numberp px) (setf w px))
+              ((member tok '("thin" "medium" "thick") :test #'string-equal)
+               (setf w (cond ((string-equal tok "thin") 1.0) ((string-equal tok "thick") 5.0) (t 3.0))))
+              ((or (border-style-token-p tok) (string-equal tok "auto")) (setf sty (string-downcase tok)))
+              ((string-equal tok "invert"))       ; treat invert color as currentColor
+              ((resolve-border-color tok cs) (setf col (resolve-border-color tok cs))))))
+    (setf (cstyle-outline-width cs) (or w 3.0))
+    ;; an omitted color is the initial `auto` (resolves to accent-color for an
+    ;; auto-style outline, else currentColor); an explicit color wins.
+    (setf (cstyle-outline-color cs) (or col :auto))
+    (setf (cstyle-outline-style cs) (or sty "none"))))
 
 (defun apply-presentational-hints (cs node)
   "Map legacy HTML presentational attributes to computed style (bgcolor, text,

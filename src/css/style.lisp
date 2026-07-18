@@ -1535,16 +1535,23 @@ content template (:tmpl ...) in STYLES to a final string."
                                   (loop for e in (reverse (gethash (second seg) stacks)) for first = t then nil do
                                     (unless first (write-string (third seg) o))
                                     (write-string (format-counter (car e) (fourth seg)) o)))))))))
+             (none-p (cs) (and cs (string= (cstyle-display cs) "none")))
              (walk (n depth)
                (when (eq (weft.html:dnode-kind n) :element)
                  (let ((cs (gethash n styles))
                        (bcs (gethash (cons n :before) styles))
                        (acs (gethash (cons n :after) styles)))
-                   (when cs (do-reset (cstyle-counter-reset cs) depth) (do-incr (cstyle-counter-increment cs)) (resolve cs))
-                   (when bcs (do-reset (cstyle-counter-reset bcs) (1+ depth)) (do-incr (cstyle-counter-increment bcs)) (resolve bcs))
-                   (loop for c across (weft.html:dnode-children n) do (walk c (1+ depth)))
-                   (when acs (do-reset (cstyle-counter-reset acs) (1+ depth)) (do-incr (cstyle-counter-increment acs)) (resolve acs))
-                   (pop-deeper (1+ depth))))))
+                   ;; CSS 2.1 §12.4: a display:none element (and its whole subtree)
+                   ;; generates no boxes, so it neither creates, resets nor increments
+                   ;; a counter; likewise a non-generated (display:none) pseudo-element.
+                   (unless (none-p cs)
+                     (do-reset (cstyle-counter-reset cs) depth) (do-incr (cstyle-counter-increment cs)) (resolve cs)
+                     (when (and bcs (not (none-p bcs)))
+                       (do-reset (cstyle-counter-reset bcs) (1+ depth)) (do-incr (cstyle-counter-increment bcs)) (resolve bcs))
+                     (loop for c across (weft.html:dnode-children n) do (walk c (1+ depth)))
+                     (when (and acs (not (none-p acs)))
+                       (do-reset (cstyle-counter-reset acs) (1+ depth)) (do-incr (cstyle-counter-increment acs)) (resolve acs))
+                     (pop-deeper (1+ depth)))))))
       (loop for c across (weft.html:dnode-children document) do (walk c 0)))))
 
 (defun compute-styles (document stylesheet)

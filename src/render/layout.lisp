@@ -2094,7 +2094,16 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                                   (*flex-main-size* (round w)))   ; the item uses this width, not its own
                              (layout-node it styles (round x) ly (round w)))
                          (declare (ignore adv))
-                         (when lb (push lb boxes) (setf max-h (max max-h (lbox-h lb))))
+                         ;; the line's cross size is the largest item OUTER cross size
+                         ;; (CSS Flexbox §9.4): include each item's cross-axis (top/bottom)
+                         ;; margins so wrapped lines stack clear of them.  The border box
+                         ;; already sits margin-top below the line top (block flow), so its
+                         ;; outer extent is margin-top + border height + margin-bottom.
+                         (when lb
+                           (push lb boxes)
+                           (let ((cmt (if (css:cstyle-margin-top-auto is) 0 (max 0 (css:cstyle-margin-top is))))
+                                 (cmb (if (css:cstyle-margin-bottom-auto is) 0 (max 0 (css:cstyle-margin-bottom is)))))
+                             (setf max-h (max max-h (+ cmt (lbox-h lb) cmb)))))
                          ;; layout-node already positioned the border box ML past X;
                          ;; advance past the whole margin box so the next item clears
                          ;; both this item's trailing margin and its own leading one.
@@ -2149,6 +2158,12 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                         (push it ci) (push b cb) (push g cg) (push s cs) (setf cw add)))
                     (when ci (push (list (nreverse ci) (nreverse cb) (nreverse cg) (nreverse cs)) lines))
                     (setf lines (nreverse lines))
+                    ;; row-reverse reverses only the MAIN axis: items were reversed for
+                    ;; line-breaking, so the lines emerge in reverse cross order too.
+                    ;; Flip the line list back so lines stack in flow order (first line
+                    ;; on top), while each line keeps its reversed main-axis placement.
+                    (when (string= dir "row-reverse")
+                      (setf lines (nreverse lines)))
                     ;; lay each line out at CY, then position the lines along the cross
                     ;; axis per align-content: when the container is taller than the lines
                     ;; the surplus is distributed as leading/between per the keyword.

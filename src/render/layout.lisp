@@ -2047,6 +2047,52 @@ the content before moving on).  Returns (values column-boxes content-height)."
                       (setf maxh (max maxh (- (+ (lbox-y c) (lbox-h c)) cy)))))
                   (values kids maxh))))))))
 
+(defun anon-flex-item (kids ref styles)
+  "A synthetic block-level flex item wrapping a contiguous run of text/inline content
+KIDS that sits directly inside a flex container (CSS Flexbox §4).  Inheritable style
+is taken from the container REF so the text renders in the right font/colour; the box
+itself generates no margin/border/padding/background and its inner display is block, so
+the run lays out in a normal inline formatting context.  Flex properties are reset to
+their initial values (grow 0, shrink 1, basis auto, order 0, align-self auto)."
+  (let ((cs (let ((c (css::copy-cstyle (or (st styles ref) (css::make-cstyle)))))
+              (setf (css:cstyle-display c) "block"
+                    (css:cstyle-width c) :auto (css:cstyle-height c) :auto
+                    (css:cstyle-float c) "none" (css:cstyle-position c) "static"
+                    (css:cstyle-flex-grow c) 0.0 (css:cstyle-flex-shrink c) 1.0
+                    (css:cstyle-flex-basis c) "auto" (css:cstyle-order c) 0
+                    (css:cstyle-align-self c) "auto" (css:cstyle-content c) nil
+                    (css:cstyle-background c) nil (css:cstyle-bg-image c) nil (css:cstyle-bg-gradient c) nil
+                    (css:cstyle-margin-top c) 0.0 (css:cstyle-margin-right c) 0.0
+                    (css:cstyle-margin-bottom c) 0.0 (css:cstyle-margin-left c) 0.0
+                    (css:cstyle-padding-top c) 0.0 (css:cstyle-padding-right c) 0.0
+                    (css:cstyle-padding-bottom c) 0.0 (css:cstyle-padding-left c) 0.0
+                    (css:cstyle-border-top-width c) 0.0 (css:cstyle-border-right-width c) 0.0
+                    (css:cstyle-border-bottom-width c) 0.0 (css:cstyle-border-left-width c) 0.0)
+              c))
+        (v (make-array (length kids) :adjustable t :fill-pointer 0)))
+    (dolist (k kids) (vector-push-extend k v))
+    (let ((el (h::%dnode :kind :element :name "flexitem" :children v)))
+      (setf (gethash el styles) cs)
+      el)))
+
+(defun flex-item-nodes (node styles)
+  "The flex items NODE lays out (CSS Flexbox §4): each in-flow child element, plus an
+anonymous flex item wrapping each contiguous run of text directly contained in the
+container.  A run that is entirely collapsible white space generates no item."
+  (let ((kids (flatten-contents (coerce (h:dnode-children node) 'list) styles))
+        (items '()) (run '()))
+    (flet ((flush ()
+             (when run
+               (let ((r (nreverse run)))
+                 (unless (every #'ws-only-text-p r)
+                   (push (anon-flex-item r node styles) items)))
+               (setf run '()))))
+      (dolist (k kids)
+        (cond ((eq (h:dnode-kind k) :element) (flush) (push k items))
+              ((eq (h:dnode-kind k) :text) (push k run))))
+      (flush))
+    (nreverse items)))
+
 (defun layout-flex (node styles cx cy content-w base-cs &optional avail-h)
   "Single-line flexbox layout.  Returns (values child-lboxes content-height).  AVAIL-H
 is the container's definite content height (px) when known — the main-axis size a
@@ -2056,7 +2102,7 @@ column distributes grow/shrink into; NIL means auto (size to content)."
          (justify (css:cstyle-justify-content base-cs))
          (align (css:cstyle-align-items base-cs))
          (gap (css:cstyle-gap base-cs))
-         (items (remove-if-not (lambda (k) (let ((c (st styles k))) (and c (not (string= (css:cstyle-display c) "none"))))) (effective-child-elements node styles)))
+         (items (remove-if-not (lambda (k) (let ((c (st styles k))) (and c (not (string= (css:cstyle-display c) "none"))))) (flex-item-nodes node styles)))
          ;; `order` reorders items (CSS 5.4); a stable sort keeps DOM order among ties.
          (items (stable-sort (copy-list items) #'<
                              :key (lambda (it) (let ((c (st styles it))) (if c (css:cstyle-order c) 0)))))

@@ -3618,7 +3618,14 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                         ;; inline background (e.g. <mark>, a highlighted <span>): paint
                         ;; the run's box behind its glyphs.  background-color is not
                         ;; inherited, so a non-nil value here is the run element's own.
-                        (let ((bg (css:cstyle-background cs)))
+                        ;; Only an actual inline-level run (a <span>/<mark>/<a> etc.)
+                        ;; paints its own background across the line fragments it
+                        ;; spans.  Anonymous text directly in a block carries the
+                        ;; BLOCK's style, whose background is painted once by the block
+                        ;; box — repainting it per line box (at the line's height) is
+                        ;; both redundant and wrong for a `height:0`/overflowing block,
+                        ;; which would bleed the background over its overflow lines.
+                        (let ((bg (and (string= (cdisplay cs) "inline") (css:cstyle-background cs))))
                           (when (and bg (or (< (length bg) 4) (plusp (fourth bg))))
                             ;; extend across the inter-word gap when the next run is
                             ;; the SAME element (a multi-word highlight), so its spaces

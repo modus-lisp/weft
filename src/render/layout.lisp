@@ -2045,11 +2045,24 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                           (lsum-grow (reduce #'+ lgrows))
                           (scaled (mapcar #'* lshrinks lbases))
                           (sum-scaled (reduce #'+ scaled))
-                          (sizes (cond ((and (> lfree 0) (> lsum-grow 0))
-                                        (mapcar (lambda (b g) (+ b (* lfree (/ g lsum-grow)))) lbases lgrows))
-                                       ((and (< lfree 0) (> sum-scaled 0))
-                                        (mapcar (lambda (b sc) (max 0 (+ b (* lfree (/ sc sum-scaled))))) lbases scaled))
-                                       (t lbases)))
+                          (sizes0 (cond ((and (> lfree 0) (> lsum-grow 0))
+                                         (mapcar (lambda (b g) (+ b (* lfree (/ g lsum-grow)))) lbases lgrows))
+                                        ((and (< lfree 0) (> sum-scaled 0))
+                                         (mapcar (lambda (b sc) (max 0 (+ b (* lfree (/ sc sum-scaled))))) lbases scaled))
+                                        (t lbases)))
+                          ;; clamp each flexed size to the item's min/max-width (CSS
+                          ;; Flexbox §9.7 step 4): freed/absorbed space then falls to
+                          ;; justify-content.  Only explicit lengths/percentages clamp;
+                          ;; auto/none/min-content are left to the base pass.
+                          (sizes (mapcar (lambda (sz it)
+                                           (let* ((is (st styles it))
+                                                  (mx (and is (css::resolve-size (css:cstyle-max-width is) content-w)))
+                                                  (mn (and is (css::resolve-size (css:cstyle-min-width is) content-w)))
+                                                  (v sz))
+                                             (when (and (numberp mx) (> v mx)) (setf v mx))
+                                             (when (and (numberp mn) (< v mn)) (setf v mn))
+                                             v))
+                                         sizes0 litems))
                           (used (+ (reduce #'+ sizes) lgap lmargin-sum))
                           (extra (max 0 (- content-w used)))
                           ;; auto margins on the main axis absorb positive free space

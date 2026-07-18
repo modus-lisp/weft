@@ -538,6 +538,84 @@ of the other)."
           ((eq (h:dnode-namespace el) :svg) "http://www.w3.org/2000/svg")
           (t nil))))
 
+(defun element-prefix (ctx el)
+  "EL's namespace prefix, or NIL."
+  (let ((info (gethash el (context-ns-info ctx))))
+    (and info (getf info :prefix))))
+
+(defun element-local (ctx el)
+  "EL's local name (from createElementNS ns-info, else the stored name)."
+  (let ((info (gethash el (context-ns-info ctx))))
+    (if info (getf info :local) (h:dnode-name el))))
+
+(defun ns-arg (v)
+  "Coerce a namespace/prefix IDL argument: null/undefined and \"\" both -> NIL."
+  (if (nullish v) nil (let ((s (jstr v))) (if (zerop (length s)) nil s))))
+
+(defun document-element-of (doc)
+  "The document element (first element child) of a :document node, or NIL."
+  (loop for ch across (h:dnode-children doc)
+        when (eq (h:dnode-kind ch) :element) return ch))
+
+;;; DOM §"locate a namespace" — recursive walk up the element ancestors honoring
+;;; xmlns / xmlns:prefix declarations.  Prefix NIL means the default namespace.
+(defun element-locate-namespace (ctx el prefix)
+  ;; The "xml" and "xmlns" prefixes are predefined (XML Namespaces §): every
+  ;; element implicitly binds them, so they short-circuit the ancestor walk.
+  (when (equal prefix "xml") (return-from element-locate-namespace
+                               "http://www.w3.org/XML/1998/namespace"))
+  (when (equal prefix "xmlns") (return-from element-locate-namespace
+                                 "http://www.w3.org/2000/xmlns/"))
+  (let ((ns (element-real-ns ctx el)))
+    (cond
+      ((and ns (equal prefix (element-prefix ctx el))) ns)
+      (t (let* ((target (if prefix (format nil "xmlns:~a" prefix) "xmlns"))
+                (cell (assoc target (h:dnode-attrs el) :test #'string=)))
+           (if cell
+               (if (plusp (length (cdr cell))) (cdr cell) nil)
+               (let ((p (h:dnode-parent el)))
+                 (when (and p (eq (h:dnode-kind p) :element))
+                   (element-locate-namespace ctx p prefix)))))))))
+
+(defun locate-namespace (ctx node prefix)
+  (case (h:dnode-kind node)
+    (:element (element-locate-namespace ctx node prefix))
+    (:document (let ((de (document-element-of node)))
+                 (and de (element-locate-namespace ctx de prefix))))
+    ((:doctype :fragment) nil)
+    (t (let ((p (h:dnode-parent node)))
+         (when (and p (eq (h:dnode-kind p) :element))
+           (element-locate-namespace ctx p prefix))))))
+
+;;; DOM §"locate a namespace prefix".
+(defun element-locate-prefix (ctx el ns)
+  (cond
+    ((and (equal (element-real-ns ctx el) ns) (element-prefix ctx el))
+     (element-prefix ctx el))
+    (t (or (loop for (q . v) in (h:dnode-attrs el)
+                 when (and (> (length q) 6) (string= (subseq q 0 6) "xmlns:")
+                           (equal v ns))
+                 return (subseq q 6))
+           (let ((p (h:dnode-parent el)))
+             (when (and p (eq (h:dnode-kind p) :element))
+               (element-locate-prefix ctx p ns)))))))
+
+(defun tag-ns-match (ctx el nsraw local)
+  "Match predicate for getElementsByTagNameNS (DOM §): NSRAW/LOCAL are the raw
+   IDL arguments; \"*\" is a wildcard for either component."
+  (let ((ns (if (string= nsraw "*") :any (ns-arg nsraw))))
+    (and (or (string= local "*") (string= (element-local ctx el) local))
+         (or (eq ns :any) (equal (element-real-ns ctx el) ns)))))
+
+(defun context-element-for-ns (ctx node)
+  "The element used to resolve namespace queries for NODE (DOM §)."
+  (case (h:dnode-kind node)
+    (:element node)
+    (:document (document-element-of node))
+    ((:doctype :fragment) nil)
+    (t (let ((p (h:dnode-parent node)))
+         (and p (eq (h:dnode-kind p) :element) p)))))
+
 (defun html-attr-el-p (ctx el)
   "T if EL is an HTML-namespace element in an HTML document — the case where
    setAttribute/getAttribute/hasAttribute ASCII-lowercase the qualified name and
@@ -639,7 +717,20 @@ of the other)."
                             (when (attr-rec-owner r) (setf (context-dirty ctx) t)))))
       (defgetset ctx ap "value" (this) (getv this) (v) (setv this v))
       (defgetset ctx ap "nodeValue" (this) (getv this) (v) (setv this v))
-      (defgetset ctx ap "textContent" (this) (getv this) (v) (setv this v)))))
+      (defgetset ctx ap "textContent" (this) (getv this) (v) (setv this v)))
+    ;; DOM §Node namespace lookups resolve against the Attr's owner element.
+    (defmethod* ctx ap "lookupNamespaceURI" 1 (this a)
+      (let ((o (attr-rec-owner (rec this))))
+        (opt (and o (element-locate-namespace ctx o (ns-arg (arg a 0)))))))
+    (defmethod* ctx ap "isDefaultNamespace" 1 (this a)
+      (let ((o (attr-rec-owner (rec this))))
+        (jbool (equal (and o (element-locate-namespace ctx o nil)) (ns-arg (arg a 0))))))
+    (defmethod* ctx ap "lookupPrefix" 1 (this a)
+      (let ((o (attr-rec-owner (rec this))) (ns (ns-arg (arg a 0))))
+        (opt (and o ns (element-locate-prefix ctx o ns)))))
+    (defmethod* ctx ap "getRootNode" 1 (this a) (declare (ignore a))
+      ;; An Attr has no parent, so it is its own root (DOM §).
+      this)))
 
 ;;; ---- NamedNodeMap (element.attributes) ------------------------------------
 (defun make-attr-map (ctx el)
@@ -980,12 +1071,31 @@ of the other)."
     (defmethod* ctx np "compareDocumentPosition" 1 (this a)
       (let ((node (n this)) (other (require-node ctx (arg a 0))))
         (num (compare-document-position node other))))
+    ;; DOM §Node.getRootNode — the topmost inclusive ancestor.  Weft has no shadow
+    ;; trees, so the `composed` option makes no difference.
+    (defmethod* ctx np "getRootNode" 1 (this a) (declare (ignore a))
+      (wrap ctx (loop for p = (n this) then (h:dnode-parent p)
+                      when (null (h:dnode-parent p)) return p)))
+    ;; DOM §Node.lookupNamespaceURI / lookupPrefix / isDefaultNamespace.
+    (defmethod* ctx np "lookupNamespaceURI" 1 (this a)
+      (opt (locate-namespace ctx (n this) (ns-arg (arg a 0)))))
+    (defmethod* ctx np "isDefaultNamespace" 1 (this a)
+      (jbool (equal (locate-namespace ctx (n this) nil) (ns-arg (arg a 0)))))
+    (defmethod* ctx np "lookupPrefix" 1 (this a)
+      (let ((ns (ns-arg (arg a 0))))
+        (if (null ns) js:*null*
+            (let ((el (context-element-for-ns ctx (n this))))
+              (opt (and el (element-locate-prefix ctx el ns)))))))
     ;; Node type constants (also mirrored on the constructor in Acid tests).
     (dolist (pair '(("ELEMENT_NODE" . 1) ("ATTRIBUTE_NODE" . 2) ("TEXT_NODE" . 3)
                     ("CDATA_SECTION_NODE" . 4) ("ENTITY_REFERENCE_NODE" . 5)
                     ("ENTITY_NODE" . 6) ("PROCESSING_INSTRUCTION_NODE" . 7)
                     ("COMMENT_NODE" . 8) ("DOCUMENT_NODE" . 9) ("DOCUMENT_TYPE_NODE" . 10)
-                    ("DOCUMENT_FRAGMENT_NODE" . 11) ("NOTATION_NODE" . 12)))
+                    ("DOCUMENT_FRAGMENT_NODE" . 11) ("NOTATION_NODE" . 12)
+                    ("DOCUMENT_POSITION_DISCONNECTED" . 1)
+                    ("DOCUMENT_POSITION_PRECEDING" . 2) ("DOCUMENT_POSITION_FOLLOWING" . 4)
+                    ("DOCUMENT_POSITION_CONTAINS" . 8) ("DOCUMENT_POSITION_CONTAINED_BY" . 16)
+                    ("DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC" . 32)))
       (js:put np (car pair) (num (cdr pair)) :enumerable nil :writable nil :configurable nil))))
 
 (defun image-preload (ctx node src)
@@ -1231,6 +1341,11 @@ of the other)."
         (make-collection ctx (lambda ()
                                ;; getElementsByTagName excludes the context node itself
                                (remove node (dom:get-elements-by-tag-name node tag))))))
+    (defmethod* ctx ep "getElementsByTagNameNS" 2 (this a)
+      (let ((node (n this)) (nsraw (jstr (arg a 0))) (local (jstr (arg a 1))))
+        (make-collection ctx (lambda ()
+                               (remove-if-not (lambda (el) (tag-ns-match ctx el nsraw local))
+                                              (remove node (dom:get-elements-by-tag-name node "*")))))))
     (defmethod* ctx ep "getElementsByClassName" 1 (this a)
       (let ((node (n this)) (cls (jstr (arg a 0))))
         (make-collection ctx (lambda () (dom:get-elements-by-class-name node cls)))))
@@ -1511,6 +1626,11 @@ of the other)."
     (defmethod* ctx dp "getElementsByTagName" 1 (this a)
       (let ((node (n this)) (tag (string-downcase (jstr (arg a 0)))))
         (make-collection ctx (lambda () (remove node (dom:get-elements-by-tag-name node tag))))))
+    (defmethod* ctx dp "getElementsByTagNameNS" 2 (this a)
+      (let ((node (n this)) (nsraw (jstr (arg a 0))) (local (jstr (arg a 1))))
+        (make-collection ctx (lambda ()
+                               (remove-if-not (lambda (el) (tag-ns-match ctx el nsraw local))
+                                              (remove node (dom:get-elements-by-tag-name node "*")))))))
     (defmethod* ctx dp "getElementsByClassName" 1 (this a)
       (let ((node (n this)) (cls (jstr (arg a 0))))
         (make-collection ctx (lambda () (dom:get-elements-by-class-name node cls)))))
@@ -1520,7 +1640,7 @@ of the other)."
           (throw-dom ctx "InvalidCharacterError" 5 "invalid element name"))
         (new-node ctx this (h:make-element (string-downcase name)))))
     (defmethod* ctx dp "createElementNS" 2 (this a)
-      (let* ((nsv (arg a 0)) (ns (if (nullish nsv) nil (jstr nsv))) (name (jstr (arg a 1)))
+      (let* ((ns (ns-arg (arg a 0))) (name (jstr (arg a 1)))
              (colon (position #\: name)))
         (unless (and (plusp (length name))
                      (name-start-char-p (char name (if colon (1+ colon) 0)))

@@ -1379,8 +1379,19 @@ Returns (values lbox advance-height)."
                             (when (and ar used-h) (setf c (max c (* used-h ar))))
                             (if border-box (+ c pad-bord) c)))
                          (t (css::resolve-size (css:cstyle-width cs) avail-w)))) ; px or nil
-           (max-w (css::resolve-size (css:cstyle-max-width cs) avail-w))
-           (min-w (css::resolve-size (css:cstyle-min-width cs) avail-w))
+           ;; min-width/max-width may name an intrinsic-sizing keyword (CSS Sizing 3):
+           ;; resolve it from the box's own content measure (a CONTENT-box width, so
+           ;; border-box adds padding+border to make the clamp a border-box value).
+           ;; Boxes with an aspect-ratio are skipped — their intrinsic minimum is the
+           ;; transferred size (CSS Sizing 4 §aspect-ratio-minimum), not the content.
+           (max-w (let ((k (and (not ar) (intrinsic-keyword-width (css:cstyle-max-width cs) node styles avail-w))))
+                    (cond ((null k) (css::resolve-size (css:cstyle-max-width cs) avail-w))
+                          (border-box (+ k pad-bord))
+                          (t k))))
+           (min-w (let ((k (and (not ar) (intrinsic-keyword-width (css:cstyle-min-width cs) node styles avail-w))))
+                    (cond ((null k) (css::resolve-size (css:cstyle-min-width cs) avail-w))
+                          (border-box (+ k pad-bord))
+                          (t k))))
            ;; a box with width:auto that is shrink-to-fit (CSS 10.3.7 / 10.3.9):
            ;; absolute/fixed boxes AND atomic inlines (inline-block/-flex/-table)
            ;; size to min(available, max-content), not the full available width —
@@ -2900,6 +2911,20 @@ max-content width.  Bounded by CONTENT-W so it stays resilient."
                     (loop for k in block-kids
                           maximize (pref-border-width k styles content-w (1+ depth)))
                     (pref-inline-width node styles cs content-w)))))))))
+
+(defun intrinsic-keyword-width (kw node styles avail-w)
+  "Resolve an intrinsic-sizing keyword (CSS Sizing 3) used as a min-width/max-width
+value to a CONTENT-box px width from NODE's own content measures, or NIL when KW is
+not such a keyword.  NODE's own definite width does not fix the measure (SKIP-OWN-
+WIDTH) — the keyword asks for the intrinsic size of the content, so a box with both
+`width:50px` and `min-width:min-content` still measures its children."
+  (let ((av (or avail-w 0)))
+    (case kw
+      (:min-content (min-content-width node styles av 0 t))
+      (:max-content (pref-content-width node styles av))
+      (:fit-content (max (min-content-width node styles av 0 t)
+                         (min (pref-content-width node styles av) av)))
+      (t nil))))
 
 (defun pref-border-width (node styles content-w depth)
   "Preferred BORDER-box width (incl. margins) of NODE for shrink-to-fit sizing."

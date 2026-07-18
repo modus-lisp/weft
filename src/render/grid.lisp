@@ -248,6 +248,11 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
                  (lambda (k) (let ((c (st styles k))) (and c (not (string= (css:cstyle-display c) "none")))))
                  (child-elements node))))
     (when (null items) (return-from layout-grid (values nil 0)))
+    ;; Resolve grid items' percentage margins against the grid's inline content size
+    ;; (CSS 2.1 §8.3 / CSS Grid §item-margins) before track sizing and item layout,
+    ;; so both intrinsic-width contributions and final placement see the used px.
+    (dolist (it items)
+      (let ((c (st styles it))) (when c (css::resolve-pct-margins c content-w))))
     (let* ((placed (grid-place-items items styles ncols (css:cstyle-grid-template-areas base-cs)))
            ;; single-column items feed content-track sizing
            (items-by-col (make-array ncols :initial-element nil)))
@@ -260,23 +265,34 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
              (colx (make-array ncols :initial-element 0.0)))
         (loop for i from 1 below ncols do
           (setf (aref colx i) (+ (aref colx (1- i)) (aref colw (1- i)) cgap)))
-        ;; lay each item out at its final width (justify decides fill vs shrink)
-        (let ((cells '()))   ; (lb nh r c rspan cspan align cellw x-offset)
+        ;; lay each item out at its final width (justify decides fill vs shrink).
+        ;; Item margins offset the border box inside its grid area and shrink the
+        ;; space its width fills (CSS Grid §11.8 / CSS 2.1 §8.3): alignment positions
+        ;; the MARGIN box, so free space is measured against the outer margin extent.
+        (let ((cells '()))   ; (lb nh r c rspan cspan align cellw mt mb)
           (dolist (p placed)
             (destructuring-bind (it r c rspan cspan) p
               (let* ((cs (st styles it))
+                     (ml (if (css:cstyle-margin-left-auto cs) 0 (css:cstyle-margin-left cs)))
+                     (mr (if (css:cstyle-margin-right-auto cs) 0 (css:cstyle-margin-right cs)))
+                     (mt (if (css:cstyle-margin-top-auto cs) 0 (css:cstyle-margin-top cs)))
+                     (mb (if (css:cstyle-margin-bottom-auto cs) 0 (css:cstyle-margin-bottom cs)))
                      (span-w (+ (loop for k from c below (min ncols (+ c cspan)) sum (aref colw k))
                                 (* cgap (1- cspan))))
                      (just (grid-justify cs base-cs))
-                     (itemw (if (string= just "stretch") span-w
-                                (min span-w (grid-item-max-width it styles span-w))))
-                     (hoff (cond ((string= just "center") (/ (- span-w itemw) 2))
-                                 ((string= just "end") (- span-w itemw))
+                     ;; margin box the item's alignment positions within the area;
+                     ;; LAYOUT-NODE subtracts the item's own margins from AVAIL and
+                     ;; offsets the border box by margin-left, so pass the outer
+                     ;; margin-box width as AVAIL and the area origin (sans margin) as x.
+                     (mbox-w (if (string= just "stretch") span-w
+                                 (min span-w (grid-item-max-width it styles span-w))))
+                     (hoff (cond ((string= just "center") (/ (- span-w mbox-w) 2))
+                                 ((string= just "end") (- span-w mbox-w))
                                  (t 0)))
                      (x (+ cx (aref colx c) hoff)))
-                (multiple-value-bind (lb adv) (layout-node it styles (round x) (round cy) (round itemw))
+                (multiple-value-bind (lb adv) (layout-node it styles (round x) (round cy) (round mbox-w))
                   (declare (ignore adv))
-                  (push (list lb (if lb (lbox-h lb) 0) r c rspan cspan (grid-align cs base-cs) span-w)
+                  (push (list lb (if lb (lbox-h lb) 0) r c rspan cspan (grid-align cs base-cs) span-w mt mb)
                         cells)))))
           (setf cells (nreverse cells))
           ;; ---- row sizing ----
@@ -292,20 +308,21 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
                                 (aref rfixed r) t))
                 (:fr (when (numberp avail-h) (setf (aref rflex r) (float (second spec)))))
                 (t nil)))   ; auto/content — filled below
-            ;; content pass: single-row items set their row's auto height
+            ;; content pass: single-row items set their row's auto height (outer,
+            ;; margin box included — CSS 2.1 §8.3)
             (dolist (cell cells)
-              (destructuring-bind (lb nh r c rspan cspan align cellw) cell
+              (destructuring-bind (lb nh r c rspan cspan align cellw mt mb) cell
                 (declare (ignore lb c cspan align cellw))
                 (when (and (= rspan 1) (not (aref rfixed r)))
-                  (setf (aref rbase r) (max (aref rbase r) nh)))))
+                  (setf (aref rbase r) (max (aref rbase r) (+ nh mt mb))))))
             ;; multi-row items: grow the last non-fixed spanned row to fit
             (dolist (cell cells)
-              (destructuring-bind (lb nh r c rspan cspan align cellw) cell
+              (destructuring-bind (lb nh r c rspan cspan align cellw mt mb) cell
                 (declare (ignore lb c cspan align cellw))
                 (when (> rspan 1)
                   (let* ((span-h (+ (loop for rr from r below (+ r rspan) sum (aref rbase rr))
                                     (* rgap (1- rspan))))
-                         (deficit (- nh span-h)))
+                         (deficit (- (+ nh mt mb) span-h)))
                     (when (> deficit 0)
                       (let ((target (1- (+ r rspan))))
                         (loop for rr from (1- (+ r rspan)) downto r
@@ -328,18 +345,19 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
               ;; ---- position each item in its cell ----
               (let ((boxes '()))
                 (dolist (cell cells)
-                  (destructuring-bind (lb nh r c rspan cspan align cellw) cell
+                  (destructuring-bind (lb nh r c rspan cspan align cellw mt mb) cell
                     (declare (ignore c cspan cellw))
                     (when lb
                       (let* ((cellh (+ (loop for rr from r below (+ r rspan) sum (aref rbase rr))
                                        (* rgap (1- rspan))))
                              (celly (aref roff r))
-                             (voff (cond ((string= align "center") (/ (- cellh nh) 2))
-                                         ((string= align "end") (- cellh nh))
+                             (mbox-h (+ nh mt mb))
+                             (voff (cond ((string= align "center") (/ (- cellh mbox-h) 2))
+                                         ((string= align "end") (- cellh mbox-h))
                                          (t 0)))
-                             (fy (+ celly voff)))
+                             (fy (+ celly voff mt)))
                         (shift-box lb 0 (round (- fy (lbox-y lb))))
-                        (when (string= align "stretch") (setf (lbox-h lb) (max nh (round cellh))))
+                        (when (string= align "stretch") (setf (lbox-h lb) (max nh (round (- cellh mt mb)))))
                         (push lb boxes)))))
                 (values (nreverse boxes)
                         (+ (loop for r below nrows sum (aref rbase r))

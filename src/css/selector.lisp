@@ -620,8 +620,10 @@ the identifier and is kept, so `#\\ ` still selects id=\" \"."
 (defparameter *forgiving-functional-pseudos* '("is" "where" "matches" "any")
   "Functional pseudo-classes whose argument is a FORGIVING selector list — an
 invalid inner selector does not invalidate the whole (Selectors 4 §3.4.2).")
-(defparameter *strict-functional-pseudos* '("not" "has")
-  "Functional pseudo-classes whose argument is validated strictly.")
+(defparameter *strict-functional-pseudos* '("not")
+  "Functional pseudo-classes whose argument is validated strictly (non-forgiving,
+non-relative).  :has() is excluded: its argument is a RELATIVE selector list
+(leading combinators allowed), so it is accepted leniently rather than mis-flagged.")
 
 (defun sv-read-ident (s i n)
   "Read an ident starting at S[i] (escapes included).  Return (values ok new-i).

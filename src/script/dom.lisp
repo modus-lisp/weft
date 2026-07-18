@@ -812,9 +812,16 @@ of the other)."
     (defmethod* ctx ep "getElementsByClassName" 1 (this a)
       (let ((node (n this)) (cls (jstr (arg a 0))))
         (make-collection ctx (lambda () (dom:get-elements-by-class-name node cls)))))
-    (defmethod* ctx ep "matches" 1 (this a)
-      (jbool (ignore-errors (css:selector-matches-p
-                             (css:parse-selector-list (jstr (arg a 0))) (n this)))))
+    (flet ((matches-selector (this a)
+             ;; A syntactically invalid selector must throw SyntaxError (not
+             ;; silently return false), per DOM §Element.matches.
+             (let ((sl (handler-case (css:parse-selector-list (jstr (arg a 0)))
+                         (error () (throw-dom ctx "SyntaxError" 12 "invalid selector")))))
+               (jbool (css:selector-matches-p sl (n this))))))
+      (defmethod* ctx ep "matches" 1 (this a) (matches-selector this a))
+      ;; legacy aliases (DOM §Element): both delegate to matches().
+      (defmethod* ctx ep "webkitMatchesSelector" 1 (this a) (matches-selector this a))
+      (defmethod* ctx ep "matchesSelector" 1 (this a) (matches-selector this a)))
     (defmethod* ctx ep "querySelector" 1 (this a)
       (let ((sl (ignore-errors (css:parse-selector-list (jstr (arg a 0))))))
         (let ((m (and sl (qs-first (n this) sl)))) (if m (wrap ctx m) js:*null*))))
@@ -1069,8 +1076,11 @@ of the other)."
     (defmethod* ctx dp "createTextNode" 1 (this a) (new-node ctx this (h:make-text (jstr (arg a 0))))) 
     (defmethod* ctx dp "createComment" 1 (this a) (new-node ctx this (h:make-comment (jstr (arg a 0)))))
     (defmethod* ctx dp "createCDATASection" 1 (this a)
-      ;; DOM §Document: a "]]>"-bearing string is a parse hazard.
+      ;; DOM §Document: HTML documents cannot hold CDATA sections.
       (let ((s (jstr (arg a 0))))
+        (when (equal (or (gethash (require-node ctx this) (context-doc-content-types ctx))
+                         "text/html") "text/html")
+          (throw-dom ctx "NotSupportedError" 9 "createCDATASection is not supported in HTML documents"))
         (when (search "]]>" s)
           (throw-dom ctx "InvalidCharacterError" 5 "']]>' not allowed in CDATA"))
         (new-node ctx this (h:make-cdata s))))

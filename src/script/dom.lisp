@@ -2419,6 +2419,183 @@ top document takes it from the base URL."
           (setf (gethash ed (context-doc-content-types ctx)) content-type)
           (wrap ctx ed)))))
 
+;;; ---- XMLSerializer (DOM Parsing & Serialization §2.2) ---------------------
+;;; The XML serialization algorithm with namespace-prefix bookkeeping: a per-ns
+;;; ordered prefix map, generated `nsN` prefixes, xmlns declaration placement,
+;;; prefix reuse and the default-namespace reset rules.
+(defparameter +xml-void-elements+
+  '("area" "base" "br" "col" "embed" "hr" "img" "input" "link" "meta"
+    "param" "source" "track" "wbr"))
+
+(defun xml-escape-text (s)
+  (with-output-to-string (o)
+    (loop for c across s do
+      (case c (#\& (write-string "&amp;" o)) (#\< (write-string "&lt;" o))
+              (#\> (write-string "&gt;" o)) (t (write-char c o))))))
+(defun xml-escape-attr (s)
+  (with-output-to-string (o)
+    (loop for c across s do
+      (case c (#\& (write-string "&amp;" o)) (#\" (write-string "&quot;" o))
+              (#\< (write-string "&lt;" o)) (#\> (write-string "&gt;" o))
+              (#\Tab (write-string "&#x9;" o)) (#\Newline (write-string "&#xA;" o))
+              (#\Return (write-string "&#xD;" o)) (t (write-char c o))))))
+
+(defun serial-map-copy (m)
+  (let ((c (make-hash-table :test 'equal)))
+    (maphash (lambda (k v) (setf (gethash k c) (copy-list v))) m) c))
+(defun serial-map-add (m prefix ns) (setf (gethash ns m) (append (gethash ns m) (list prefix))))
+(defun serial-map-has (m prefix ns) (and (member prefix (gethash ns m) :test #'equal) t))
+(defun serial-retrieve-pref (m preferred ns)
+  "The preferred prefix for NS if bound, else the last-bound prefix (DOM Parsing
+   §retrieve a preferred prefix string); NIL if NS has no prefixes."
+  (when ns
+    (let ((res nil))
+      (dolist (p (gethash ns m) res) (setf res p) (when (equal p preferred) (return p))))))
+(defun serial-gen-prefix (m ns idx)
+  (let ((p (format nil "ns~d" (car idx)))) (incf (car idx)) (serial-map-add m p ns) p))
+
+(defun attr-xmlns-decl (qname)
+  "Classify QNAME as a namespace declaration by name (matching browser
+   behaviour): :default for `xmlns`, (:prefixed . localName) for `xmlns:x`."
+  (cond ((string= qname "xmlns") (values :default nil))
+        ((and (> (length qname) 6) (string= qname "xmlns:" :end1 6 :end2 6))
+         (values :prefixed (subseq qname 6)))
+        (t (values nil nil))))
+
+(defun attr-cell-info (ctx cell)
+  "(values namespace prefix localName value qname) for attribute CELL."
+  (let ((rec (gethash cell (context-attr-recs ctx))) (qn (car cell)))
+    (if rec
+        (values (attr-rec-ns rec) (attr-rec-prefix rec) (attr-rec-local rec) (cdr cell) qn)
+        (values nil nil qn (cdr cell) qn))))
+
+(defun serial-record-namespaces (ctx el map local-prefixes)
+  "DOM Parsing §recording the namespace information: fold EL's xmlns/xmlns:*
+   declarations (detected by attribute name) into MAP and LOCAL-PREFIXES; return
+   the default-namespace declaration's value (or NIL if absent)."
+  (let ((default-val nil))
+    (loop for cell in (h:dnode-attrs el)
+          for qn = (car cell) for val = (cdr cell)
+          do (multiple-value-bind (kind pdef) (attr-xmlns-decl qn)
+               (case kind
+                 (:default (setf default-val val))
+                 (:prefixed
+                  (let ((nsdef (if (zerop (length val)) nil val)))
+                    (cond ((equal val +xml-namespace+))
+                          ((serial-map-has map pdef nsdef))
+                          (t (serial-map-add map pdef nsdef)
+                             (setf (gethash pdef local-prefixes) nsdef))))))))
+    default-val))
+
+(defun serialize-attributes (ctx el map idx local-prefixes ignore-nsdef)
+  (with-output-to-string (o)
+    (loop for cell in (h:dnode-attrs el) do
+      (multiple-value-bind (attr-ns attr-prefix attr-local attr-val attr-qn) (attr-cell-info ctx cell)
+        (multiple-value-bind (xkind xpdef) (attr-xmlns-decl attr-qn)
+          (let* ((is-xmlns (or xkind (equal attr-ns +xmlns-namespace+)))
+                 (candidate nil)
+                 (emit-local (cond ((eq xkind :default) "xmlns")
+                                   ((eq xkind :prefixed) xpdef)
+                                   (t attr-local)))
+                 (skip nil))
+            (cond
+              (is-xmlns
+               (multiple-value-bind (lpval lppresent) (gethash xpdef local-prefixes)
+                 (when (or (equal attr-val +xml-namespace+)
+                           (and (eq xkind :default) ignore-nsdef)
+                           (and (eq xkind :prefixed)
+                                (or (not lppresent) (not (equal lpval attr-val)))
+                                (serial-map-has map xpdef attr-val)))
+                   (setf skip t)))
+               (when (eq xkind :prefixed) (setf candidate "xmlns")))
+              (attr-ns
+               ;; A namespaced attribute reuses the preferred prefix already bound
+               ;; to its namespace, else a fresh generated one with its declaration.
+               (setf candidate (serial-retrieve-pref map attr-prefix attr-ns))
+               (when (null candidate)
+                 (setf candidate (serial-gen-prefix map attr-ns idx))
+                 (format o " xmlns:~a=\"~a\"" candidate (xml-escape-attr attr-ns)))))
+            (unless skip
+              (write-char #\Space o)
+              (when candidate (format o "~a:" candidate))
+              (format o "~a=\"~a\"" emit-local (xml-escape-attr (or attr-val ""))))))))))
+
+(defun serialize-element (ctx el inherited-ns map idx)
+  (let* ((map (serial-map-copy map))
+         (local-prefixes (make-hash-table :test 'equal))
+         (local-default (serial-record-namespaces ctx el map local-prefixes))
+         (ns (element-real-ns ctx el))
+         (local (element-local ctx el))
+         (prefix (element-prefix ctx el))
+         (ignore-nsdef nil) (qualified nil)
+         (open (make-string-output-stream)))
+    (write-char #\< open)
+    (cond
+      ((equal inherited-ns ns)
+       (when local-default (setf ignore-nsdef t))
+       (setf qualified (if (equal ns +xml-namespace+) (concatenate 'string "xml:" local) local))
+       (write-string qualified open))
+      (t
+       (let ((candidate (serial-retrieve-pref map prefix ns)))
+         (when (equal prefix "xmlns") (setf candidate "xmlns"))
+         (cond
+           (candidate
+            (setf qualified (concatenate 'string candidate ":" local))
+            (when (and local-default (not (equal local-default +xml-namespace+)))
+              (setf inherited-ns (if (equal local-default "") nil local-default)))
+            (write-string qualified open))
+           (prefix
+            (if (nth-value 1 (gethash prefix local-prefixes))
+                (setf prefix (serial-gen-prefix map ns idx))
+                (serial-map-add map prefix ns))
+            (setf qualified (concatenate 'string prefix ":" local))
+            (write-string qualified open)
+            (format open " xmlns:~a=\"~a\"" prefix (xml-escape-attr (or ns "")))
+            (when local-default (setf inherited-ns (if (equal local-default "") nil local-default))))
+           ((or (null local-default) (not (equal local-default ns)))
+            (setf ignore-nsdef t qualified local inherited-ns ns)
+            (write-string qualified open)
+            (format open " xmlns=\"~a\"" (xml-escape-attr (or ns ""))))
+           (t (setf qualified local inherited-ns ns)
+              (write-string qualified open))))))
+    (write-string (serialize-attributes ctx el map idx local-prefixes ignore-nsdef) open)
+    (let* ((markup (get-output-stream-string open))
+           (kids (h:dnode-children el))
+           (has-kids (plusp (length kids)))
+           (html-ns-p (equal ns *html-ns*))
+           (void (and html-ns-p (member local +xml-void-elements+ :test #'string=)))
+           (out (make-string-output-stream)))
+      (write-string markup out)
+      (unless has-kids
+        (if html-ns-p (when void (write-string " /" out)) (write-char #\/ out)))
+      (write-char #\> out)
+      (unless (and (not has-kids) (or (not html-ns-p) void))
+        (loop for c across kids do (write-string (serialize-node ctx c inherited-ns map idx) out))
+        (format out "</~a>" qualified))
+      (get-output-stream-string out))))
+
+(defun serialize-node (ctx node inherited-ns map idx)
+  (case (h:dnode-kind node)
+    (:element (serialize-element ctx node inherited-ns map idx))
+    ((:document :fragment)
+     (with-output-to-string (o)
+       (loop for c across (h:dnode-children node)
+             do (write-string (serialize-node ctx c inherited-ns map idx) o))))
+    (:text (xml-escape-text (or (h:dnode-data node) "")))
+    (:cdata (format nil "<![CDATA[~a]]>" (or (h:dnode-data node) "")))
+    (:comment (format nil "<!--~a-->" (or (h:dnode-data node) "")))
+    (:processing-instruction
+     (format nil "<?~a ~a?>" (h:dnode-name node) (or (h:dnode-data node) "")))
+    (:doctype (format nil "<!DOCTYPE ~a>" (or (h:dnode-name node) "")))
+    (t "")))
+
+(defun xml-serialize-root (ctx node)
+  "serializeToString(NODE): the XML serialization with a fresh prefix map (the
+   XML namespace pre-bound to `xml`) and generated-prefix index starting at 1."
+  (let ((map (make-hash-table :test 'equal)) (idx (list 1)))
+    (setf (gethash +xml-namespace+ map) (list "xml"))
+    (serialize-node ctx node nil map idx)))
+
 (defun install-dom-implementation-proto (ctx impl)
   "DOMImplementation.prototype — the factory methods are context-scoped and
    ignore their receiver, so all per-document instances share this prototype."

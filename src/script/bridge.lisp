@@ -131,7 +131,12 @@
       ;; Constructable node interfaces (DOM §Document/Text/Comment/DocumentFragment).
       (let ((doc-iface (iface "Document" :document
                               (lambda (this args) (declare (ignore this args))
-                                (wrap ctx (h:make-document))))))
+                                ;; new Document() has content type application/xml and is
+                                ;; not an HTML document (DOM §Document constructor), so
+                                ;; createElement preserves case / uses no namespace.
+                                (let ((d (h:make-document)))
+                                  (setf (gethash d (context-doc-content-types ctx)) "application/xml")
+                                  (wrap ctx d))))))
         ;; XMLDocument (DOM §XMLDocument): a non-constructable interface whose
         ;; prototype inherits Document.prototype and whose interface object
         ;; inherits Document (so `x instanceof XMLDocument` implies Document).
@@ -216,6 +221,14 @@
                     (setf (gethash doc (context-doc-content-types ctx)) type))
                   (wrap ctx doc)))))
         2))
+    ;; XMLSerializer backing (DOM Parsing & Serialization §2.2): the XML
+    ;; serialization algorithm runs natively over the weft node.
+    (js:define-global realm "__weft_xml_serialize"
+      (js:native-function realm "__weft_xml_serialize"
+        (lambda (this args) (declare (ignore this))
+          (let* ((obj (arg args 0)) (node (node-of ctx obj)))
+            (if node (xml-serialize-root ctx node) "")))
+        1))
     (js:eval-script realm "(function(G){
   function dec(x){try{return decodeURIComponent(String(x).replace(/\\+/g,' '));}catch(e){return x;}}
   function USP(init){this._e=[];var self=this;
@@ -277,6 +290,9 @@
     if(!DP_TYPES[t])throw new TypeError('The provided value is not a valid enum value of type SupportedType.');
     return __weft_parse_document(String(str),t);};
   G.DOMParser=DOMParser;
+  function XMLSerializer(){}
+  XMLSerializer.prototype.serializeToString=function(node){return __weft_xml_serialize(node);};
+  G.XMLSerializer=XMLSerializer;
   // DOMException (WebIDL): a real interface so `e instanceof DOMException` and
   // testharness's `e.constructor === DOMException` (assert_throws_dom) hold.
   var DE_NAME_CODE={IndexSizeError:1,HierarchyRequestError:3,WrongDocumentError:4,InvalidCharacterError:5,NoModificationAllowedError:7,NotFoundError:8,NotSupportedError:9,InUseAttributeError:10,InvalidStateError:11,SyntaxError:12,InvalidModificationError:13,NamespaceError:14,InvalidAccessError:15,TypeMismatchError:17,SecurityError:18,NetworkError:19,AbortError:20,URLMismatchError:21,QuotaExceededError:22,TimeoutError:23,InvalidNodeTypeError:24,DataCloneError:25};

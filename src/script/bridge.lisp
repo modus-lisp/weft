@@ -145,6 +145,13 @@
                   o)
                 js:*null*)))
         2))
+    ;; DOMParser backing: parse an HTML source string into a fresh document
+    ;; (weft's WHATWG tree builder).  XML types fall back to the HTML path.
+    (js:define-global realm "__weft_parse_document"
+      (js:native-function realm "__weft_parse_document"
+        (lambda (this args) (declare (ignore this))
+          (wrap ctx (h:parse-html (jstr (arg args 0)))))
+        2))
     (js:eval-script realm "(function(G){
   function dec(x){try{return decodeURIComponent(String(x).replace(/\\+/g,' '));}catch(e){return x;}}
   function USP(init){this._e=[];var self=this;
@@ -199,6 +206,9 @@
   // an uncaught ReferenceError that aborts hydration mid-flight.
   function fetch(u,o){return Promise.reject(new TypeError('Failed to fetch (static render)'));}
   G.fetch=fetch;
+  function DOMParser(){}
+  DOMParser.prototype.parseFromString=function(str,type){return __weft_parse_document(String(str),String(type==null?'text/html':type));};
+  G.DOMParser=DOMParser;
   if(typeof G.queueMicrotask!=='function'){G.queueMicrotask=function(cb){Promise.resolve().then(cb);};}
   function mkctor(nat){var w=function(t,i){return nat(t,i);};w.prototype=nat.prototype;return w;}
   ['Event','CustomEvent','UIEvent','MouseEvent','KeyboardEvent',

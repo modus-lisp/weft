@@ -94,6 +94,11 @@
         (when (plusp (length text))
           (h:dom-append node (h:make-text text))))))
 
+(defun null->empty (v)
+  "WebIDL [LegacyNullToEmptyString]: a JS null becomes \"\" (used by the
+innerHTML/outerHTML setters); everything else stringifies normally."
+  (if (eq v js:*null*) "" (jstr v)))
+
 (defun dom-detach (node) (when (h:dnode-parent node) (h:dom-remove node)))
 
 (defun replace-all-children (node fragment)
@@ -884,7 +889,7 @@ of the other)."
     ;; innerHTML / outerHTML / insertAdjacentHTML (DOM Parsing & Serialization §2).
     (defgetset ctx ep "innerHTML" (this) (h:serialize-html-fragment (n this))
       (v) (let* ((node (n this))
-                 (frag (h:parse-fragment (jstr v) (h:dnode-name node))))
+                 (frag (h:parse-fragment (null->empty v) (h:dnode-name node))))
             (adopt-parsed-fragment ctx frag (owner-doc-node ctx node))
             (replace-all-children node frag)
             (setf (context-dirty ctx) t)))
@@ -895,7 +900,7 @@ of the other)."
                   ((eq (h:dnode-kind parent) :document)
                    (throw-dom ctx "NoModificationAllowedError" 7 "cannot set outerHTML on a document child")))
             (let* ((ctxname (if (eq (h:dnode-kind parent) :element) (h:dnode-name parent) "body"))
-                   (frag (h:parse-fragment (jstr v) ctxname))
+                   (frag (h:parse-fragment (null->empty v) ctxname))
                    (ref (node-next-sibling node)))
               (adopt-parsed-fragment ctx frag (owner-doc-node ctx node))
               (h:dom-remove node)

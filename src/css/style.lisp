@@ -787,7 +787,11 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
   (let ((fs (cstyle-font-size cs)))
     (macrolet ((len (&optional auto) `(resolve-len value fs ,auto)))
       (cond
-        ((string= prop "display") (setf (cstyle-display cs) (normalize-display value)))
+        ((string= prop "display")
+         (setf (cstyle-display cs)
+               (if (and parent-cs (string-equal (string-trim '(#\Space #\Tab #\Newline #\Return) value) "inherit"))
+                   (cstyle-display parent-cs)
+                   (normalize-display value))))
         ((string= prop "content") (setf (cstyle-content cs) (parse-content value)))
         ((string= prop "counter-reset")
          (setf (cstyle-counter-reset cs)
@@ -1606,6 +1610,20 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                      (dolist (d (third m))
                        (unless (custom-prop-p (css-decl-prop d))
                          (apply-decl cs (css-decl-prop d) (resolve-vars (css-decl-value d) vars) parent-cs))))
+                   ;; An internal-table display on a generated box has no table to
+                   ;; belong to, so it is wrapped in an anonymous table and becomes
+                   ;; block-level (CSS 2.1 §17.2.1); rendered as a plain block box it
+                   ;; matches browsers — the generated content lands on its own line.
+                   ;; Exception: table-column / table-column-group boxes never render
+                   ;; their content (CSS 2.1 §17.2), so the generated box is suppressed.
+                   (let ((d (cstyle-display cs)))
+                     (cond
+                       ((member d '("table-column" "table-column-group") :test #'string=)
+                        (return-from pseudo-style nil))
+                       ((member d '("table-row-group" "table-header-group" "table-footer-group"
+                                    "table-row" "table-cell" "table-caption")
+                                :test #'string=)
+                        (setf (cstyle-display cs) "block"))))
                    (and (cstyle-content cs) cs))))
              (fragment-style (parent-cs matched vars)
                "Build a CSTYLE for a ::first-letter/::first-line fragment (inherits

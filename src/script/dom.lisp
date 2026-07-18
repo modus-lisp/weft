@@ -354,7 +354,27 @@ replaceChildren + the query surface) plus getElementById (DOM §4.2.7)."
     (install-parent-node-methods ctx fp)
     (install-parent-node-queries ctx fp)
     (defmethod* ctx fp "getElementById" 1 (this a)
-      (let ((m (dom:get-element-by-id (n this) (jstr (arg a 0))))) (if m (wrap ctx m) js:*null*)))))
+      (let* ((id (jstr (arg a 0)))
+             (m (and (plusp (length id)) (dom:get-element-by-id (n this) id))))
+        (if m (wrap ctx m) js:*null*)))))
+
+(defun arg-node-set (ctx args)
+  "The DOM nodes among ARGS (strings, which become Text nodes, are ignored)."
+  (loop for x in args for nn = (node-of ctx x) when nn collect nn))
+(defun viable-next-sibling (node argnodes)
+  "NODE's first following sibling that is not in ARGNODES, or NIL."
+  (let ((s (node-next-sibling node)))
+    (loop while (and s (member s argnodes)) do (setf s (node-next-sibling s)))
+    s))
+(defun node-prev-sibling (node)
+  (let ((p (h:dnode-parent node)))
+    (when p (let* ((ch (h:dnode-children p)) (i (position node ch)))
+              (when (and i (plusp i)) (aref ch (1- i)))))))
+(defun viable-prev-sibling (node argnodes)
+  "NODE's first preceding sibling that is not in ARGNODES, or NIL."
+  (let ((s (node-prev-sibling node)))
+    (loop while (and s (member s argnodes)) do (setf s (node-prev-sibling s)))
+    s))
 
 (defun install-child-node-methods (ctx proto)
   "ChildNode mixin (DOM §4.2.7): before / after / replaceWith / remove."
@@ -366,25 +386,42 @@ replaceChildren + the query surface) plus getElementById (DOM §4.2.7)."
           (ni-pre-remove ctx node)
           (h:dom-remove node) (setf (context-dirty ctx) t)))
       js:*undefined*)
+    ;; before/after/replaceWith must skip any argument nodes when choosing the
+    ;; reference sibling (DOM §"viable previous/next sibling"), so that passing a
+    ;; current sibling as an argument still lands the moved node in the right slot.
     (defmethod* ctx proto "before" 1 (this a)
       (let* ((node (n this)) (parent (h:dnode-parent node)))
         (when parent
-          (let ((ins (args->insertion ctx (owner-doc-node ctx node) a)))
-            (when ins (insert-into parent ins node) (setf (context-dirty ctx) t)))))
+          (let* ((argnodes (arg-node-set ctx a))
+                 (viable (viable-prev-sibling node argnodes))
+                 (ins (args->insertion ctx (owner-doc-node ctx node) a))
+                 (ref (if viable (node-next-sibling viable)
+                          (let ((ch (h:dnode-children parent)))
+                            (and (plusp (length ch)) (aref ch 0))))))
+            (when ins (insert-into parent ins ref) (setf (context-dirty ctx) t)))))
       js:*undefined*)
     (defmethod* ctx proto "after" 1 (this a)
-      (let* ((node (n this)) (parent (h:dnode-parent node)) (ref (node-next-sibling node)))
+      (let* ((node (n this)) (parent (h:dnode-parent node)))
         (when parent
-          (let ((ins (args->insertion ctx (owner-doc-node ctx node) a)))
+          (let* ((argnodes (arg-node-set ctx a))
+                 (ref (viable-next-sibling node argnodes))
+                 (ins (args->insertion ctx (owner-doc-node ctx node) a)))
             (when ins (insert-into parent ins ref) (setf (context-dirty ctx) t)))))
       js:*undefined*)
     (defmethod* ctx proto "replaceWith" 1 (this a)
-      (let* ((node (n this)) (parent (h:dnode-parent node)) (ref (node-next-sibling node)))
+      (let* ((node (n this)) (parent (h:dnode-parent node)))
         (when parent
-          (let ((ins (args->insertion ctx (owner-doc-node ctx node) a)))
-            (adjust-ranges-for-removal ctx node)
-            (h:dom-remove node)
-            (when ins (insert-into parent ins ref))
+          (let* ((argnodes (arg-node-set ctx a))
+                 (ref (viable-next-sibling node argnodes))
+                 (ins (args->insertion ctx (owner-doc-node ctx node) a)))
+            ;; If THIS is still a child, replace it in place; if converting the
+            ;; arguments moved THIS into the fragment (it was itself an argument),
+            ;; just pre-insert the node before the viable sibling (DOM §replaceWith).
+            (if (eq (h:dnode-parent node) parent)
+                (progn (adjust-ranges-for-removal ctx node)
+                       (when ins (insert-into parent ins node))
+                       (h:dom-remove node))
+                (when ins (insert-into parent ins ref)))
             (setf (context-dirty ctx) t))))
       js:*undefined*)))
 
@@ -1835,7 +1872,10 @@ of the other)."
       (v) (let* ((doc (n this)) (tn (find-tag doc "title")))
             (when tn (set-text-content tn (jstr v)) (setf (context-dirty ctx) t))))
     (defmethod* ctx dp "getElementById" 1 (this a)
-      (wrap ctx (dom:get-element-by-id (n this) (jstr (arg a 0)))))
+      ;; An empty-string id never matches (DOM §getElementById), even against an
+      ;; element carrying id="".
+      (let ((id (jstr (arg a 0))))
+        (wrap ctx (and (plusp (length id)) (dom:get-element-by-id (n this) id)))))
     (defmethod* ctx dp "querySelector" 1 (this a)
       (let ((sl (ignore-errors (css:parse-selector-list (jstr (arg a 0))))))
         (let ((m (and sl (qs-first (n this) sl)))) (if m (wrap ctx m) js:*null*))))

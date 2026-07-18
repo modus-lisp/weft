@@ -198,18 +198,23 @@
                   o)
                 js:*null*)))
         2))
-    ;; DOMParser backing: parse an HTML source string into a fresh document
-    ;; (weft's WHATWG tree builder).  XML types fall back to the HTML path but the
-    ;; document is tagged with the requested content type so that e.g.
-    ;; createCDATASection is permitted on it.
+    ;; DOMParser backing: HTML types go through weft's WHATWG tree builder; XML
+    ;; types (text/xml, application/xml, application/xhtml+xml, image/svg+xml) go
+    ;; through the namespace-aware XML parser, which yields a plain Document (not an
+    ;; XMLDocument) or a parsererror document (DOMParser §).
     (js:define-global realm "__weft_parse_document"
       (js:native-function realm "__weft_parse_document"
         (lambda (this args) (declare (ignore this))
-          (let ((doc (h:parse-html (jstr (arg args 0))))
+          (let ((src (jstr (arg args 0)))
                 (type (if (>= (length args) 2) (jstr (arg args 1)) "text/html")))
-            (unless (or (zerop (length type)) (string-equal type "text/html"))
-              (setf (gethash doc (context-doc-content-types ctx)) type))
-            (wrap ctx doc)))
+            (if (member type '("text/xml" "application/xml"
+                               "application/xhtml+xml" "image/svg+xml")
+                        :test #'string=)
+                (parse-xml-document ctx src type)
+                (let ((doc (h:parse-html src)))
+                  (unless (or (zerop (length type)) (string-equal type "text/html"))
+                    (setf (gethash doc (context-doc-content-types ctx)) type))
+                  (wrap ctx doc)))))
         2))
     (js:eval-script realm "(function(G){
   function dec(x){try{return decodeURIComponent(String(x).replace(/\\+/g,' '));}catch(e){return x;}}

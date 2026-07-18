@@ -214,7 +214,7 @@ Document and DocumentFragment prototypes."
         (let ((m (and sl (qs-first (n this) sl)))) (if m (wrap ctx m) js:*null*))))
     (defmethod* ctx proto "querySelectorAll" 1 (this a)
       (let ((sl (ignore-errors (css:parse-selector-list (jstr (arg a 0))))))
-        (make-collection ctx (lambda () (and sl (qs-all (n this) sl))))))))
+        (make-collection ctx (lambda () (and sl (qs-all (n this) sl))) nil :nodelist)))))
 
 (defun install-fragment-proto (ctx fp)
   "DocumentFragment.prototype: the ParentNode mixin (append/prepend/
@@ -497,10 +497,11 @@ of the other)."
 (defun index-string-p (k)
   (and (stringp k) (plusp (length k)) (every #'digit-char-p k)))
 
-(defun make-collection (ctx list-fn &optional name-fn)
+(defun make-collection (ctx list-fn &optional name-fn (kind :htmlcollection))
   "A live NodeList/HTMLCollection: length + integer indexing + item(), reading
    LIST-FN (-> a fresh CL list of weft nodes) on every access. If NAME-FN is
-   given, an unknown string key is looked up by name (namedItem semantics)."
+   given, an unknown string key is looked up by name (namedItem semantics).
+   KIND (:htmlcollection or :nodelist) selects the interface prototype."
   (let* ((realm (context-realm ctx))
          (item (js:native-function realm "item"
                  (lambda (this a) (declare (ignore this))
@@ -513,6 +514,7 @@ of the other)."
                       (if node (wrap ctx node) js:*null*)))
                   1)))
     (js:make-host-object realm
+      :proto (or (proto ctx kind) (js:eval-script realm "Object.prototype"))
       :get (lambda (o key rcv) (declare (ignore rcv))
              (let ((key (js:to-property-key key)))   ; obj[0] arrives as a number
                (cond
@@ -596,7 +598,7 @@ of the other)."
       (let* ((node (n this)) (p (h:dnode-parent node)))
         (wrap ctx (and p (h:dom-prev-sibling p node)))))
     (defget ctx np "childNodes" (this)
-      (let ((node (n this))) (make-collection ctx (lambda () (children-list node)))))
+      (let ((node (n this))) (make-collection ctx (lambda () (children-list node)) nil :nodelist)))
     (defgetset ctx np "nodeValue" (this)
       (if (char-data-p (n this)) (h:dnode-data (n this)) js:*null*)
       (v) (when (char-data-p (n this))
@@ -880,7 +882,7 @@ of the other)."
         (let ((m (and sl (qs-first (n this) sl)))) (if m (wrap ctx m) js:*null*))))
     (defmethod* ctx ep "querySelectorAll" 1 (this a)
       (let ((sl (ignore-errors (css:parse-selector-list (jstr (arg a 0))))))
-        (make-collection ctx (lambda () (and sl (qs-all (n this) sl))))))
+        (make-collection ctx (lambda () (and sl (qs-all (n this) sl))) nil :nodelist)))
     (defmethod* ctx ep "closest" 1 (this a)
       (let ((sl (ignore-errors (css:parse-selector-list (jstr (arg a 0))))))
         (if sl
@@ -1116,7 +1118,7 @@ of the other)."
         (let ((m (and sl (qs-first (n this) sl)))) (if m (wrap ctx m) js:*null*))))
     (defmethod* ctx dp "querySelectorAll" 1 (this a)
       (let ((sl (ignore-errors (css:parse-selector-list (jstr (arg a 0))))))
-        (make-collection ctx (lambda () (and sl (qs-all (n this) sl))))))
+        (make-collection ctx (lambda () (and sl (qs-all (n this) sl))) nil :nodelist)))
     (defmethod* ctx dp "getElementsByTagName" 1 (this a)
       (let ((node (n this)) (tag (string-downcase (jstr (arg a 0)))))
         (make-collection ctx (lambda () (remove node (dom:get-elements-by-tag-name node tag))))))

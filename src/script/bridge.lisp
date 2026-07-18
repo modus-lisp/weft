@@ -119,7 +119,15 @@
                                              (jstr (arg args 0)))))))
       (iface "DocumentFragment" :fragment
              (lambda (this args) (declare (ignore this args))
-               (new-node ctx docobj (h:make-fragment)))))
+               (new-node ctx docobj (h:make-fragment))))
+      ;; Live-collection interfaces (abstract): make `coll instanceof
+      ;; NodeList/HTMLCollection` hold.  Their prototypes back make-collection.
+      (iface "NodeList" :nodelist)
+      (iface "HTMLCollection" :htmlcollection)
+      (js:put (proto ctx :nodelist) (js:eval-script realm "Symbol.toStringTag")
+              "NodeList" :enumerable nil :writable nil :configurable t)
+      (js:put (proto ctx :htmlcollection) (js:eval-script realm "Symbol.toStringTag")
+              "HTMLCollection" :enumerable nil :writable nil :configurable t))
     ;; URL / URLSearchParams / XMLHttpRequest / IntersectionObserver / ResizeObserver —
     ;; Web APIs real pages depend on.  URL parsing is delegated to weft.url (WHATWG)
     ;; through a native helper; the rest are JS polyfills.  IntersectionObserver /
@@ -244,10 +252,13 @@
          (dtp (js:make-object :proto np))    ; DocumentType.prototype
          (fp (js:make-object :proto np))     ; DocumentFragment.prototype (inherits Node)
          (svgep (js:make-object :proto ep))  ; SVGElement.prototype (inherits Element)
+         (nlp (js:make-object :proto op))    ; NodeList.prototype
+         (hcp (js:make-object :proto op))    ; HTMLCollection.prototype
          (window (js:eval-script realm "globalThis")))
     (setf (context-protos ctx)
           (list :node np :element ep :document dp :text cp :comment cp
-                :fragment fp :event evp :doctype dtp :svg-element svgep :window window))
+                :fragment fp :event evp :doctype dtp :svg-element svgep :window window
+                :nodelist nlp :htmlcollection hcp))
     (install-node-proto ctx np)
     (install-element-proto ctx ep)
     (install-svg-element-proto ctx svgep)

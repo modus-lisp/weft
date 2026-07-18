@@ -85,6 +85,20 @@ not glue), so a space is inserted between two adjacent word-like tokens — e.g.
 (defun parse-declarations (toks start end)
   "Parse a declaration block token range into a list of CSS-DECLs."
   (let ((decls '()) (i start))
+   (labels ((skip-bad (k)
+              ;; Consume the remnants of a malformed declaration (CSS Syntax §5.4.4):
+              ;; advance past the next top-level semicolon, treating any {}/()/[]
+              ;; block as a unit so a semicolon or nested declaration INSIDE the
+              ;; block (e.g. `color{;color:red;}`) is discarded with it, not parsed.
+              (let ((depth 0))
+                (loop while (< k end) do
+                  (let ((ty (ctok-type (aref toks k))))
+                    (cond ((member ty '(:lparen :lbracket :lbrace)) (incf depth) (incf k))
+                          ((member ty '(:rparen :rbracket :rbrace))
+                           (when (plusp depth) (decf depth)) (incf k))
+                          ((and (eq ty :semicolon) (zerop depth)) (incf k) (return))
+                          (t (incf k))))))
+              k))
     (loop while (< i end) do
       ;; skip whitespace/semicolons
       (loop while (and (< i end) (member (ctok-type (aref toks i)) '(:ws :semicolon))) do (incf i))
@@ -103,8 +117,8 @@ not glue), so a space is inserted between two adjacent word-like tokens — e.g.
                   ;; value runs to the next top-level semicolon
                   (loop with depth = 0 for k from vstart below end
                         for ty = (ctok-type (aref toks k))
-                        do (cond ((member ty '(:lparen :lbracket)) (incf depth))
-                                 ((member ty '(:rparen :rbracket)) (decf depth))
+                        do (cond ((member ty '(:lparen :lbracket :lbrace)) (incf depth))
+                                 ((member ty '(:rparen :rbracket :rbrace)) (decf depth))
                                  ((and (eq ty :semicolon) (<= depth 0)) (setf vend k) (return)))
                         finally (setf vend end))
                   (let* ((vtext (string-trim '(#\Space) (toks-text toks vstart vend)))
@@ -126,10 +140,11 @@ not glue), so a space is inserted between two adjacent word-like tokens — e.g.
                     (when (plusp (length vtext))
                       (push (make-css-decl :prop prop :value vtext :important imp) decls)))
                   (setf i (1+ vend)))
-                ;; malformed; skip to next semicolon
-                (progn (loop while (and (< i end) (not (eq (ctok-type (aref toks i)) :semicolon))) do (incf i)))))
-          (loop while (and (< i end) (not (eq (ctok-type (aref toks i)) :semicolon))) do (incf i))))
-    (nreverse decls)))
+                ;; property not followed by a colon: malformed declaration.
+                (setf i (skip-bad i))))
+          ;; token where a property name was expected: malformed too.
+          (setf i (skip-bad i))))
+    (nreverse decls))))
 
 (defun match-brace (toks start)
   "START is at an :lbrace; return the index of the matching :rbrace (or end)."

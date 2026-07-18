@@ -93,6 +93,13 @@
                   (n (length parts)))
              (unless (or (= n 3) (= n 4))
                (return-from parse-rgb :invalid))
+             ;; CSS Color 3: the three R/G/B components must be ALL <percentage>
+             ;; or ALL <integer> — mixing them (`rgb(100%, 0, 0)`) is invalid.
+             (flet ((pctp (str) (let ((l (length str)))
+                                  (and (> l 0) (char= (char str (1- l)) #\%)))))
+               (let ((p0 (pctp (elt parts 0))))
+                 (unless (and (eq p0 (pctp (elt parts 1))) (eq p0 (pctp (elt parts 2))))
+                   (return-from parse-rgb :invalid))))
              (let* ((r (parse-rgb-comp (elt parts 0)))
                     (g (parse-rgb-comp (elt parts 1)))
                     (b (parse-rgb-comp (elt parts 2)))

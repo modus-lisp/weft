@@ -2246,6 +2246,179 @@ top document takes it from the base URL."
                   (name-start-char-p (char qname (1+ colon))))
              (name-start-char-p (char qname 0))))))
 
+;;; ---- namespace-aware XML parser (DOMParser text/xml etc.) -----------------
+;;; A strict, namespace-resolving XML parser that builds the weft DOM: it keeps
+;;; the case of element/attribute names, tracks xmlns / xmlns:prefix scopes and
+;;; records ns/prefix/localName metadata (element ns-info + per-attribute
+;;; attr-recs) so the JS surface and the XML serializer see real namespaces.  A
+;;; well-formedness error yields a `parsererror` document (DOMParser §), not a
+;;; thrown condition.
+(defparameter +parsererror-ns+ "http://www.mozilla.org/newlayout/xml/parsererror.xml")
+
+(defun xml-resolve-prefix (scope prefix)
+  "Look PREFIX up in SCOPE (an alist of prefix->uri consed onto parents); the
+   \"xml\" prefix is predefined.  Returns (values uri found-p)."
+  (cond ((equal prefix "xml") (values +xml-namespace+ t))
+        ((equal prefix "xmlns") (values +xmlns-namespace+ t))
+        (t (let ((cell (assoc prefix scope :test #'equal)))
+             (if cell (values (cdr cell) t) (values nil nil))))))
+
+(defun make-parsererror-doc (ctx message)
+  "A DOMParser error document: a <parsererror> root in the Mozilla parsererror
+   namespace whose text is MESSAGE (DOMParser §, WPT parsererror expectations)."
+  (let* ((d (h:make-document))
+         (el (h:make-element "parsererror" (list (cons "xmlns" +parsererror-ns+)) :html)))
+    (setf (gethash el (context-ns-info ctx))
+          (list :ns +parsererror-ns+ :qname "parsererror" :prefix nil :local "parsererror"))
+    (h:dom-append d el)
+    (h:dom-append el (h:make-text (or message "XML parse error")))
+    (setf (gethash el (context-owner-docs ctx)) d
+          (gethash d (context-owner-docs ctx)) d)
+    d))
+
+(defun parse-xml-document (ctx source content-type)
+  "Parse SOURCE as a namespaced XML document, returning its JS wrapper.  The
+   result is a plain (non-XMLDocument) Document tagged CONTENT-TYPE; malformed
+   input produces a parsererror document instead."
+  (let* ((s source) (n (length s)) (i 0)
+         (doc (h:make-document))
+         (stack '())            ; open elements (innermost first)
+         (names '())            ; their qualified names (for end-tag matching)
+         (scopes (list nil))    ; namespace scopes: each an alist prefix->uri
+         (defaults (list nil))  ; default-namespace per open level
+         (root-count 0) (ok t) (err nil))
+    (labels ((fail (msg) (unless err (setf err msg)) (setf ok nil))
+             (cur () (first stack))
+             (add-text (str)
+               (let ((d (xml-decode-entities str)))
+                 (when (and (cur) (plusp (length d)))
+                   (h:dom-append (cur) (h:make-text d))))))
+      (loop while (and (< i n) ok) do
+        (let ((lt (position #\< s :start i)))
+          (cond
+            ((null lt) (add-text (subseq s i n)) (setf i n))
+            (t
+             (when (> lt i) (add-text (subseq s i lt)))
+             (setf i lt)
+             (cond
+               ;; comment
+               ((and (<= (+ i 4) n) (string= s "<!--" :start1 i :end1 (+ i 4)))
+                (let ((e (search "-->" s :start2 (+ i 4))))
+                  (if e (setf i (+ e 3)) (fail "unterminated comment"))))
+               ;; CDATA section
+               ((and (<= (+ i 9) n) (string= s "<![CDATA[" :start1 i :end1 (+ i 9)))
+                (let ((e (search "]]>" s :start2 (+ i 9))))
+                  (cond ((null e) (fail "unterminated CDATA"))
+                        (t (when (cur) (h:dom-append (cur) (h:make-cdata (subseq s (+ i 9) e))))
+                           (setf i (+ e 3))))))
+               ;; doctype / other markup declaration
+               ((and (< (1+ i) n) (char= (char s (1+ i)) #\!))
+                (let ((e (position #\> s :start i))) (if e (setf i (1+ e)) (fail "bad declaration"))))
+               ;; processing instruction / XML declaration
+               ((and (< (1+ i) n) (char= (char s (1+ i)) #\?))
+                (let ((e (search "?>" s :start2 i)))
+                  (cond ((null e) (fail "unterminated processing instruction"))
+                        (t (let* ((body (subseq s (+ i 2) e))
+                                  (te (xml-name-end body 0 (length body)))
+                                  (target (subseq body 0 te)))
+                             (when (and (cur) (plusp (length target))
+                                        (not (string-equal target "xml")))
+                               (let ((pdata (string-left-trim '(#\Space #\Tab #\Newline #\Return)
+                                                              (subseq body te))))
+                                 (h:dom-append (cur) (h:make-processing-instruction target pdata)))))
+                           (setf i (+ e 2))))))
+               ;; end tag
+               ((and (< (1+ i) n) (char= (char s (1+ i)) #\/))
+                (let* ((e (position #\> s :start i))
+                       (nm (and e (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                               (subseq s (+ i 2) e)))))
+                  (cond ((null e) (fail "unterminated end tag"))
+                        ((and stack (string= (first names) nm))
+                         (pop stack) (pop names) (pop scopes) (pop defaults)
+                         (setf i (1+ e)))
+                        (t (fail (format nil "mismatched end tag ~a" nm))
+                           (setf i (1+ e))))))
+               ;; start tag
+               (t
+                (let ((ne (xml-name-end s (1+ i) n)))
+                  (if (= ne (1+ i))
+                      (fail "bad start tag")
+                      (let ((qname (subseq s (1+ i) ne)))
+                        (multiple-value-bind (attrs j quoted-ok) (xml-parse-attrs s ne n)
+                          (unless quoted-ok (fail "unquoted attribute value"))
+                          (let ((gt (position #\> s :start (min j n))))
+                            (cond
+                              ((null gt) (fail "unterminated start tag"))
+                              (t
+                               (let* ((self (and (> gt 0) (char= (char s (1- gt)) #\/)))
+                                      ;; new namespace scope from this element's xmlns decls
+                                      (new-scope (copy-alist (first scopes)))
+                                      (new-default (first defaults)))
+                                 ;; duplicate-attribute is a well-formedness error
+                                 (loop for tail on attrs
+                                       when (assoc (caar tail) (cdr tail) :test #'string=)
+                                       do (fail "duplicate attribute"))
+                                 (dolist (a attrs)
+                                   (let ((an (car a)) (av (cdr a)))
+                                     (cond
+                                       ((string= an "xmlns")
+                                        (setf new-default (if (zerop (length av)) nil av)))
+                                       ((and (> (length an) 6) (string= an "xmlns:" :end1 6))
+                                        (let ((p (subseq an 6)))
+                                          (setf new-scope
+                                                (cons (cons p (if (zerop (length av)) nil av))
+                                                      (remove p new-scope :key #'car :test #'equal))))))))
+                                 (let* ((colon (position #\: qname))
+                                        (eprefix (and colon (subseq qname 0 colon)))
+                                        (elocal (if colon (subseq qname (1+ colon)) qname))
+                                        (ens (if eprefix
+                                                 (multiple-value-bind (u f)
+                                                     (xml-resolve-prefix new-scope eprefix)
+                                                   (unless f (fail (format nil "unbound prefix ~a" eprefix)))
+                                                   u)
+                                                 new-default))
+                                        (el (h:make-element qname attrs
+                                                            (cond ((equal ens *html-ns*) :html)
+                                                                  ((and ens (search "svg" ens)) :svg)
+                                                                  ((and ens (search "MathML" ens)) :math)
+                                                                  (t :html)))))
+                                   (setf (gethash el (context-ns-info ctx))
+                                         (list :ns ens :qname qname :prefix eprefix :local elocal))
+                                   ;; per-attribute namespace records
+                                   (loop for cell in (h:dnode-attrs el)
+                                         for an = (car cell)
+                                         for acolon = (position #\: an)
+                                         do (multiple-value-bind (ans aprefix alocal)
+                                                (cond
+                                                  ((string= an "xmlns")
+                                                   (values +xmlns-namespace+ nil "xmlns"))
+                                                  ((and acolon (string= an "xmlns" :end1 (min 5 (length an)))
+                                                        (= acolon 5))
+                                                   (values +xmlns-namespace+ "xmlns" (subseq an 6)))
+                                                  (acolon
+                                                   (values (xml-resolve-prefix new-scope (subseq an 0 acolon))
+                                                           (subseq an 0 acolon) (subseq an (1+ acolon))))
+                                                  (t (values nil nil an)))
+                                              (setf (gethash cell (context-attr-recs ctx))
+                                                    (make-attr-rec :cell cell :ns ans :prefix aprefix
+                                                                   :local alocal :owner el))))
+                                   (if (cur) (h:dom-append (cur) el)
+                                       (progn (h:dom-append doc el) (incf root-count)))
+                                   (setf (gethash el (context-owner-docs ctx)) doc)
+                                   (unless self
+                                     (push el stack) (push qname names)
+                                     (push new-scope scopes) (push new-default defaults))
+                                   (setf i (1+ gt)))))))))))))))))
+      (when (or stack (/= root-count 1))
+        (fail (if (zerop root-count) "no root element" "unbalanced document"))))
+    (if ok
+        (progn (setf (gethash doc (context-doc-content-types ctx)) content-type
+                     (gethash doc (context-owner-docs ctx)) doc)
+               (wrap ctx doc))
+        (let ((ed (make-parsererror-doc ctx err)))
+          (setf (gethash ed (context-doc-content-types ctx)) content-type)
+          (wrap ctx ed)))))
+
 (defun install-dom-implementation-proto (ctx impl)
   "DOMImplementation.prototype — the factory methods are context-scoped and
    ignore their receiver, so all per-document instances share this prototype."

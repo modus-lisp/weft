@@ -8,8 +8,22 @@
 ;;;; canvas and saved as PNG.
 (in-package #:weft.render)
 
-(defstruct lbox x y w h style node kind children marker img vpaint baseline)   ; kind :block | :line; img = decoded IMG; vpaint = (cv x y w h) replaced-content painter; baseline = px offset from a :line box's top to its shared baseline (CSS 2.1 10.8)
-(defstruct frag x w text style node)                       ; a positioned styled text run on a line; node = source DOM element (for hit-testing)
+(defstruct lbox x y w h style node kind children marker img vpaint baseline rel)   ; kind :block | :line; img = decoded IMG; vpaint = (cv x y w h) replaced-content painter; baseline = px offset from a :line box's top to its shared baseline (CSS 2.1 10.8); rel = (dx . dy) inline relative-positioning visual shift for an atomic (§9.4.3)
+(defstruct frag x w text style node (dx 0) (dy 0))         ; a positioned styled text run on a line; node = source DOM element (for hit-testing); dx/dy = inline relative-positioning visual shift (§9.4.3)
+
+;;; Cumulative inline relative-positioning offset (CSS 2.1 §9.4.3) in effect while
+;;; COLLECT-WORDS walks an inline run: a (dx . dy) visual shift compounded from the
+;;; position:relative inline ancestors (and the atomic's own offset).  NIL = no shift.
+(defvar *inline-rel* nil)
+(defun rel-cons (cs)
+  "The (dx . dy) relative-position shift of CS as a cons, or NIL when zero/none."
+  (multiple-value-bind (dx dy) (rel-offset cs)
+    (unless (and (zerop dx) (zerop dy)) (cons dx dy))))
+(defun compound-rel (a b)
+  "Sum two inline relative offsets (each NIL or (dx . dy)); NIL when the result is zero."
+  (cond ((null a) b) ((null b) a)
+        (t (let ((dx (+ (car a) (car b))) (dy (+ (cdr a) (cdr b))))
+             (unless (and (zerop dx) (zerop dy)) (cons dx dy))))))
 
 (defvar *floats* nil "Page-scoped float list: each (side left right top bottom).")
 (defvar *abs-pending* nil
@@ -149,7 +163,7 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
   (let ((words '()) (pend nil) (pend-px 0)        ; whitespace + inline-margin px before next token
         (floats '()) (blocks '()))                ; float / block-level descendants hoisted out
     (labels ((emit1 (payload meta node)
-               (push (list payload meta pend pend-px node) words) (setf pend nil pend-px 0))
+               (push (list payload meta pend pend-px node *inline-rel*) words) (setf pend nil pend-px 0))
              (amargin (cs side)                      ; atomic's OWN horizontal margin px (may be negative)
                (let ((v (if (eq side :left) (css:cstyle-margin-left cs) (css:cstyle-margin-right cs))))
                  (if (numberp v) v 0)))
@@ -187,7 +201,13 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                (case (h:dnode-kind n)
                  (:text (emit-text (h:dnode-data n) owner onode))
                  (:element
-                  (let ((cs (or (st styles n) owner)))
+                  (let* ((cs (or (st styles n) owner))
+                         ;; compound this element's own inline relative offset (CSS 2.1
+                         ;; §9.4.3) onto the ancestors' — every token emitted for it (its
+                         ;; own atomic box, or the text/atomics of a relatively positioned
+                         ;; inline span) carries the shift and is painted displaced, with
+                         ;; flow position untouched (space is reserved where it would be).
+                         (*inline-rel* (compound-rel *inline-rel* (rel-cons (st styles n)))))
                     (cond
                       ((and cs (string= (cdisplay cs) "none")))
                       ;; out-of-flow (absolute/fixed) elements are not part of the
@@ -298,11 +318,14 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
 ;;; Inline-token accessors: (PAYLOAD META SPACE GAP) — PAYLOAD is (CAR tok) (a word
 ;;; string or :ATOMIC), META its style or lbox, SPACE whether whitespace preceded it,
 ;;; GAP extra leading px from the enclosing element's inline horizontal margins.
-(declaim (inline tok-meta tok-space tok-gap tok-node))
+(declaim (inline tok-meta tok-space tok-gap tok-node tok-rel))
 (defun tok-meta (tok) (cadr tok))
 (defun tok-space (tok) (caddr tok))
 (defun tok-gap (tok) (cadddr tok))
 (defun tok-node (tok) (fifth tok))      ; source DOM element node (for hit-testing)
+(defun tok-rel (tok) (sixth tok))       ; inline relative-position (dx . dy) shift, or NIL (§9.4.3)
+(defun tok-dx (tok) (let ((r (tok-rel tok))) (if r (car r) 0)))
+(defun tok-dy (tok) (let ((r (tok-rel tok))) (if r (cdr r) 0)))
 
 (defun img-attr-num (node name)
   (let ((v (cdr (assoc name (h:dnode-attrs node) :test #'string-equal))))
@@ -794,8 +817,9 @@ text-align.  Returns (values line-boxes total-height)."
                     (when prefix
                       (when (and (> sw 0) (> (- cx lx) 0)) (incf cx sw))
                       (push (make-frag :x cx :w (word-w prefix (tok-meta wd)) :text prefix
-                                       :style (tok-meta wd) :node (tok-node wd)) cur)
-                      (setf (aref ws i) (list rest (tok-meta wd) nil 0 (tok-node wd))))))
+                                       :style (tok-meta wd) :node (tok-node wd)
+                                       :dx (tok-dx wd) :dy (tok-dy wd)) cur)
+                      (setf (aref ws i) (list rest (tok-meta wd) nil 0 (tok-node wd) (tok-rel wd))))))
                 (return))
               ;; leading advance: collapsible whitespace is dropped at line start, but
               ;; a leading inline margin (TOK-GAP) still offsets the first item.
@@ -812,8 +836,9 @@ text-align.  Returns (values line-boxes total-height)."
                         (nth-value 0 (try-hyphenate (car wd) (tok-meta wd) room)))
                    (multiple-value-bind (prefix rest) (try-hyphenate (car wd) (tok-meta wd) room)
                      (push (make-frag :x cx :w (word-w prefix (tok-meta wd)) :text prefix
-                                      :style (tok-meta wd) :node (tok-node wd)) cur)
-                     (setf (aref ws i) (list rest (tok-meta wd) nil 0 (tok-node wd)))
+                                      :style (tok-meta wd) :node (tok-node wd)
+                                      :dx (tok-dx wd) :dy (tok-dy wd)) cur)
+                     (setf (aref ws i) (list rest (tok-meta wd) nil 0 (tok-node wd) (tok-rel wd)))
                      (return)))
                   ;; word-break:break-all (break anywhere) or overflow-wrap:break-word
                   ;; on a word too wide to fit any line: place the char-prefix that fits
@@ -828,25 +853,31 @@ text-align.  Returns (values line-boxes total-height)."
                      (cond
                        ((zerop (length prefix))          ; nothing fits: wrap if the line has content
                         (if cur (return)
-                            (progn (push (make-frag :x cx :w ww :text (car wd) :style (tok-meta wd) :node (tok-node wd)) cur)
+                            (progn (push (make-frag :x cx :w ww :text (car wd) :style (tok-meta wd) :node (tok-node wd)
+                                                    :dx (tok-dx wd) :dy (tok-dy wd)) cur)
                                    (incf cx ww) (incf i))))
-                       (t (push (make-frag :x cx :w (word-w prefix (tok-meta wd)) :text prefix :style (tok-meta wd) :node (tok-node wd)) cur)
+                       (t (push (make-frag :x cx :w (word-w prefix (tok-meta wd)) :text prefix :style (tok-meta wd) :node (tok-node wd)
+                                           :dx (tok-dx wd) :dy (tok-dy wd)) cur)
                           (cond ((plusp (length rest))
-                                 (setf (aref ws i) (list rest (tok-meta wd) nil 0 (tok-node wd)))
+                                 (setf (aref ws i) (list rest (tok-meta wd) nil 0 (tok-node wd) (tok-rel wd)))
                                  (return))               ; remainder -> next line
                                 (t (incf cx (word-w prefix (tok-meta wd))) (incf i)))))))
                   (atomic
                    (let ((lb (tok-meta wd)))
                      (shift-box lb (round (- cx (lbox-x lb))) 0)
+                     (setf (lbox-rel lb) (tok-rel wd))
                      (setf line-h (max line-h (lbox-h lb))) (push lb cur))
                    (incf cx ww) (incf i))
-                  (t (push (make-frag :x cx :w ww :text (car wd) :style (tok-meta wd) :node (tok-node wd)) cur)
+                  (t (push (make-frag :x cx :w ww :text (car wd) :style (tok-meta wd) :node (tok-node wd)
+                                      :dx (tok-dx wd) :dy (tok-dy wd)) cur)
                      (incf cx ww) (incf i))))))))
           (when (and (null cur) (not broke))     ; one item too wide for the band: force it
             (let* ((wd (aref ws i)))
               (if (eq (car wd) :atomic) (let ((lb (tok-meta wd))) (shift-box lb (round (- lx (lbox-x lb))) 0)
+                                          (setf (lbox-rel lb) (tok-rel wd))
                                           (setf line-h (max line-h (lbox-h lb))) (push lb cur))
-                  (push (make-frag :x lx :w (word-w (car wd) (tok-meta wd)) :text (car wd) :style (tok-meta wd) :node (tok-node wd)) cur))
+                  (push (make-frag :x lx :w (word-w (car wd) (tok-meta wd)) :text (car wd) :style (tok-meta wd) :node (tok-node wd)
+                                   :dx (tok-dx wd) :dy (tok-dy wd)) cur))
               (incf i)))
           (let* ((items (nreverse cur))
                  (lastx (if items
@@ -925,6 +956,11 @@ text-align.  Returns (values line-boxes total-height)."
                                    (:bottom (round (+ y (- lh2 (lbox-h it)))))
                                    (t       (round (+ y (- line-asc a)))))))
                         (shift-box it 0 (- top (round (lbox-y it)))))))
+                  ;; inline relative-positioning (§9.4.3): a visual shift applied AFTER
+                  ;; flow + baseline placement, so the atomic's reserved space is unmoved.
+                  (dolist (it items)
+                    (when (and (not (frag-p it)) (lbox-rel it))
+                      (shift-box it (car (lbox-rel it)) (cdr (lbox-rel it)))))
                   (push (make-lbox :x lx :y y :w avail :h lh2 :kind :line
                                    :children items :baseline baseline) lines)
                   (incf y lh2) (incf h lh2))
@@ -949,6 +985,11 @@ text-align.  Returns (values line-boxes total-height)."
                   (dolist (it items)
                     (unless (frag-p it)
                       (shift-box it 0 (round (+ y (- line-h (lbox-h it)))))))
+                  ;; inline relative-positioning (§9.4.3): visual-only shift after
+                  ;; flow + baseline placement (reserved space is unmoved).
+                  (dolist (it items)
+                    (when (and (not (frag-p it)) (lbox-rel it))
+                      (shift-box it (car (lbox-rel it)) (cdr (lbox-rel it)))))
                   (push (make-lbox :x lx :y y :w avail :h lh2 :kind :line
                                    :children items :baseline baseline) lines)
                   (incf y lh2) (incf h lh2)))))))
@@ -3616,7 +3657,10 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
        (loop for cell on (lbox-children lb)
              for it = (car cell)
              do (if (frag-p it)
-                    (let ((cs (frag-style it)))
+                    (let ((cs (frag-style it))
+                          ;; inline relative-positioning visual shift (§9.4.3): displace
+                          ;; this run's paint x and baseline; flow geometry stays put.
+                          (fdx (frag-dx it)) (fdy (frag-dy it)))
                       ;; pass the line box geometry so scribe centers the real font
                       ;; em-box (ascent+descent at font-size) within it.  A
                       ;; visibility:hidden run occupies its space but paints no glyphs.
@@ -3640,7 +3684,7 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                                    (right (if (and (frag-p nx) (eq (frag-node nx) (frag-node it)))
                                               (frag-x nx)
                                               (+ (frag-x it) (frag-w it)))))
-                              (fill-rect cv (round (frag-x it)) (lbox-y lb)
+                              (fill-rect cv (round (+ (frag-x it) fdx)) (+ (lbox-y lb) fdy)
                                          (max 1 (round (- right (frag-x it)))) (lbox-h lb) bg))))
                         (let* ((ul (member "underline" (css:cstyle-text-decoration cs) :test #'string=))
                                (nxt (cadr cell))
@@ -3653,15 +3697,15 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
                                                         :test #'string=))
                                            (frag-x nxt)
                                            (+ (frag-x it) (frag-w it))))))
-                          (draw-text-scribe cv (frag-text it) (round (frag-x it))
-                                   (lbox-y lb) (lbox-h lb)
+                          (draw-text-scribe cv (frag-text it) (round (+ (frag-x it) fdx))
+                                   (+ (lbox-y lb) fdy) (lbox-h lb)
                                    (css:cstyle-color cs)
                                    (css:cstyle-font-size cs)
                                    :face (style-face cs)
                                    :bold (>= (css:cstyle-font-weight cs) 600)
                                    :letter-spacing (css:cstyle-letter-spacing cs)
                                    :underline ul
-                                   :underline-end-x uend
+                                   :underline-end-x (and uend (+ uend fdx))
                                    :baseline-off (lbox-baseline lb)))))
                     (paint-box cv it)))))))   ; atomic inline-block / img box
 

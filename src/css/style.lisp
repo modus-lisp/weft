@@ -361,6 +361,25 @@ IS the multiplier; `normal` -> :NORMAL; a <percentage> -> its fraction; a <lengt
        (let ((n (ignore-errors (read-from-string (subseq tt 0 (1- (length tt))))))) (when (numberp n) (list :percent (float n)))))
       (t (resolve-len tt font-size)))))
 
+(defun resolve-bg-pos (v fs)
+  "Resolve font/absolute length units in a parsed background-position V
+\(((xval xunit) (yval yunit))) to px against font-size FS, so the painter — which
+only understands px and % — honours e.g. `background-position: 0 1em`.  Percentages
+and unitless 0 are left as-is."
+  (flet ((comp (c)
+           (if (and (consp c) (>= (length c) 2))
+               (let ((unit (second c)))
+                 (if (member unit '("%" "") :test #'string=)
+                     c
+                     ;; format the magnitude as a single-float so it never prints a
+                     ;; `d0` exponent that resolve-len cannot re-parse (`1.0d0em`).
+                     (let ((px (resolve-len (format nil "~a~a" (float (first c) 1.0f0) unit) fs)))
+                       (if (numberp px) (list (float px 0d0) "px") c))))
+               c)))
+    (if (and (consp v) (consp (first v)))
+        (mapcar #'comp v)
+        v)))
+
 (defun size-nonneg-p (spec)
   "NIL when SPEC (a PARSE-SIZE result) is a negative length or negative percentage.
 Negative values are invalid for width/height/min-/max- (CSS 2.1 §10.2/10.4/10.5/10.7)
@@ -705,11 +724,11 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
                      (let ((v (parse-value "background-position"
                                            (format nil "~{~a~^ ~}" postoks))))
                        (when (and (consp v) (not (eq v :invalid)))
-                         (setf (cstyle-bg-position cs) v))))))))))
+                         (setf (cstyle-bg-position cs) (resolve-bg-pos v fs)))))))))))
         ((string= prop "background-repeat")
          (let ((v (parse-value "background-repeat" value))) (when (stringp v) (setf (cstyle-bg-repeat cs) v))))
         ((string= prop "background-position")
-         (let ((v (parse-value "background-position" value))) (when (and (consp v) (not (eq v :invalid))) (setf (cstyle-bg-position cs) v))))
+         (let ((v (parse-value "background-position" value))) (when (and (consp v) (not (eq v :invalid))) (setf (cstyle-bg-position cs) (resolve-bg-pos v fs)))))
         ((string= prop "background-size") (setf (cstyle-bg-size cs) (parse-bg-size value fs)))
         ((string= prop "background-attachment")
          (setf (cstyle-bg-attachment cs) (string-downcase (string-trim '(#\Space) value))))

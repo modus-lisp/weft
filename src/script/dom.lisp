@@ -118,12 +118,17 @@ insertion into a connected tree."
 
 (defun adopt-fragment-owners (ctx fragment doc)
   "Record DOC as the owner document for FRAGMENT's top-level children (so a
-detached subtree still answers ownerDocument correctly) and neuter any parsed
-scripts so they never run."
-  (mark-fragment-scripts-started ctx fragment)
+detached subtree still answers ownerDocument correctly)."
   (loop for c across (h:dnode-children fragment)
         unless (gethash c (context-owner-docs ctx))
           do (setf (gethash c (context-owner-docs ctx)) doc)))
+
+(defun adopt-parsed-fragment (ctx fragment doc)
+  "Owner-adopt FRAGMENT and neuter its scripts — the innerHTML / outerHTML /
+insertAdjacentHTML path, where parsed <script>s must never execute (unlike
+Range.createContextualFragment, whose scripts run when later inserted)."
+  (mark-fragment-scripts-started ctx fragment)
+  (adopt-fragment-owners ctx fragment doc))
 
 (defun new-node (ctx doc-obj node)
   "Wrap a freshly created NODE, recording its owner document (the document whose
@@ -233,6 +238,69 @@ scripts so they never run."
       (loop for ch across (h:dnode-children node)
             do (h:dom-append c (copy-dnode ch t))))
     c))
+
+(defun attrs-equal-p (a b)
+  "Attribute lists (name . value alists) compared as unordered sets."
+  (and (= (length a) (length b))
+       (every (lambda (pair)
+                (let ((m (assoc (car pair) b :test #'equal)))
+                  (and m (equal (cdr pair) (cdr m)))))
+              a)))
+
+(defun nodes-equal-p (ctx a b)
+  "DOM Node.isEqualNode: same type, type-specific data, attributes (as a set),
+and pairwise-equal children."
+  (and a b
+       (eq (h:dnode-kind a) (h:dnode-kind b))
+       (case (h:dnode-kind a)
+         (:doctype (and (equal (h:dnode-name a) (h:dnode-name b))
+                        (equal (h:dnode-public a) (h:dnode-public b))
+                        (equal (h:dnode-system a) (h:dnode-system b))))
+         (:element
+          (let ((ia (gethash a (context-ns-info ctx))) (ib (gethash b (context-ns-info ctx))))
+            (and (eq (h:dnode-namespace a) (h:dnode-namespace b))
+                 (equal (getf ia :ns) (getf ib :ns))
+                 (equal (getf ia :prefix) (getf ib :prefix))
+                 (equal (or (getf ia :local) (h:dnode-name a))
+                        (or (getf ib :local) (h:dnode-name b)))
+                 (attrs-equal-p (h:dnode-attrs a) (h:dnode-attrs b)))))
+         ((:text :cdata :comment) (equal (h:dnode-data a) (h:dnode-data b)))
+         (:processing-instruction (and (equal (h:dnode-name a) (h:dnode-name b))
+                                       (equal (h:dnode-data a) (h:dnode-data b))))
+         (t t))
+       (= (length (h:dnode-children a)) (length (h:dnode-children b)))
+       (loop for ca across (h:dnode-children a)
+             for cb across (h:dnode-children b)
+             always (nodes-equal-p ctx ca cb))))
+
+(defun node-root (n) (loop for p = n then (h:dnode-parent p)
+                           when (null (h:dnode-parent p)) return p))
+(defun proper-ancestor-p (a b) "T if A is a proper ancestor of B."
+  (loop for p = (h:dnode-parent b) then (h:dnode-parent p)
+        while p thereis (eq p a)))
+(defun child-index-in (parent node)
+  (position node (h:dnode-children parent)))
+(defun tree-order-precedes-p (a b)
+  "T if A precedes B in tree order (both in the same tree, neither an ancestor
+of the other)."
+  (let ((pa (nreverse (loop for p = a then (h:dnode-parent p) while p collect p)))
+        (pb (nreverse (loop for p = b then (h:dnode-parent p) while p collect p))))
+    ;; pa/pb are root..node; find the first divergence and compare child order.
+    (loop for ta on pa for tb on pb
+          for na = (car ta) for nb = (car tb)
+          when (not (eq na nb))
+            do (return (< (child-index-in (h:dnode-parent na) na)
+                          (child-index-in (h:dnode-parent nb) nb)))
+          finally (return nil))))
+(defun compare-document-position (this other)
+  "The bitmask for OTHER's position relative to THIS (DOM §Node)."
+  (if (eq this other) 0
+      (if (not (eq (node-root this) (node-root other)))
+          (logior 1 32 (if (< (sxhash other) (sxhash this)) 2 4)) ; DISCONNECTED
+          (cond ((proper-ancestor-p other this) (logior 8 2))  ; CONTAINS | PRECEDING
+                ((proper-ancestor-p this other) (logior 16 4)) ; CONTAINED_BY | FOLLOWING
+                ((tree-order-precedes-p other this) 2)         ; PRECEDING
+                (t 4)))))                                      ; FOLLOWING
 
 ;;; ---- selector queries (querySelector / querySelectorAll) ------------------
 (defun qs-first (root selector-list)
@@ -519,6 +587,16 @@ scripts so they never run."
       (let ((node (n this)) (other (node-of ctx (arg a 0))))
         (jbool (and other (loop for p = other then (h:dnode-parent p)
                                 while p thereis (eq p node))))))
+    (defmethod* ctx np "isEqualNode" 1 (this a)
+      (let ((other (node-of ctx (arg a 0))))
+        (jbool (and other (nodes-equal-p ctx (n this) other)))))
+    (defmethod* ctx np "isSameNode" 1 (this a)
+      (jbool (eq (n this) (node-of ctx (arg a 0)))))
+    ;; DOM §Node.compareDocumentPosition (bitmask: DISCONNECTED 1, PRECEDING 2,
+    ;; FOLLOWING 4, CONTAINS 8, CONTAINED_BY 16, IMPLEMENTATION_SPECIFIC 32).
+    (defmethod* ctx np "compareDocumentPosition" 1 (this a)
+      (let ((node (n this)) (other (require-node ctx (arg a 0))))
+        (num (compare-document-position node other))))
     ;; Node type constants (also mirrored on the constructor in Acid tests).
     (dolist (pair '(("ELEMENT_NODE" . 1) ("ATTRIBUTE_NODE" . 2) ("TEXT_NODE" . 3)
                     ("CDATA_SECTION_NODE" . 4) ("ENTITY_REFERENCE_NODE" . 5)
@@ -794,7 +872,7 @@ scripts so they never run."
     (defgetset ctx ep "innerHTML" (this) (h:serialize-html-fragment (n this))
       (v) (let* ((node (n this))
                  (frag (h:parse-fragment (jstr v) (h:dnode-name node))))
-            (adopt-fragment-owners ctx frag (owner-doc-node ctx node))
+            (adopt-parsed-fragment ctx frag (owner-doc-node ctx node))
             (replace-all-children node frag)
             (setf (context-dirty ctx) t)))
     (defgetset ctx ep "outerHTML" (this) (h:serialize-html-outer (n this))
@@ -806,7 +884,7 @@ scripts so they never run."
             (let* ((ctxname (if (eq (h:dnode-kind parent) :element) (h:dnode-name parent) "body"))
                    (frag (h:parse-fragment (jstr v) ctxname))
                    (ref (node-next-sibling node)))
-              (adopt-fragment-owners ctx frag (owner-doc-node ctx node))
+              (adopt-parsed-fragment ctx frag (owner-doc-node ctx node))
               (h:dom-remove node)
               (loop for c across (copy-seq (h:dnode-children frag))
                     do (h:dom-remove c)
@@ -824,27 +902,27 @@ scripts so they never run."
             ((string= pos "beforebegin")
              (need-parent)
              (let ((frag (h:parse-fragment html (h:dnode-name parent))))
-               (adopt-fragment-owners ctx frag (owner-doc-node ctx node))
+               (adopt-parsed-fragment ctx frag (owner-doc-node ctx node))
                (loop for c across (copy-seq (h:dnode-children frag))
                      do (h:dom-remove c) (h:dom-insert-before parent c node))))
             ((string= pos "afterbegin")
              (let* ((frag (h:parse-fragment html (h:dnode-name node)))
                     (ref (and (plusp (length (h:dnode-children node)))
                               (aref (h:dnode-children node) 0))))
-               (adopt-fragment-owners ctx frag (owner-doc-node ctx node))
+               (adopt-parsed-fragment ctx frag (owner-doc-node ctx node))
                (loop for c across (copy-seq (h:dnode-children frag))
                      do (h:dom-remove c)
                         (if ref (h:dom-insert-before node c ref) (h:dom-append node c)))))
             ((string= pos "beforeend")
              (let ((frag (h:parse-fragment html (h:dnode-name node))))
-               (adopt-fragment-owners ctx frag (owner-doc-node ctx node))
+               (adopt-parsed-fragment ctx frag (owner-doc-node ctx node))
                (loop for c across (copy-seq (h:dnode-children frag))
                      do (h:dom-remove c) (h:dom-append node c))))
             ((string= pos "afterend")
              (need-parent)
              (let ((frag (h:parse-fragment html (h:dnode-name parent)))
                    (ref (node-next-sibling node)))
-               (adopt-fragment-owners ctx frag (owner-doc-node ctx node))
+               (adopt-parsed-fragment ctx frag (owner-doc-node ctx node))
                (loop for c across (copy-seq (h:dnode-children frag))
                      do (h:dom-remove c)
                         (if ref (h:dom-insert-before parent c ref) (h:dom-append parent c)))))

@@ -15,13 +15,21 @@
 
 (defvar *html-ns* "http://www.w3.org/1999/xhtml")
 
+(defun ascii-upcase (s)
+  "ASCII-only uppercasing (DOM tagName): bytes A-Z, leaving non-ASCII intact."
+  (map 'string (lambda (c) (if (char<= #\a c #\z) (char-upcase c) c)) s))
+
 (defun element-tag-name (node &optional ctx)
-  "tagName/nodeName for an element: uppercased for an HTML-namespace element,
-   case-preserved otherwise (XML namespaces are case-sensitive)."
-  (let ((info (and ctx (gethash node (context-ns-info ctx)))))
-    (cond (info (getf info :qname))
-          ((eq (h:dnode-namespace node) :html) (string-upcase (h:dnode-name node)))
-          (t (h:dnode-name node)))))
+  "tagName/nodeName for an element (DOM §Element): the qualified name, ASCII
+   upper-cased when the element is in the HTML namespace *and* its node document
+   is an HTML document (so it re-lowercases after adoption into an XML document);
+   case-preserved otherwise (XML/SVG names are case-sensitive)."
+  (let* ((info (and ctx (gethash node (context-ns-info ctx))))
+         (qname (if info (getf info :qname) (h:dnode-name node))))
+    (if (and ctx (equal (element-real-ns ctx node) *html-ns*)
+             (html-doc-p ctx (node-document ctx node)))
+        (ascii-upcase qname)
+        qname)))
 
 (defun node-name-of (node &optional ctx)
   (case (h:dnode-kind node)

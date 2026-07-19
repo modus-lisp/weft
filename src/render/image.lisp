@@ -372,8 +372,9 @@ smoothly instead of aliasing to noise; upscaling / 1:1 is nearest-neighbour."
              (when (plusp a)
                (let ((px (+ x ox)) (py (+ y oy)))
                  (if (>= a 255)
-                     (put cv px py r g b)
-                     (when (and (>= px 0) (>= py 0) (< px (canvas-width cv)) (< py (canvas-height cv)))
+                     (put cv px py r g b)   ; opaque: PUT honours the rounded clip
+                     (when (and (>= px 0) (>= py 0) (< px (canvas-width cv)) (< py (canvas-height cv))
+                                (rclip-ok px py))
                        (let* ((di (* 3 (+ (* py (canvas-width cv)) px))) (pb (canvas-pixels cv)) (ia (- 255 a)))
                          (setf (aref pb di)       (floor (+ (* r a) (* (aref pb di) ia)) 255)
                                (aref pb (+ di 1)) (floor (+ (* g a) (* (aref pb (+ di 1)) ia)) 255)

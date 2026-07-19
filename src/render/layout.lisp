@@ -4077,6 +4077,97 @@ e.g. Acid2's smile spans whose left/right borders are `solid transparent`)."
                (not (and col (fourth col) (<= (fourth col) 0))))
           w 0.0))))
 
+;;;; ---- border-radius geometry (CSS Backgrounds 3 §5.5) ---------------------
+(defun box-has-radius-p (cs)
+  "True when CS declares any corner radius.  A fast gate: rounded-corner paint is
+skipped entirely for every box without it, so unrounded boxes render byte-identically.
+A collapsed-border table (or its internal table elements) ignores border-radius
+(CSS Backgrounds 3 §5.5), so radius is suppressed there."
+  (and cs (or (css:cstyle-border-tl-radius cs) (css:cstyle-border-tr-radius cs)
+              (css:cstyle-border-br-radius cs) (css:cstyle-border-bl-radius cs))
+       (not (and (equal (css:cstyle-border-collapse cs) "collapse")
+                 (member (css:cstyle-display cs)
+                         '("table" "inline-table" "table-cell" "table-row" "table-row-group"
+                           "table-header-group" "table-footer-group" "table-column"
+                           "table-column-group" "table-caption")
+                         :test #'equal)))))
+
+(defun resolve-radius-comp (comp ref)
+  "px value of a radius component (px float | (:percent N) | NIL) against REF length."
+  (cond ((null comp) 0.0)
+        ((numberp comp) (float comp 1.0))
+        ((and (consp comp) (eq (first comp) :percent)) (* (/ (second comp) 100.0) (float ref 1.0)))
+        (t 0.0)))
+
+(defun corner-radii-px (cs w h)
+  "The four corner radii (px) for CS over a W×H border box, with the §5.5 overlap
+clamp applied: if adjacent radii exceed a side, all radii scale by f=min(side/sum).
+Returns a simple-vector #(tlx tly trx try brx bry blx bly)."
+  (let* ((tl (css:cstyle-border-tl-radius cs)) (tr (css:cstyle-border-tr-radius cs))
+         (br (css:cstyle-border-br-radius cs)) (bl (css:cstyle-border-bl-radius cs))
+         (tlx (resolve-radius-comp (car tl) w)) (tly (resolve-radius-comp (cdr tl) h))
+         (trx (resolve-radius-comp (car tr) w)) (tryy (resolve-radius-comp (cdr tr) h))
+         (brx (resolve-radius-comp (car br) w)) (bry (resolve-radius-comp (cdr br) h))
+         (blx (resolve-radius-comp (car bl) w)) (bly (resolve-radius-comp (cdr bl) h))
+         (f 1.0))
+    (flet ((cap (sum len) (when (and (> sum 0.0) (> sum (float len 1.0)))
+                            (setf f (min f (/ (float len 1.0) sum))))))
+      (cap (+ tlx trx) w) (cap (+ blx brx) w)     ; top / bottom sides
+      (cap (+ tly bly) h) (cap (+ tryy bry) h))   ; left / right sides
+    (if (< f 1.0)
+        (vector (* tlx f) (* tly f) (* trx f) (* tryy f) (* brx f) (* bry f) (* blx f) (* bly f))
+        (vector tlx tly trx tryy brx bry blx bly))))
+
+(defun inset-radii (radii il it ir ib)
+  "Reduce border-box RADII to a box inset by IL/IT/IR/IB (the border[+padding] on
+each side), flooring each at 0 — the inner border/padding corner curve (§5.5)."
+  (flet ((n (x) (max 0.0 (float x 1.0))))
+    (vector (n (- (aref radii 0) il)) (n (- (aref radii 1) it))    ; TL
+            (n (- (aref radii 2) ir)) (n (- (aref radii 3) it))    ; TR
+            (n (- (aref radii 4) ir)) (n (- (aref radii 5) ib))    ; BR
+            (n (- (aref radii 6) il)) (n (- (aref radii 7) ib)))))  ; BL
+
+(defun make-round-region (x0 y0 x1 y1 radii)
+  "A rounded-clip region vector for rect (X0 Y0 X1 Y1) with an 8-element RADII vector."
+  (vector (float x0 1.0) (float y0 1.0) (float x1 1.0) (float y1 1.0)
+          (aref radii 0) (aref radii 1) (aref radii 2) (aref radii 3)
+          (aref radii 4) (aref radii 5) (aref radii 6) (aref radii 7)))
+
+(defun round-region (x0 y0 x1 y1 radii)
+  "MAKE-ROUND-REGION, or NIL when RADII are all zero (a plain rect needs no clip)."
+  (when (some #'plusp radii) (make-round-region x0 y0 x1 y1 radii)))
+
+(defun bg-round-region (lb cs box radii)
+  "Rounded-clip region for LB's background-clip BOX (border-/padding-/content-box)
+given the border-box RADII, or NIL if no rounding remains after insetting."
+  (multiple-value-bind (x0 y0 x1 y1) (bg-box-edges lb cs box)
+    (if (string= box "border-box")
+        (round-region x0 y0 x1 y1 radii)
+        (let* ((bl (used-border cs :l)) (bt (used-border cs :t))
+               (br (used-border cs :r)) (bb (used-border cs :b))
+               (content (string= box "content-box"))
+               (pl (if content (max 0 (css::resolve-pad (css:cstyle-padding-left cs) nil)) 0))
+               (pt (if content (max 0 (css::resolve-pad (css:cstyle-padding-top cs) nil)) 0))
+               (pr (if content (max 0 (css::resolve-pad (css:cstyle-padding-right cs) nil)) 0))
+               (pb (if content (max 0 (css::resolve-pad (css:cstyle-padding-bottom cs) nil)) 0)))
+          (round-region x0 y0 x1 y1 (inset-radii radii (+ bl pl) (+ bt pt) (+ br pr) (+ bb pb)))))))
+
+(defun fill-round-ring (cv outer inner color)
+  "Fill the ring OUTER minus INNER (both rounded regions) with the uniform COLOR — a
+solid rounded border (§5.5).  INNER may be NIL (a filled rounded rect).  Hard-edged
+\(binary centre test), matching weft's hard-edged rectangular border fill so a rounded
+border aligns with an identically-constructed reference and does not leak the layers
+beneath it at the corners.  Ancestor rounded clip / rect *CLIP* are honoured via PUT."
+  (let ((x0 (max 0 (floor (svref outer 0)))) (y0 (max 0 (floor (svref outer 1))))
+        (x1 (min (canvas-width cv) (ceiling (svref outer 2))))
+        (y1 (min (canvas-height cv) (ceiling (svref outer 3))))
+        (r (first color)) (g (second color)) (b (third color))
+        (*round-clip* (cons outer *round-clip*)))
+    (loop for yy from y0 below y1 do
+      (loop for xx from x0 below x1 do
+        (unless (and inner (region-contains-f inner (+ xx 0.5) (+ yy 0.5)))
+          (put cv xx yy r g b))))))
+
 (defun paint-borders (cv lb cs)
   "Paint the four border edges, each with its own color.  Edges whose
 border-style is none/hidden are suppressed (zero effective width).
@@ -4094,19 +4185,28 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
          (ct (border-edge-color cs :t)) (crr (border-edge-color cs :r))
          (cb (border-edge-color cs :b)) (cl (border-edge-color cs :l)))
     (when (and (<= bt 0) (<= br 0) (<= bb 0) (<= bl 0)) (return-from paint-borders))
-    (if (and (equal ct crr) (equal ct cb) (equal ct cl))
+    (let ((radii (and (box-has-radius-p cs) (corner-radii-px cs w h))))
+     (cond
+      ((and radii (some #'plusp radii) (equal ct crr) (equal ct cb) (equal ct cl))
+       ;; uniform color + border-radius: fill the rounded ring (outer border-box
+       ;; rounded rect minus the inner padding-box rounded rect) — §5.5.
+       (let ((outer (make-round-region x0 y0 x1 y1 radii))
+             (inner (make-round-region (+ x0 bl) (+ y0 bt) (- x1 br) (- y1 bb)
+                                       (inset-radii radii bl bt br bb))))
+         (fill-round-ring cv outer inner ct)))
+      ((and (equal ct crr) (equal ct cb) (equal ct cl))
         ;; uniform color: overlapping rectangles, exactly as the original code.
-        (progn
           (when (plusp bt) (fill-rect cv x0 y0 w bt ct))
           (when (plusp bb) (fill-rect cv x0 (- y1 bb) w bb cb))
           (when (plusp bl) (fill-rect cv x0 y0 bl h cl))
           (when (plusp br) (fill-rect cv (- x1 br) y0 br h crr)))
+      (t
         ;; differing colors: mitered trapezoids (degenerate to triangles).
         (let ((ix0 (+ x0 bl)) (iy0 (+ y0 bt)) (ix1 (- x1 br)) (iy1 (- y1 bb)))
           (when (plusp bt) (fill-poly cv (list (cons x0 y0) (cons x1 y0) (cons ix1 iy0) (cons ix0 iy0)) ct))
           (when (plusp bb) (fill-poly cv (list (cons x0 y1) (cons ix0 iy1) (cons ix1 iy1) (cons x1 y1)) cb))
           (when (plusp bl) (fill-poly cv (list (cons x0 y0) (cons ix0 iy0) (cons ix0 iy1) (cons x0 y1)) cl))
-          (when (plusp br) (fill-poly cv (list (cons x1 y0) (cons x1 y1) (cons ix1 iy1) (cons ix1 iy0)) crr))))))
+          (when (plusp br) (fill-poly cv (list (cons x1 y0) (cons x1 y1) (cons ix1 iy1) (cons ix1 iy0)) crr))))))))
 
 (defun paint-outline (cv lb cs)
   "Paint the CSS-UI outline: a uniform ring just outside the border edge, offset
@@ -4184,23 +4284,36 @@ this matches how weft paints those border styles too)."
          ;; paints no background/border of its own, but its children MUST still
          ;; paint, so every style-dependent step is guarded by (when cs ...).
          (when cs
-           (cond ((and (css:cstyle-bg-gradient cs) (gradient-visible-p (css:cstyle-bg-gradient cs)))
-                  ;; a CSS gradient is a background image: rasterise it (honouring
-                  ;; background-position/-size/-repeat) as a tiled layer over the box.
-                  (paint-bg-gradient cv lb cs (css:cstyle-bg-gradient cs)))
-                 ((css:cstyle-background cs)
-                  ;; background-clip: fill only the painting area (default border-box
-                  ;; == the whole box; padding/content-box inset by border[+padding]).
-                  (multiple-value-bind (bx0 by0 bx1 by1) (bg-box-edges lb cs (effective-bg-clip cs))
-                    (fill-rect cv bx0 by0 (- bx1 bx0) (- by1 by0) (rgb (css:cstyle-background cs))))))
-           ;; CSS background image: over the bg color, under the borders, tiled and
-           ;; clipped to this box's padding box.  Fixed-attachment images are not
-           ;; painted (out of scope) — for Acid2 that is the correct result (their
-           ;; images are positioned to the viewport, off this element).
-           (when (css:cstyle-bg-image cs)
-             (if (string-equal (css:cstyle-bg-attachment cs) "fixed")
-                 (paint-bg-image-fixed cv lb cs (css:cstyle-bg-image cs))
-                 (paint-bg-image cv lb cs (css:cstyle-bg-image cs)))))
+           ;; border-radius: the background/gradient/image of a rounded box is
+           ;; clipped to the rounded background-clip box (CSS Backgrounds 3 §5.5).
+           ;; RADII is NIL for the common unrounded box, so *ROUND-CLIP* stays NIL
+           ;; and every fill takes its byte-identical rectangular fast path.
+           (let ((radii (and (box-has-radius-p cs) (corner-radii-px cs (lbox-w lb) (lbox-h lb)))))
+            (macrolet ((with-bg-round ((clip-box) &body body)
+                         `(let ((*round-clip*
+                                  (let ((rg (and radii (bg-round-region lb cs ,clip-box radii))))
+                                    (if rg (cons rg *round-clip*) *round-clip*))))
+                            ,@body)))
+             (cond ((and (css:cstyle-bg-gradient cs) (gradient-visible-p (css:cstyle-bg-gradient cs)))
+                    ;; a CSS gradient is a background image: rasterise it (honouring
+                    ;; background-position/-size/-repeat) as a tiled layer over the box.
+                    (with-bg-round ((css:cstyle-bg-clip cs))
+                      (paint-bg-gradient cv lb cs (css:cstyle-bg-gradient cs))))
+                   ((css:cstyle-background cs)
+                    ;; background-clip: fill only the painting area (default border-box
+                    ;; == the whole box; padding/content-box inset by border[+padding]).
+                    (multiple-value-bind (bx0 by0 bx1 by1) (bg-box-edges lb cs (effective-bg-clip cs))
+                      (with-bg-round ((effective-bg-clip cs))
+                        (fill-rect cv bx0 by0 (- bx1 bx0) (- by1 by0) (rgb (css:cstyle-background cs)))))))
+             ;; CSS background image: over the bg color, under the borders, tiled and
+             ;; clipped to this box's padding box.  Fixed-attachment images are not
+             ;; painted (out of scope) — for Acid2 that is the correct result (their
+             ;; images are positioned to the viewport, off this element).
+             (when (css:cstyle-bg-image cs)
+               (with-bg-round ((css:cstyle-bg-clip cs))
+                 (if (string-equal (css:cstyle-bg-attachment cs) "fixed")
+                     (paint-bg-image-fixed cv lb cs (css:cstyle-bg-image cs))
+                     (paint-bg-image cv lb cs (css:cstyle-bg-image cs))))))))
          (when (lbox-img lb)
            (let ((fit (and cs (css:cstyle-object-fit cs))))
              (if (and fit (not (string= fit "fill")))
@@ -4254,7 +4367,23 @@ this matches how weft paints those border styles too)."
                     (brr (round (+ (- (+ (lbox-x lb) (lbox-w lb)) ir) rmar)))
                     (bb (round (+ (- (+ (lbox-y lb) (lbox-h lb)) ib) rmar)))
                     (*clip* (clip-intersect (if cx bl -1000000) (if cy bt -1000000)
-                                            (if cx brr 1000000) (if cy bb 1000000))))
+                                            (if cx brr 1000000) (if cy bb 1000000)))
+                    ;; border-radius + overflow clip: also clip descendants to the
+                    ;; rounded padding box (§5.5 / css-overflow-3).  Only for the plain
+                    ;; both-axes padding-box case: a rounded region has no meaning when
+                    ;; only one axis is clipped, and `overflow: clip` with an
+                    ;; overflow-clip-margin uses an expanded-corner geometry we do not
+                    ;; model, so restrict to hidden/scroll/auto (the common case).
+                    (rr (and cx cy (not ocm)
+                             (not (string= (css:cstyle-overflow cs) "clip"))
+                             (box-has-radius-p cs)
+                             (let ((radii (corner-radii-px cs (lbox-w lb) (lbox-h lb))))
+                               (when (some #'plusp radii)
+                                 (make-round-region
+                                  bl bt brr bb
+                                  (inset-radii radii (used-border cs :l) (used-border cs :t)
+                                               (used-border cs :r) (used-border cs :b)))))))
+                    (*round-clip* (if rr (cons rr *round-clip*) *round-clip*)))
                (paint-children cv (lbox-children lb)))
              (paint-children cv (lbox-children lb)))
          ;; outline paints on top of the box + descendants, and is NOT clipped by

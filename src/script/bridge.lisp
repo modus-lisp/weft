@@ -123,6 +123,14 @@
       (js:put nav "language" "en-US") (js:put nav "languages" (js:eval-script realm "['en-US','en']"))
       (js:put nav "onLine" js:*true*) (js:put nav "cookieEnabled" js:*true*)
       (js:put nav "doNotTrack" js:*null*)
+      (js:put nav "hardwareConcurrency" (num 4))
+      ;; sendBeacon (W3C Beacon API): a static render has no live network, so it
+      ;; queues nothing but reports success — the near-universal analytics
+      ;; transport path.  Scripts wrap `navigator.sendBeacon.bind(navigator)`, so
+      ;; its mere presence keeps that instrumentation from throwing.
+      (js:put nav "sendBeacon"
+              (js:native-function realm "sendBeacon"
+                (lambda (this args) (declare (ignore this args)) js:*true*) 1))
       (js:define-global realm "navigator" nav))
     ;; location — parsed from the document base URL.
     (let ((loc (make-location ctx)))
@@ -146,6 +154,27 @@
     (dolist (m '("scrollTo" "scroll" "scrollBy" "focus" "blur" "print" "close" "open"
                  "alert" "resizeTo" "moveTo"))
       (js:define-global realm m (js:native-function realm m (lambda (this args) (declare (ignore this args)) js:*undefined*) 0)))
+    ;; requestIdleCallback (W3C Background Tasks): run the callback as a deferred
+    ;; task with a timeRemaining()=~50ms IdleDeadline.  cancelIdleCallback cancels
+    ;; the pending timer.  Analytics/hydration code schedules low-priority work here.
+    (js:define-global realm "requestIdleCallback"
+      (js:native-function realm "requestIdleCallback"
+        (lambda (this args) (declare (ignore this))
+          (let ((cb (arg args 0)))
+            (if (js:js-callable-p cb)
+                (num (schedule-timer ctx
+                       (lambda ()
+                         (let ((dl (js:make-object :proto (js:eval-script realm "Object.prototype"))))
+                           (js:put dl "didTimeout" js:*false*)
+                           (js:put dl "timeRemaining"
+                                   (js:native-function realm "timeRemaining"
+                                     (lambda (a b) (declare (ignore a b)) (num 50d0)) 0))
+                           (js:invoke (context-realm ctx) cb js:*undefined* (list dl))))
+                       1 nil))
+                (num 0)))) 1))
+    (js:define-global realm "cancelIdleCallback"
+      (js:native-function realm "cancelIdleCallback"
+        (lambda (this args) (declare (ignore this)) (cancel-timer ctx (int-arg args 0)) js:*undefined*) 1))
     (js:define-global realm "matchMedia"
       (js:native-function realm "matchMedia"
         (lambda (this args) (declare (ignore this))
@@ -381,6 +410,26 @@
   Object.keys(DE_CODES).forEach(function(k){DOMException[k]=DE_CODES[k];DOMException.prototype[k]=DE_CODES[k];});
   G.DOMException=DOMException;
   if(typeof G.queueMicrotask!=='function'){G.queueMicrotask=function(cb){Promise.resolve().then(cb);};}
+  // btoa/atob — HTML base64 utility methods (§ Atob and Btoa).  btoa serializes a
+  // binary string (each code unit a byte, 0..255) to base64; atob does the inverse.
+  if(typeof G.btoa!=='function'){
+    var B64='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    G.btoa=function(s){s=String(s);var out='';
+      for(var i=0;i<s.length;i++){if(s.charCodeAt(i)>255)throw new DOMException('The string to be encoded contains characters outside of the Latin1 range.','InvalidCharacterError');}
+      for(var j=0;j<s.length;j+=3){
+        var b0=s.charCodeAt(j),b1=j+1<s.length?s.charCodeAt(j+1):0,b2=j+2<s.length?s.charCodeAt(j+2):0;
+        out+=B64.charAt(b0>>2)+B64.charAt((b0&3)<<4|b1>>4)+
+             (j+1<s.length?B64.charAt((b1&15)<<2|b2>>6):'=')+
+             (j+2<s.length?B64.charAt(b2&63):'=');}
+      return out;};
+    G.atob=function(s){s=String(s).replace(/[ \t\n\f\r]/g,'');
+      if(s.length%4===1)throw new DOMException('The string to be decoded is not correctly encoded.','InvalidCharacterError');
+      s=s.replace(/=+$/,'');var out='',bits=0,nbits=0;
+      for(var i=0;i<s.length;i++){var c=B64.indexOf(s.charAt(i));
+        if(c<0)throw new DOMException('The string to be decoded is not correctly encoded.','InvalidCharacterError');
+        bits=bits<<6|c;nbits+=6;if(nbits>=8){nbits-=8;out+=String.fromCharCode(bits>>nbits&255);}}
+      return out;};
+  }
   // process: a minimal Node-ism many bundlers leave in browser output — the
   // near-universal `process.env.NODE_ENV` guard and a few common stubs.  Not a
   // Node runtime; just enough that `typeof process==='object'` and the env read

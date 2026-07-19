@@ -256,8 +256,10 @@ into the domain (1/radius for radial)."
 `to corner` against the box aspect (CSS Images 3 §3.1)."
   (ecase (first dir)
     (:angle (float (second dir) 1.0))
+    ;; the gradient line is perpendicular to the box diagonal joining the corner's
+    ;; two neighbours, so the corner angle is atan2(h,w) — not atan2(w,h) (§3.1).
     (:corner (let* ((hh (second dir)) (v (third dir))
-                    (a (* (/ 180.0 (float pi 1.0)) (atan (max 1e-6 (float w 1.0)) (max 1e-6 (float h 1.0))))))
+                    (a (* (/ 180.0 (float pi 1.0)) (atan (max 1e-6 (float h 1.0)) (max 1e-6 (float w 1.0))))))
                (cond ((and (eq v :top) (eq hh :right)) a)
                      ((and (eq v :bottom) (eq hh :right)) (- 180.0 a))
                      ((and (eq v :bottom) (eq hh :left)) (+ 180.0 a))

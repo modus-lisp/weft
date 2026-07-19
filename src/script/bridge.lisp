@@ -381,6 +381,22 @@
   Object.keys(DE_CODES).forEach(function(k){DOMException[k]=DE_CODES[k];DOMException.prototype[k]=DE_CODES[k];});
   G.DOMException=DOMException;
   if(typeof G.queueMicrotask!=='function'){G.queueMicrotask=function(cb){Promise.resolve().then(cb);};}
+  // process: a minimal Node-ism many bundlers leave in browser output — the
+  // near-universal `process.env.NODE_ENV` guard and a few common stubs.  Not a
+  // Node runtime; just enough that `typeof process==='object'` and the env read
+  // don't throw an uncaught TypeError that aborts a page's bootstrap.
+  if(typeof G.process==='undefined'){
+    var proc={env:{NODE_ENV:'production'},platform:'browser',arch:'',version:'',versions:{},
+      browser:true,argv:[],pid:0,title:'browser',
+      nextTick:function(fn){if(typeof fn!=='function')throw new TypeError('callback is not a function');
+        var a=Array.prototype.slice.call(arguments,1);G.queueMicrotask(function(){fn.apply(undefined,a);});},
+      cwd:function(){return '/';},chdir:function(){},umask:function(){return 0;},
+      on:function(){return proc;},once:function(){return proc;},off:function(){return proc;},
+      addListener:function(){return proc;},removeListener:function(){return proc;},
+      emit:function(){return false;},listeners:function(){return [];},
+      binding:function(){throw new Error('process.binding is not supported');}};
+    G.process=proc;
+  }
   function mkctor(nat){var w=function(t,i){return nat(t,i);};w.prototype=nat.prototype;return w;}
   ['Event','CustomEvent','UIEvent','MouseEvent','KeyboardEvent',
    'Document','Text','Comment','DocumentFragment'].forEach(function(nm){if(typeof G[nm]==='function')G[nm]=mkctor(G[nm]);});

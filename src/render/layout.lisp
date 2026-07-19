@@ -4065,13 +4065,18 @@ this matches how weft paints those border styles too)."
         (let* ((col (rgb rc))
              (x0 (lbox-x lb)) (y0 (lbox-y lb))
              (x1 (+ x0 (lbox-w lb))) (y1 (+ y0 (lbox-h lb)))
-             (ix0 (- x0 off)) (iy0 (- y0 off)) (ix1 (+ x1 off)) (iy1 (+ y1 off))
-             (ox0 (- ix0 w)) (ow (max 0 (- (+ ix1 w) ox0)))
+             (ix0 (- x0 off)) (iy0 (- y0 off)) (ix1 (+ x1 off)) (iy1 (+ y1 off)))
+        ;; a large negative outline-offset can invert the inner rectangle; the
+        ;; outline collapses to a zero-size line/point at the box center on the
+        ;; inverted axis (matches Chrome's negative-outline-offset rendering).
+        (when (< ix1 ix0) (let ((c (/ (+ x0 x1) 2))) (setf ix0 c ix1 c)))
+        (when (< iy1 iy0) (let ((c (/ (+ y0 y1) 2))) (setf iy0 c iy1 c)))
+        (let* ((ox0 (- ix0 w)) (ow (max 0 (- (+ ix1 w) ox0)))
              (ih (max 0 (- iy1 iy0))))
         (fill-rect cv ox0 (- iy0 w) ow w col)   ; top
         (fill-rect cv ox0 iy1 ow w col)          ; bottom
         (fill-rect cv ox0 iy0 w ih col)          ; left
-        (fill-rect cv ix1 iy0 w ih col)))))))    ; right
+        (fill-rect cv ix1 iy0 w ih col))))))))    ; right
 
 (defun box-visible-p (cs)
   "NIL when CS is visibility:hidden/collapse — such a box paints nothing of its

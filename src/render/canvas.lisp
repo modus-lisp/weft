@@ -26,23 +26,63 @@
   "Active clip rectangle (x0 y0 x1 y1) in device pixels, or NIL for none.
 Bound by paint when entering an overflow:hidden/clip/scroll box.")
 
+(defvar *round-clip* nil
+  "Active rounded-clip regions (a list; a pixel must be inside ALL of them).  Each
+region is a simple-vector #(x0 y0 x1 y1 tlx tly trx try brx bry blx bly) of
+device-pixel coordinates: the axis-aligned rect minus the four elliptical corner
+cut-outs (CSS Backgrounds 3 §5.5).  NIL (the default, common case) means no rounded
+clip, so rectangular paint stays byte-identical.")
+
+(declaim (inline corner-cuts-p region-contains-f rclip-ok))
+(defun corner-cuts-p (dx dy rx ry)
+  "True when the point is in a corner's elliptical cut-out: DX/DY are the point's
+distances from the corner-ellipse centre TOWARD the corner (>0 only on the rounded
+side), RX/RY the corner radii.  Outside the ellipse there = cut away."
+  (and (> rx 0.0) (> ry 0.0) (> dx 0.0) (> dy 0.0)
+       (let ((u (/ dx rx)) (v (/ dy ry))) (> (+ (* u u) (* v v)) 1.0))))
+
+(defun region-contains-f (rg fx fy)
+  "True when the FLOAT point (FX FY) lies inside rounded region RG (rect minus the four
+elliptical corner cut-outs, CSS Backgrounds 3 §5.5)."
+  (let ((x0 (svref rg 0)) (y0 (svref rg 1)) (x1 (svref rg 2)) (y1 (svref rg 3)))
+    (and (>= fx x0) (< fx x1) (>= fy y0) (< fy y1)
+         (not (corner-cuts-p (- (+ x0 (svref rg 4)) fx) (- (+ y0 (svref rg 5)) fy)   ; TL
+                             (svref rg 4) (svref rg 5)))
+         (not (corner-cuts-p (- fx (- x1 (svref rg 6))) (- (+ y0 (svref rg 7)) fy)    ; TR
+                             (svref rg 6) (svref rg 7)))
+         (not (corner-cuts-p (- fx (- x1 (svref rg 8))) (- fy (- y1 (svref rg 9)))    ; BR
+                             (svref rg 8) (svref rg 9)))
+         (not (corner-cuts-p (- (+ x0 (svref rg 10)) fx) (- fy (- y1 (svref rg 11))) ; BL
+                             (svref rg 10) (svref rg 11))))))
+
+(defun rclip-ok (x y)
+  "True when no rounded clip is active, or pixel (X Y)'s centre is inside every active
+region.  Hard-edged (binary centre test): the test and its reference both render with
+this code, so the rounded shapes match exactly without antialiasing."
+  (or (null *round-clip*)
+      (let ((cx (+ x 0.5)) (cy (+ y 0.5)))
+        (dolist (rg *round-clip* t)
+          (unless (region-contains-f rg cx cy) (return nil))))))
+
 (declaim (inline put))
 (defun put (cv x y r g b)
   (when (and (>= x 0) (>= y 0) (< x (canvas-width cv)) (< y (canvas-height cv))
              (or (null *clip*)
                  (and (>= x (the fixnum (first *clip*))) (>= y (the fixnum (second *clip*)))
-                      (< x (the fixnum (third *clip*))) (< y (the fixnum (fourth *clip*))))))
+                      (< x (the fixnum (third *clip*))) (< y (the fixnum (fourth *clip*)))))
+             (rclip-ok x y))
     (let ((i (* 3 (+ (* y (canvas-width cv)) x))) (px (canvas-pixels cv)))
       (setf (aref px i) r (aref px (+ i 1)) g (aref px (+ i 2)) b))))
 
 (defun blend-put (cv x y r g b a)
   "Composite (R G B) at straight alpha A (0-255) over the existing pixel at (X Y),
-honouring *CLIP* and bounds — like PUT but translucent (A>=255 is an opaque overwrite,
-A=0 paints nothing).  Used by translucent gradients (a hero image's darkening overlay)."
+honouring *CLIP*, *ROUND-CLIP* and bounds — like PUT but translucent (A>=255 is an
+opaque overwrite, A=0 paints nothing).  Used by translucent gradients."
   (when (and (>= x 0) (>= y 0) (< x (canvas-width cv)) (< y (canvas-height cv))
              (or (null *clip*)
                  (and (>= x (the fixnum (first *clip*))) (>= y (the fixnum (second *clip*)))
-                      (< x (the fixnum (third *clip*))) (< y (the fixnum (fourth *clip*))))))
+                      (< x (the fixnum (third *clip*))) (< y (the fixnum (fourth *clip*)))))
+             (rclip-ok x y))
     (let ((i (* 3 (+ (* y (canvas-width cv)) x))) (px (canvas-pixels cv)))
       (if (>= a 255)
           (setf (aref px i) r (aref px (+ i 1)) g (aref px (+ i 2)) b)
@@ -74,6 +114,11 @@ A=0 paints nothing).  Used by translucent gradients (a hero image's darkening ov
             x1 (min x1 (the fixnum (third *clip*)))
             y1 (min y1 (the fixnum (fourth *clip*)))))
     (when (and (< x0 x1) (< y0 y1))
+      (if *round-clip*
+          ;; rounded clip active: route through PUT so the four elliptical corner
+          ;; cut-outs are honoured per pixel (slow path, only for border-radius boxes).
+          (loop for yy fixnum from y0 below y1 do
+            (loop for xx fixnum from x0 below x1 do (put cv xx yy r g b)))
       (let ((px (canvas-pixels cv)))
         (declare (type (simple-array (unsigned-byte 8) (*)) px)
                  (type fixnum x0 y0 x1 y1 cw r g b)
@@ -83,7 +128,7 @@ A=0 paints nothing).  Used by translucent gradients (a hero image's darkening ov
             (declare (type fixnum i))
             (loop for xx fixnum from x0 below x1 do
               (setf (aref px i) r (aref px (the fixnum (+ i 1)) ) g (aref px (the fixnum (+ i 2))) b)
-              (incf i 3))))))))
+              (incf i 3)))))))))
 
 (defun fill-poly (cv points color)
   "Scanline-fill the polygon POINTS (a list of (x . y) float conses) with COLOR

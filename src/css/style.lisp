@@ -20,6 +20,14 @@
   (border-top-color nil) (border-right-color nil) (border-bottom-color nil) (border-left-color nil)
   (border-top-style nil) (border-right-style nil) (border-bottom-style nil) (border-left-style nil)
   (border-color '(0 0 0 1.0)) (text-align "left") (white-space "normal")
+  ;; CSS Backgrounds 3 §5.5 border-radius: each corner a (H . V) pair of the
+  ;; horizontal and vertical radius, each a px float or a (:percent N) form kept
+  ;; symbolic so paint can resolve % against the box width (H) / height (V).
+  ;; NIL corner = no rounding (0).  Not inherited.
+  (border-tl-radius nil) (border-tr-radius nil) (border-br-radius nil) (border-bl-radius nil)
+  ;; border-collapse (inherited): separate | collapse.  A collapsed table (and its
+  ;; internal table elements) ignore border-radius (CSS Backgrounds 3 §5.5).
+  (border-collapse "separate")
   ;; CSS-UI outline: a ring painted just outside the border edge; does NOT
   ;; affect layout.  OUTLINE-COLOR NIL = currentColor.  OUTLINE-STYLE NIL/"none"
   ;; = no outline.  OUTLINE-OFFSET px (may be negative) is the gap between the
@@ -130,6 +138,7 @@
             (cstyle-direction cs) (cstyle-direction parent-cs)
             (cstyle-quotes cs) (cstyle-quotes parent-cs)
             (cstyle-caption-side cs) (cstyle-caption-side parent-cs)
+            (cstyle-border-collapse cs) (cstyle-border-collapse parent-cs)
             (cstyle-list-style cs) (cstyle-list-style parent-cs)
             (cstyle-accent-color cs) (cstyle-accent-color parent-cs)))
     (cond ((member tag *none-tags* :test #'string=) (setf (cstyle-display cs) "none"))
@@ -1007,6 +1016,54 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
       ((string= prop "inset-block-end")      (values "bottom" :single))
       (t nil))))
 
+;;;; ---- border-radius (CSS Backgrounds 3 §5.5) ------------------------------
+(defun parse-radius-comp (str fs)
+  "One border-radius length component -> px float (>=0) | (:percent N>=0) | NIL
+\(unparseable/negative -> NIL, which invalidates the whole declaration)."
+  (let ((tt (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) str))))
+    (cond ((zerop (length tt)) nil)
+          ((char= (char tt (1- (length tt))) #\%)
+           (let ((n (ignore-errors
+                      (let ((*read-eval* nil)) (read-from-string (subseq tt 0 (1- (length tt))) nil nil)))))
+             (and (realp n) (>= n 0) (list :percent (float n 1.0)))))
+          (t (let ((v (resolve-len tt fs)))
+               (and (numberp v) (>= v 0) (float v 1.0)))))))
+
+(defun %radius-pick (lst i)
+  "The i-th (0=TL 1=TR 2=BR 3=BL) component of a 1-4 element radius LST, per the
+CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
+  (case (length lst)
+    (1 (first lst))
+    (2 (if (member i '(0 2)) (first lst) (second lst)))
+    (3 (case i (0 (first lst)) ((1 3) (second lst)) (2 (third lst))))
+    (4 (nth i lst))))
+
+(defun apply-border-radius (cs value fs)
+  "Apply the `border-radius` shorthand: 1-4 horizontal radii, optionally `/` then
+1-4 vertical radii (default = horizontal).  Sets the four corner (H . V) pairs."
+  (let* ((slash (position #\/ value))
+         (hstr (if slash (subseq value 0 slash) value))
+         (vstr (and slash (subseq value (1+ slash))))
+         (h (mapcar (lambda (s) (parse-radius-comp s fs)) (split-tokens (string-trim '(#\Space) hstr))))
+         (v (and vstr (mapcar (lambda (s) (parse-radius-comp s fs)) (split-tokens (string-trim '(#\Space) vstr))))))
+    (when (and h (<= 1 (length h) 4) (notany #'null h)
+               (or (null vstr) (and v (<= 1 (length v) 4) (notany #'null v))))
+      (let ((hv (or v h)))
+        (setf (cstyle-border-tl-radius cs) (cons (%radius-pick h 0) (%radius-pick hv 0))
+              (cstyle-border-tr-radius cs) (cons (%radius-pick h 1) (%radius-pick hv 1))
+              (cstyle-border-br-radius cs) (cons (%radius-pick h 2) (%radius-pick hv 2))
+              (cstyle-border-bl-radius cs) (cons (%radius-pick h 3) (%radius-pick hv 3)))))))
+
+(defun radius-inherit-p (value)
+  (string-equal (string-trim '(#\Space #\Tab #\Newline #\Return) value) "inherit"))
+
+(defun apply-corner-radius (cs setter value fs)
+  "Apply a per-corner longhand (border-*-*-radius): 1 or 2 components (H [V])."
+  (let* ((toks (split-tokens (string-trim '(#\Space) value)))
+         (h (parse-radius-comp (or (first toks) "") fs))
+         (v (if (second toks) (parse-radius-comp (second toks) fs) h)))
+    (when (and h v) (funcall setter (cons h v) cs))))
+
 (defun apply-decl (cs prop value parent-cs)
   "Apply one declaration to CSTYLE CS (best-effort)."
   ;; The element's font-family (inherited at init, or already set by an earlier `font`
@@ -1472,6 +1529,28 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
         ((string= prop "padding-right") (setf (cstyle-padding-right cs) (pad-len value fs)))
         ((string= prop "padding-bottom") (setf (cstyle-padding-bottom cs) (pad-len value fs)))
         ((string= prop "padding-left") (setf (cstyle-padding-left cs) (pad-len value fs)))
+        ((string= prop "border-collapse")
+         (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
+           (when (member v '("separate" "collapse") :test #'string=) (setf (cstyle-border-collapse cs) v))))
+        ((string= prop "border-radius")
+         (if (and parent-cs (radius-inherit-p value))
+             (setf (cstyle-border-tl-radius cs) (cstyle-border-tl-radius parent-cs)
+                   (cstyle-border-tr-radius cs) (cstyle-border-tr-radius parent-cs)
+                   (cstyle-border-br-radius cs) (cstyle-border-br-radius parent-cs)
+                   (cstyle-border-bl-radius cs) (cstyle-border-bl-radius parent-cs))
+             (apply-border-radius cs value fs)))
+        ((string= prop "border-top-left-radius")
+         (if (and parent-cs (radius-inherit-p value)) (setf (cstyle-border-tl-radius cs) (cstyle-border-tl-radius parent-cs))
+             (apply-corner-radius cs #'(setf cstyle-border-tl-radius) value fs)))
+        ((string= prop "border-top-right-radius")
+         (if (and parent-cs (radius-inherit-p value)) (setf (cstyle-border-tr-radius cs) (cstyle-border-tr-radius parent-cs))
+             (apply-corner-radius cs #'(setf cstyle-border-tr-radius) value fs)))
+        ((string= prop "border-bottom-right-radius")
+         (if (and parent-cs (radius-inherit-p value)) (setf (cstyle-border-br-radius cs) (cstyle-border-br-radius parent-cs))
+             (apply-corner-radius cs #'(setf cstyle-border-br-radius) value fs)))
+        ((string= prop "border-bottom-left-radius")
+         (if (and parent-cs (radius-inherit-p value)) (setf (cstyle-border-bl-radius cs) (cstyle-border-bl-radius parent-cs))
+             (apply-corner-radius cs #'(setf cstyle-border-bl-radius) value fs)))
         ((string= prop "border-color")
          (apply-color-box value cs #'(setf cstyle-border-top-color) #'(setf cstyle-border-right-color)
                           #'(setf cstyle-border-bottom-color) #'(setf cstyle-border-left-color)))

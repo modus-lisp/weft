@@ -26,6 +26,80 @@
             (js:native-function realm "toString" (lambda (this a) (declare (ignore a)) (js:js-get this "href")) 0))
     loc))
 
+;;; High Resolution Time (W3C) + Performance Timeline (W3C).  performance.now()
+;;; is a monotonic clock in fractional milliseconds relative to this context's
+;;; navigation start (the CONTEXT-START-REAL-TIME captured at make-context);
+;;; timeOrigin is that same instant expressed as Unix-epoch ms.  The timeline
+;;; (mark/measure/getEntries*), the legacy PerformanceTiming/PerformanceNavigation
+;;; objects, and the PerformanceObserver stub are layered in JS on those two
+;;; native primitives.
+(defun install-performance (ctx)
+  (let ((realm (context-realm ctx)))
+    (js:define-global realm "__weft_perf_now"
+      (js:native-function realm "now"
+        (lambda (this args) (declare (ignore this args))
+          (num (* 1000d0 (/ (float (- (get-internal-real-time)
+                                       (context-start-real-time ctx)) 1d0)
+                            internal-time-units-per-second))))
+        0))
+    ;; timeOrigin: navigation start as Unix-epoch ms (2208988800 = universal->Unix).
+    (js:define-global realm "__weft_perf_time_origin"
+      (num (* 1000d0 (- (get-universal-time) 2208988800))))
+    (js:eval-script realm "(function(G){
+  var now=G.__weft_perf_now, t0=G.__weft_perf_time_origin;
+  try{delete G.__weft_perf_now;delete G.__weft_perf_time_origin;}catch(e){}
+  function Entry(name,type,start,dur){this.name=String(name);this.entryType=type;this.startTime=start;this.duration=dur;}
+  Entry.prototype.toJSON=function(){return {name:this.name,entryType:this.entryType,startTime:this.startTime,duration:this.duration};};
+  var entries=[];
+  function markStart(name){for(var i=entries.length-1;i>=0;i--)if(entries[i].name===name&&entries[i].entryType==='mark')return entries[i].startTime;return null;}
+  function resolve(v){if(v==null)return null;if(typeof v==='number')return v;var m=markStart(String(v));return m==null?0:m;}
+  var perf={};
+  perf.now=function(){return now();};
+  perf.timeOrigin=t0;
+  perf.mark=function(name,opt){var s=(opt&&opt.startTime!=null)?opt.startTime:now();var e=new Entry(name,'mark',s,0);entries.push(e);return e;};
+  perf.measure=function(name,start,end){
+    var sv,ev;
+    if(start&&typeof start==='object'){
+      var so=resolve(start.start),eo=resolve(start.end),du=start.duration;
+      if(so!=null){sv=so;ev=(eo!=null)?eo:(du!=null?so+du:now());}
+      else if(eo!=null){ev=eo;sv=(du!=null)?eo-du:0;}
+      else{sv=0;ev=now();}
+    } else {
+      sv=resolve(start);ev=resolve(end);
+      if(sv==null)sv=0;if(ev==null)ev=now();
+    }
+    var e=new Entry(name,'measure',sv,ev-sv);entries.push(e);return e;};
+  perf.getEntries=function(){return entries.slice();};
+  perf.getEntriesByType=function(t){t=String(t);return entries.filter(function(e){return e.entryType===t;});};
+  perf.getEntriesByName=function(n,t){n=String(n);return entries.filter(function(e){return e.name===n&&(t===undefined||e.entryType===String(t));});};
+  perf.clearMarks=function(n){entries=entries.filter(function(e){return e.entryType!=='mark'||(n!==undefined&&e.name!==String(n));});};
+  perf.clearMeasures=function(n){entries=entries.filter(function(e){return e.entryType!=='measure'||(n!==undefined&&e.name!==String(n));});};
+  perf.clearResourceTimings=function(){};
+  perf.setResourceTimingBufferSize=function(){};
+  perf.addEventListener=function(){};perf.removeEventListener=function(){};perf.dispatchEvent=function(){return false;};
+  var nav0=Math.floor(t0);
+  perf.timing={navigationStart:nav0,unloadEventStart:0,unloadEventEnd:0,redirectStart:0,redirectEnd:0,
+    fetchStart:nav0,domainLookupStart:nav0,domainLookupEnd:nav0,connectStart:nav0,connectEnd:nav0,
+    secureConnectionStart:0,requestStart:nav0,responseStart:nav0,responseEnd:nav0,
+    domLoading:nav0,domInteractive:nav0,domContentLoadedEventStart:nav0,domContentLoadedEventEnd:nav0,
+    domComplete:nav0,loadEventStart:nav0,loadEventEnd:nav0,
+    toJSON:function(){var o={};for(var k in this)if(typeof this[k]!=='function')o[k]=this[k];return o;}};
+  perf.navigation={type:0,redirectCount:0,TYPE_NAVIGATE:0,TYPE_RELOAD:1,TYPE_BACK_FORWARD:2,TYPE_RESERVED:255,
+    toJSON:function(){return {type:this.type,redirectCount:this.redirectCount};}};
+  perf.toJSON=function(){return {timeOrigin:t0,timing:this.timing.toJSON(),navigation:this.navigation.toJSON()};};
+  perf.eventCounts={size:0,get:function(){return 0;}};
+  perf.memory={jsHeapSizeLimit:0,totalJSHeapSize:0,usedJSHeapSize:0};
+  G.performance=perf;
+  function PerformanceObserver(cb){this._cb=cb;}
+  PerformanceObserver.prototype.observe=function(){};
+  PerformanceObserver.prototype.disconnect=function(){};
+  PerformanceObserver.prototype.takeRecords=function(){return [];};
+  PerformanceObserver.supportedEntryTypes=['mark','measure','navigation','resource','paint','longtask'];
+  G.PerformanceObserver=PerformanceObserver;
+  function PerformanceObserverEntryList(){}
+  G.PerformanceObserverEntryList=PerformanceObserverEntryList;
+})(globalThis);")))
+
 (defun install-globals (ctx)
   (let* ((realm (context-realm ctx))
          (window (proto ctx :window))
@@ -436,6 +510,7 @@
     (install-range ctx)
     (install-timers ctx)
     (install-globals ctx)
+    (install-performance ctx)
     (install-window-events ctx)
     (install-mutation-observer ctx)
     ;; Also set the GLOBAL value of *ctx* (not just the per-entry dynamic binding):

@@ -30,6 +30,9 @@
   (timers nil)              ; pending macrotasks: list of TIMER structs
   (timer-seq 0)             ; monotonic timer id source
   (now 0)                   ; virtual clock (ms) for the timer queue
+  (start-real-time (get-internal-real-time)) ; navigation-start (High Resolution Time origin)
+  (perf-marks (make-hash-table :test 'equal)) ; performance.mark name -> most-recent start time (ms)
+  (perf-entries nil)        ; performance timeline entries, oldest first (mark/measure host objects)
   (iframe-docs (make-hash-table :test 'eq)) ; iframe/object dnode -> its content document
   (frame-fragments (make-hash-table :test 'eq)) ; content document -> its URL fragment (sans '#'), for :target
   (canvas-ctxs (make-hash-table :test 'eq)) ; <canvas> dnode -> its CanvasRenderingContext2D host object

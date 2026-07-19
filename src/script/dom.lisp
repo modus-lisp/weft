@@ -2249,6 +2249,13 @@ the context node when it is an element, else NIL (a document/fragment root makes
     (defget ctx dp "defaultView" (this) (proto ctx :window))
     (defget ctx dp "styleSheets" (this) (make-stylesheet-list ctx (n this)))
     (defget ctx dp "readyState" (this) "complete")
+    ;; document.currentScript (HTML §"Interface Document"): the classic <script>
+    ;; whose body is currently running (NULL otherwise — module scripts, callbacks,
+    ;; and outside script execution).  Bundlers (webpack/turbopack) derive their
+    ;; dynamic-chunk base URL from currentScript.src, so exposing the element weft
+    ;; already tracks lets that runtime read its own src instead of throwing.
+    (defget ctx dp "currentScript" (this) (declare (ignore this))
+            (wrap ctx (context-current-script ctx)))
     ;; A document created by createHTMLDocument/createDocument has no browsing
     ;; context: its URL is "about:blank".  A DOMParser document and the primary
     ;; document both carry the page URL (DOM §Document url).

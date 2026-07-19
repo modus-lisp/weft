@@ -73,11 +73,11 @@
   :components ((:module "src" :components ((:file "fetch")))))
 
 (defsystem "weft/render"
-  :depends-on ("weft" "chipz" "scribe" "gesso" "stencil" "webp-pure")
+  :depends-on ("weft" "pigment" "chipz" "scribe" "gesso" "stencil" "webp-pure")
   :components ((:module "src" :components
                 ((:module "render" :serial t
                   :components ((:file "packages") (:file "font") (:file "font-bold")
-                               (:file "canvas") (:file "image") (:file "jpeg") (:file "vector")
+                               (:file "canvas") (:file "image") (:file "vector")
                                (:file "text") (:file "hyphen-en") (:file "hyphenate")
                                (:file "case-map")
                                (:file "first-letter-punct")

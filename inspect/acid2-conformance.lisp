@@ -4,7 +4,7 @@
 ;;;; 100% pixel-match vs a real browser. This makes that a permanent test: it
 ;;;; asserts the render stays within bounds of the vendored browser ground truth
 ;;;; (acid2-reference.png + acid2-browser-layout.json), with NO external tools —
-;;;; weft decodes the reference with its own png-decode and parses the JSON here.
+;;;; the reference is decoded with pigment's png-decode and the JSON parsed here.
 ;;;;   (1) PIXEL  — colour-class agreement of the rendered face vs the reference
 ;;;;                smiley (auto-aligned over a bounded window); mismatched face
 ;;;;                pixels must stay <= *MAX-MISMATCH-PX*.
@@ -89,7 +89,7 @@
 (defun pixel-mismatch (cv)
   "Best (min) count of non-white reference pixels whose colour class disagrees
 with the rendered canvas, aligning over a bounded window around the face."
-  (let* ((ref (r::png-decode (slurp-bytes (rel "inspect/vectors/acid/acid2-reference.png"))))
+  (let* ((ref (pigment:png-decode (slurp-bytes (rel "inspect/vectors/acid/acid2-reference.png"))))
          (rw (r::img-w ref)) (rh (r::img-h ref)) (rgba (r::img-rgba ref))
          (cw (r:canvas-width cv)) (chh (r:canvas-height cv)) (px (r:canvas-pixels cv))
          (rn 0) (rxs (make-array (* rw rh))) (rys (make-array (* rw rh))) (rcs (make-array (* rw rh)))

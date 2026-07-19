@@ -144,6 +144,202 @@ than overwriting them with opaque black.  A stop with no alpha is opaque (unchan
                      (lerp (third from) (third to) tt)
                      (round (* 255 (max 0.0 (min 1.0 a))))))))))
 
+;;;; ---- CSS gradients (CSS Images 3 §3) --------------------------------------
+;;;; Rasterises a structured gradient (parsed in css/style.lisp) into a box/tile by
+;;;; sampling every pixel: linear projects onto the gradient line (§3.1), radial
+;;;; scales the distance from the center by the ending shape (§3.2), conic sweeps
+;;;; the angle around the center (§3.3).  Color stops interpolate in premultiplied
+;;;; sRGB (§3.5 / css-color-4 §12.3) so a fade to `transparent` has no dark fringe.
+
+(declaim (inline clampb))
+(defun clampb (x) (max 0 (min 255 (round x))))
+
+(defun grad-premul-lerp (ca cb tt)
+  "Interpolate straight-alpha colors CA, CB (each (r g b a-float)) at TT in
+premultiplied sRGB.  Returns (values r g b a-float)."
+  (let* ((aa (fourth ca)) (ab (fourth cb))
+         (pa (+ aa (* (- ab aa) tt)))
+         (pr (+ (* (first ca) aa)  (* (- (* (first cb) ab)  (* (first ca) aa))  tt)))
+         (pg (+ (* (second ca) aa) (* (- (* (second cb) ab) (* (second ca) aa)) tt)))
+         (pb (+ (* (third ca) aa)  (* (- (* (third cb) ab)  (* (third ca) aa))  tt))))
+    (if (> pa 1e-4)
+        (values (clampb (/ pr pa)) (clampb (/ pg pa)) (clampb (/ pb pa)) pa)
+        (values 0 0 0 0.0))))
+
+(defun resolve-grad-stops (stops domain pxscale curcolor)
+  "Normalise raw STOPS (CSS Images 3 §3.5) over a numeric DOMAIN (px for linear,
+1.0 for radial, 360 for conic).  Returns (values POS COL HINT N): POS a float
+vector of stop offsets, COL a vector of (r g b a-float), HINT[i] the transition-hint
+offset in gap i (or NIL), N the color-stop count.  PXSCALE maps a px stop position
+into the domain (1/radius for radial)."
+  (let ((cols '()) (poss '()) (hints (make-hash-table)) (idx -1))
+    ;; split color stops from transition hints, attaching each hint to its gap
+    (dolist (st stops)
+      (ecase (first st)
+        (:c (incf idx)
+            (push (let ((c (second st)))
+                    (if (eq c :currentcolor)
+                        (list (first curcolor) (second curcolor) (third curcolor) 1.0)
+                        (list (float (first c) 1.0) (float (second c) 1.0)
+                              (float (third c) 1.0) (float (or (fourth c) 1.0) 1.0))))
+                  cols)
+            (push (third st) poss))
+        (:h (when (>= idx 0) (setf (gethash idx hints) (second st))))))
+    (let* ((n (length cols))
+           (col (coerce (nreverse cols) 'vector))
+           (raw (coerce (nreverse poss) 'vector))
+           (pos (make-array n :initial-element nil))
+           (hint (make-array (max 0 (1- n)) :initial-element nil)))
+      (flet ((tonum (p) (and p (ecase (first p)
+                                 (:pct (* (second p) domain))
+                                 (:px  (* (second p) domain pxscale))
+                                 (:deg (second p))))))
+        (dotimes (i n) (setf (aref pos i) (tonum (aref raw i))))
+        (when (> n 0)
+          ;; endpoints default to 0 / DOMAIN
+          (when (null (aref pos 0)) (setf (aref pos 0) 0.0))
+          (when (null (aref pos (1- n))) (setf (aref pos (1- n)) (float domain 1.0)))
+          ;; monotonic: no specified position is less than one before it
+          (let ((run 0.0) (started nil))
+            (dotimes (i n)
+              (when (aref pos i)
+                (if started (setf (aref pos i) (max (aref pos i) run)) (setf started t))
+                (setf run (aref pos i)))))
+          ;; evenly distribute unspecified positions between defined neighbors
+          (let ((i 0))
+            (loop while (< i n) do
+              (if (aref pos i) (incf i)
+                  (let ((j i))
+                    (loop while (and (< j n) (null (aref pos j))) do (incf j))
+                    (let ((lo (aref pos (1- i))) (hi (aref pos j)) (cnt (- j i)))
+                      (dotimes (m cnt)
+                        (setf (aref pos (+ i m)) (+ lo (* (- hi lo) (/ (+ m 1.0) (+ cnt 1.0))))))
+                      (setf i j))))))
+          ;; resolve hint positions (default midpoint; clamp within the gap)
+          (dotimes (g (max 0 (1- n)))
+            (let ((hp (tonum (gethash g hints))))
+              (when (gethash g hints)
+                (setf (aref hint g) (max (aref pos g) (min (aref pos (1+ g)) (or hp (aref pos g)))))))))
+        (values pos col hint n)))))
+
+(defun grad-sample (off pos col hint n repeating)
+  "Sample the resolved stops at domain offset OFF -> (values r g b a-float)."
+  (if (<= n 1)
+      (let ((c (aref col 0))) (values (clampb (first c)) (clampb (second c)) (clampb (third c)) (fourth c)))
+      (let ((p0 (aref pos 0)) (pl (aref pos (1- n))))
+        (when repeating
+          (let ((period (- pl p0)))
+            (if (<= period 1e-6)
+                (setf off p0)
+                (setf off (+ p0 (mod (- off p0) period))))))
+        (cond
+          ((<= off p0) (let ((c (aref col 0))) (values (clampb (first c)) (clampb (second c)) (clampb (third c)) (fourth c))))
+          ((>= off pl) (let ((c (aref col (1- n)))) (values (clampb (first c)) (clampb (second c)) (clampb (third c)) (fourth c))))
+          (t (let ((i 0))
+               (loop while (and (< i (- n 1)) (> off (aref pos (1+ i)))) do (incf i))
+               (let ((lo (aref pos i)) (hi (aref pos (1+ i))))
+                 (if (<= (- hi lo) 1e-6)
+                     (let ((c (aref col (1+ i)))) (values (clampb (first c)) (clampb (second c)) (clampb (third c)) (fourth c)))
+                     (let ((tt (/ (- off lo) (- hi lo)))
+                           (hp (aref hint i)))
+                       (when (and hp (> (- hi lo) 1e-6))
+                         (let ((hf (max 1e-4 (min 0.9999 (/ (- hp lo) (- hi lo))))))
+                           (unless (< (abs (- hf 0.5)) 1e-4)
+                             (setf tt (expt tt (/ (log 0.5) (log hf)))))))
+                       (grad-premul-lerp (aref col i) (aref col (1+ i)) tt))))))))))
+
+(defun grad-line-angle (dir w h)
+  "Linear-gradient line angle in degrees (0=up, 90=right, clockwise) — resolving a
+`to corner` against the box aspect (CSS Images 3 §3.1)."
+  (ecase (first dir)
+    (:angle (float (second dir) 1.0))
+    (:corner (let* ((hh (second dir)) (v (third dir))
+                    (a (* (/ 180.0 (float pi 1.0)) (atan (max 1e-6 (float w 1.0)) (max 1e-6 (float h 1.0))))))
+               (cond ((and (eq v :top) (eq hh :right)) a)
+                     ((and (eq v :bottom) (eq hh :right)) (- 180.0 a))
+                     ((and (eq v :bottom) (eq hh :left)) (+ 180.0 a))
+                     (t (- 360.0 a)))))))
+
+(defun grad-pos-px (spec len)
+  (ecase (first spec) (:pct (* (second spec) len)) (:px (second spec))))
+
+(defun radial-radii (shape size cx cy w h)
+  "Ending-shape radii (rx ry) for a radial gradient (CSS Images 3 §3.3)."
+  (let ((dl cx) (dr (- w cx)) (dt cy) (db (- h cy)) (rt2 (sqrt 2.0)))
+    (flet ((mx (x) (max 0.001 x)))
+      (ecase (first size)
+        (:len (values (mx (float (second size) 1.0))
+                      (mx (float (if (eq shape :circle) (second size) (third size)) 1.0))))
+        (:extent
+         (let ((kw (second size)))
+           (if (eq shape :circle)
+               (let ((r (ecase kw
+                          (:closest-side (min dl dr dt db))
+                          (:farthest-side (max dl dr dt db))
+                          (:closest-corner (sqrt (+ (expt (min dl dr) 2) (expt (min dt db) 2))))
+                          (:farthest-corner (sqrt (+ (expt (max dl dr) 2) (expt (max dt db) 2)))))))
+                 (values (mx r) (mx r)))
+               (ecase kw
+                 (:closest-side (values (mx (min dl dr)) (mx (min dt db))))
+                 (:farthest-side (values (mx (max dl dr)) (mx (max dt db))))
+                 (:closest-corner (values (* (mx (min dl dr)) rt2) (* (mx (min dt db)) rt2)))
+                 (:farthest-corner (values (* (mx (max dl dr)) rt2) (* (mx (max dt db)) rt2)))))))))))
+
+(defun fill-css-gradient (cv gx gy gw gh grad &optional curcolor)
+  "Rasterise a structured GRAD (see css/style.lisp) into the rect (GX GY GW GH),
+compositing over the pixels beneath it (honouring *CLIP*).  CURCOLOR (r g b) resolves
+`currentcolor` stops."
+  (let ((gx (float gx 1.0)) (gy (float gy 1.0)) (gw (float gw 1.0)) (gh (float gh 1.0))
+        (cc (or curcolor '(0 0 0))))
+    (when (and (> gw 0) (> gh 0))
+      (let ((x0 (max 0 (round gx))) (y0 (max 0 (round gy)))
+            (x1 (min (canvas-width cv) (round (+ gx gw))))
+            (y1 (min (canvas-height cv) (round (+ gy gh)))))
+        (when *clip*
+          (setf x0 (max x0 (the fixnum (first *clip*))) y0 (max y0 (the fixnum (second *clip*)))
+                x1 (min x1 (the fixnum (third *clip*))) y1 (min y1 (the fixnum (fourth *clip*)))))
+        (when (and (< x0 x1) (< y0 y1))
+          (ecase (first grad)
+            (:linear
+             (destructuring-bind (dir stops repeating) (rest grad)
+               (let* ((theta (* (grad-line-angle dir gw gh) (/ (float pi 1.0) 180.0)))
+                      (sinf (sin theta)) (cosf (cos theta))
+                      (dirx sinf) (diry (- cosf))
+                      (l (+ (abs (* gw sinf)) (abs (* gh cosf))))
+                      (cx (/ gw 2.0)) (cy (/ gh 2.0)))
+                 (multiple-value-bind (pos col hint n) (resolve-grad-stops stops (max 1e-4 l) 1.0 cc)
+                   (loop for yy from y0 below y1 do
+                     (loop for xx from x0 below x1 do
+                       (let* ((fx (+ (- (+ xx 0.5) gx) (- cx)))
+                              (fy (+ (- (+ yy 0.5) gy) (- cy)))
+                              (off (+ (* fx dirx) (* fy diry) (/ l 2.0))))
+                         (multiple-value-bind (r g b a) (grad-sample off pos col hint n repeating)
+                           (blend-put cv xx yy r g b (clampb (* 255 a)))))))))))
+            (:radial
+             (destructuring-bind (shape size posspec stops repeating) (rest grad)
+               (let ((cx (grad-pos-px (first posspec) gw)) (cy (grad-pos-px (second posspec) gh)))
+                 (multiple-value-bind (rx ry) (radial-radii shape size cx cy gw gh)
+                   (multiple-value-bind (pos col hint n) (resolve-grad-stops stops 1.0 (/ 1.0 rx) cc)
+                     (loop for yy from y0 below y1 do
+                       (loop for xx from x0 below x1 do
+                         (let* ((ex (/ (- (+ xx 0.5) gx cx) rx))
+                                (ey (/ (- (+ yy 0.5) gy cy) ry))
+                                (off (sqrt (+ (* ex ex) (* ey ey)))))
+                           (multiple-value-bind (r g b a) (grad-sample off pos col hint n repeating)
+                             (blend-put cv xx yy r g b (clampb (* 255 a))))))))))))
+            (:conic
+             (destructuring-bind (from posspec stops repeating) (rest grad)
+               (let ((cx (grad-pos-px (first posspec) gw)) (cy (grad-pos-px (second posspec) gh))
+                     (r2d (/ 180.0 (float pi 1.0))))
+                 (multiple-value-bind (pos col hint n) (resolve-grad-stops stops 360.0 1.0 cc)
+                   (loop for yy from y0 below y1 do
+                     (loop for xx from x0 below x1 do
+                       (let* ((dx (- (+ xx 0.5) gx cx)) (dy (- (+ yy 0.5) gy cy))
+                              (ang (* r2d (atan dx (- dy))))
+                              (off (mod (- ang from) 360.0)))
+                         (multiple-value-bind (r g b a) (grad-sample off pos col hint n repeating)
+                           (blend-put cv xx yy r g b (clampb (* 255 a)))))))))))))))))
+
 (defun draw-char (cv ch x y color &optional bold)
   "Draw one ASCII char at (x,y) top-left.  Returns the advance width."
   (let ((code (char-code ch)))

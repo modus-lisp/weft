@@ -444,8 +444,11 @@ so the declaration is dropped and the prior cascaded value is kept."
         (t (resolve-len tok fs))))
 
 (defun parse-bg-size (value fs)
-  "Parse background-size -> :contain | :cover | (w-spec h-spec) | NIL (auto)."
-  (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline) value))))
+  "Parse background-size -> :contain | :cover | (w-spec h-spec) | NIL (auto).  weft
+paints one background layer, so a comma-separated multi-layer value uses its first
+layer (CSS Backgrounds 3 §3.9)."
+  (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline)
+                                         (or (first (split-top-commas value)) value)))))
     (cond ((string= v "contain") :contain)
           ((string= v "cover") :cover)
           ((or (string= v "auto") (string= v "")) nil)
@@ -493,24 +496,225 @@ against AVAIL-H if definite, else computes to none (NIL = no ceiling)."
 (defun resolve-color (text)
   (let ((v (parse-value "color" text))) (if (and (listp v) (>= (length v) 3)) v nil)))
 
-(defun parse-linear-gradient (value)
-  "Parse a simple 2-stop linear-gradient(...) -> (dir from-rgba to-rgba), or NIL."
-  (let* ((s (string-downcase (string-trim '(#\Space) value)))
-         (p (search "linear-gradient(" s)))
-    (when p
-      (let* ((open (+ p (length "linear-gradient(")))
-             (close (position #\) s :from-end t))
-             (inner (and close (> close open) (subseq s open close))))
-        (when inner
-          (let* ((parts (mapcar (lambda (x) (string-trim '(#\Space) x)) (comma-split-top inner)))
-                 (dir :vertical) (colors parts))
-            (when (and parts (or (search "deg" (first parts)) (search "to " (first parts))))
-              (let ((d (first parts)))
-                (setf dir (cond ((or (search "to right" d) (search "to left" d) (search "90deg" d) (search "270deg" d)) :horizontal)
-                                (t :vertical))))
-              (setf colors (rest parts)))
-            (let ((cs (remove nil (mapcar #'resolve-color colors))))
-              (when (>= (length cs) 2) (list dir (first cs) (car (last cs)))))))))))
+;;;; ---- CSS gradients (CSS Images 3 §3) --------------------------------------
+;;;; A gradient value parses into a structured, render-package-consumable form:
+;;;;   (:linear DIR STOPS REPEATING)
+;;;;   (:radial SHAPE SIZE POS STOPS REPEATING)
+;;;;   (:conic FROM-DEG POS STOPS REPEATING)
+;;;; DIR   = (:angle deg) | (:corner h v)  h∈{:left :right nil} v∈{:top :bottom nil}
+;;;; SHAPE = :circle | :ellipse
+;;;; SIZE  = (:extent kw) | (:len rx ry)   kw∈{:closest-side :farthest-side :closest-corner :farthest-corner}
+;;;; POS   = (xspec yspec)  each (:pct f) | (:px n)
+;;;; STOPS = list of (:c (r g b a) posspec) | (:h posspec)
+;;;;         posspec = nil | (:pct f) | (:px n) | (:deg d)   (deg only for conic)
+;;;; Positions are resolved to px/fraction/deg by the rasteriser against the box.
+
+(defun matching-paren (s open-idx)
+  "Index of the close paren matching the open paren at OPEN-IDX, or NIL."
+  (let ((depth 0) (n (length s)))
+    (loop for i from open-idx below n do
+      (cond ((char= (char s i) #\() (incf depth))
+            ((char= (char s i) #\)) (decf depth)
+             (when (zerop depth) (return-from matching-paren i)))))
+    nil))
+
+(defun ws-split-top (s)
+  "Split S on whitespace runs not inside parens (keeps rgb(...) tokens whole)."
+  (let ((out '()) (depth 0) (start nil) (n (length s)))
+    (dotimes (i n)
+      (let ((c (char s i)))
+        (cond ((char= c #\() (incf depth) (unless start (setf start i)))
+              ((char= c #\)) (decf depth))
+              ((and (zerop depth) (member c '(#\Space #\Tab #\Newline)))
+               (when start (push (subseq s start i) out) (setf start nil)))
+              (t (unless start (setf start i))))))
+    (when start (push (subseq s start n) out))
+    (nreverse out)))
+
+(defun angle->deg (a)
+  "Convert a parsed angle (num unit) to degrees."
+  (let ((num (float (first a) 1.0)) (unit (second a)))
+    (cond ((string= unit "grad") (* num 0.9))
+          ((string= unit "rad")  (* num (/ 180.0 (float pi 1.0))))
+          ((string= unit "turn") (* num 360.0))
+          (t num))))
+
+(defun angle-tok-p (tok)
+  "True when TOK ends with an angle unit (deg/grad/rad/turn)."
+  (let ((s (string-downcase tok)))
+    (some (lambda (u) (let ((p (search u s :from-end t)))
+                        (and p (= (+ p (length u)) (length s)))))
+          '("deg" "grad" "rad" "turn"))))
+
+(defun gcolor-token-p (tok)
+  "True when TOK is a <color> (or currentcolor) — used to tell a leading gradient
+configuration item (direction/shape/position) apart from a first color stop."
+  (or (resolve-color tok)
+      (string-equal (string-trim '(#\Space) tok) "currentcolor")))
+
+(defun gcolor (tok)
+  "Resolve a stop color token to (r g b a), or :currentcolor, or NIL."
+  (if (string-equal (string-trim '(#\Space) tok) "currentcolor")
+      :currentcolor
+      (resolve-color tok)))
+
+(defun gstop-pos (tok type fs)
+  "Parse a stop position token -> (:pct f) | (:px n) | (:deg d) | NIL."
+  (let ((tk (string-downcase (string-trim '(#\Space #\Tab) tok))))
+    (cond
+      ((zerop (length tk)) nil)
+      ((char= (char tk (1- (length tk))) #\%)
+       (let ((v (ignore-errors (read-from-string (subseq tk 0 (1- (length tk)))))))
+         (when (numberp v)
+           (if (eq type :conic) (list :deg (* (/ (float v 1.0) 100.0) 360.0))
+               (list :pct (/ (float v 1.0) 100.0))))))
+      ((angle-tok-p tk)
+       (let ((a (parse-value "angle" tk)))
+         (when (consp a) (list :deg (angle->deg a)))))
+      (t (let ((px (resolve-len tk fs))) (when (numberp px) (list :px px)))))))
+
+(defun parse-gstops (items type fs)
+  "Parse a color-stop list (ITEMS, comma-split) -> list of (:c color pos)/(:h pos)."
+  (let ((stops '()))
+    (dolist (it items)
+      (let ((toks (ws-split-top (string-trim '(#\Space #\Tab #\Newline) it))))
+        (when toks
+          (let ((c (gcolor (first toks))))
+            (if c
+                (let ((p1 (and (second toks) (gstop-pos (second toks) type fs)))
+                      (p2 (and (third toks) (gstop-pos (third toks) type fs))))
+                  (push (list :c c p1) stops)
+                  (when p2 (push (list :c c p2) stops)))
+                (let ((p (gstop-pos (first toks) type fs)))
+                  (when p (push (list :h p) stops))))))))
+    (nreverse stops)))
+
+(defun strip-color-interp (item)
+  "Drop a trailing `in <colorspace ...>` color-interpolation-method (rendered in
+sRGB regardless) from a gradient configuration ITEM."
+  (let* ((toks (ws-split-top (string-trim '(#\Space) item)))
+         (pos (position "in" toks :test #'string-equal)))
+    (if pos (format nil "~{~a~^ ~}" (subseq toks 0 pos)) item)))
+
+(defun gconfig-p (item)
+  "True when the first comma item is a gradient configuration (direction/shape/
+position/color-interpolation) rather than the first color stop."
+  (let ((toks (ws-split-top (string-trim '(#\Space) item))))
+    (and toks (not (gcolor-token-p (first toks))))))
+
+(defparameter *default-gpos* '((:pct 0.5) (:pct 0.5)))
+
+(defun parse-linear-dir (item)
+  "Parse a linear-gradient direction -> (:angle deg) | (:corner h v)."
+  (let* ((s (string-downcase (string-trim '(#\Space) item)))
+         (toks (ws-split-top s)))
+    (cond
+      ((and toks (string= (first toks) "to"))
+       (let (h v)
+         (dolist (k (rest toks))
+           (cond ((string= k "left") (setf h :left)) ((string= k "right") (setf h :right))
+                 ((string= k "top") (setf v :top)) ((string= k "bottom") (setf v :bottom))))
+         (if (and h v) (list :corner h v)
+             (list :angle (cond ((eq v :top) 0.0) ((eq v :bottom) 180.0)
+                                ((eq h :left) 270.0) ((eq h :right) 90.0) (t 180.0))))))
+      ((and toks (angle-tok-p (first toks)))
+       (let ((a (parse-value "angle" (first toks))))
+         (list :angle (if (consp a) (angle->deg a) 180.0))))
+      (t (list :angle 180.0)))))
+
+(defun pos-comp (tk fs)
+  "One background-position-style component keyword/length -> (:pct f) | (:px n)."
+  (cond ((string= tk "center") (list :pct 0.5))
+        ((string= tk "left")   (list :pct 0.0)) ((string= tk "right")  (list :pct 1.0))
+        ((string= tk "top")    (list :pct 0.0)) ((string= tk "bottom") (list :pct 1.0))
+        (t (or (gstop-pos tk :radial fs) (list :pct 0.5)))))
+
+(defun parse-gpos (toks fs)
+  "Parse a gradient position (the tokens after `at`) -> (xspec yspec)."
+  (cond
+    ((null toks) *default-gpos*)
+    ((= (length toks) 1)
+     (let ((tk (first toks)))
+       (cond ((member tk '("top" "bottom") :test #'string=) (list (list :pct 0.5) (pos-comp tk fs)))
+             (t (list (pos-comp tk fs) (list :pct 0.5))))))
+    (t (let* ((a (first toks)) (b (second toks))
+              (swap (or (member a '("top" "bottom") :test #'string=)
+                        (member b '("left" "right") :test #'string=))))
+         (if swap (list (pos-comp b fs) (pos-comp a fs))
+             (list (pos-comp a fs) (pos-comp b fs)))))))
+
+(defun parse-radial-cfg (item fs)
+  "Parse a radial-gradient configuration -> (shape size pos)."
+  (let* ((toks (ws-split-top (string-downcase (string-trim '(#\Space) item))))
+         (shape nil) (size nil) (pos *default-gpos*) (lens '())
+         (atpos (position "at" toks :test #'string=)))
+    (when atpos
+      (setf pos (parse-gpos (subseq toks (1+ atpos)) fs)
+            toks (subseq toks 0 atpos)))
+    (dolist (tk toks)
+      (cond ((string= tk "circle") (setf shape :circle))
+            ((string= tk "ellipse") (setf shape :ellipse))
+            ((member tk '("closest-side" "closest-corner" "farthest-side" "farthest-corner") :test #'string=)
+             (setf size (list :extent (intern (string-upcase tk) :keyword))))
+            (t (let ((p (gstop-pos tk :radial fs))) (when p (push p lens))))))
+    (setf lens (nreverse lens))
+    (when lens
+      (setf size (list :len (first lens) (or (second lens) (first lens)))))
+    (list (or shape (if (and lens (= (length lens) 1)) :circle :ellipse))
+          (or size (list :extent :farthest-corner))
+          pos)))
+
+(defun parse-conic-cfg (item fs)
+  "Parse a conic-gradient configuration -> (from-deg pos)."
+  (let* ((toks (ws-split-top (string-downcase (string-trim '(#\Space) item))))
+         (from 0.0) (pos *default-gpos*)
+         (atpos (position "at" toks :test #'string=)))
+    (when atpos
+      (setf pos (parse-gpos (subseq toks (1+ atpos)) fs)
+            toks (subseq toks 0 atpos)))
+    (let ((fp (position "from" toks :test #'string=)))
+      (when (and fp (nth (1+ fp) toks))
+        (let ((a (parse-value "angle" (nth (1+ fp) toks))))
+          (when (consp a) (setf from (angle->deg a))))))
+    (list from pos)))
+
+(defun parse-gradient (value fs)
+  "Parse a linear/radial/conic-gradient() (and repeating-) into a structured form
+\(see the header comment above), or NIL."
+  (let* ((s (string-trim '(#\Space #\Tab #\Newline) value))
+         (low (string-downcase s)))
+    (multiple-value-bind (type repeating fname)
+        (cond ((search "repeating-linear-gradient(" low) (values :linear t "repeating-linear-gradient("))
+              ((search "linear-gradient(" low)           (values :linear nil "linear-gradient("))
+              ((search "repeating-radial-gradient(" low) (values :radial t "repeating-radial-gradient("))
+              ((search "radial-gradient(" low)           (values :radial nil "radial-gradient("))
+              ((search "repeating-conic-gradient(" low)  (values :conic t "repeating-conic-gradient("))
+              ((search "conic-gradient(" low)            (values :conic nil "conic-gradient("))
+              (t (values nil nil nil)))
+      (when type
+        (let* ((p (search fname low))
+               (open (+ p (length fname)))
+               (close (matching-paren s (1- open)))
+               (inner (and close (> close open) (subseq s open close))))
+          (when inner
+            (let* ((items (mapcar (lambda (x) (string-trim '(#\Space #\Tab #\Newline) x))
+                                  (comma-split-top inner)))
+                   (first-item (first items))
+                   (is-cfg (and first-item (gconfig-p first-item)))
+                   (cfg (and is-cfg (strip-color-interp first-item)))
+                   (stop-items (if is-cfg (rest items) items))
+                   (stops (parse-gstops stop-items type fs)))
+              (when (>= (length stops) 1)
+                (ecase type
+                  (:linear (list :linear (if cfg (parse-linear-dir cfg) '(:angle 180.0))
+                                 stops repeating))
+                  (:radial (destructuring-bind (shape size pos)
+                               (if cfg (parse-radial-cfg cfg fs)
+                                   (list :ellipse '(:extent :farthest-corner) *default-gpos*))
+                             (list :radial shape size pos stops repeating)))
+                  (:conic (destructuring-bind (from pos)
+                              (if cfg (parse-conic-cfg cfg fs) (list 0.0 *default-gpos*))
+                            (list :conic from pos stops repeating))))))))))))
 
 (defun comma-split-top (s)
   "Split S on commas not inside parens."
@@ -867,7 +1071,7 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
              (when parent-cs (setf (cstyle-color cs) (cstyle-color parent-cs)))   ; a{color:inherit} resets the UA link colour
              (let ((c (resolve-color value))) (when c (setf (cstyle-color cs) c)))))
         ((member prop '("background-color" "background" "background-image") :test #'string=)
-         (let ((grad (parse-linear-gradient value))
+         (let ((grad (parse-gradient value fs))
                (url (extract-css-url value))
                (tok (string-downcase (string-trim '(#\Space) (first-token value)))))
            ;; CSS 2.1 14.2.1 / 4.2: a `background` (or `background-color`)
@@ -920,10 +1124,14 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
         ((string= prop "background-repeat")
          (let ((v (parse-value "background-repeat" value))) (when (stringp v) (setf (cstyle-bg-repeat cs) v))))
         ((string= prop "background-position")
-         (let ((v (parse-value "background-position" value))) (when (and (consp v) (not (eq v :invalid))) (setf (cstyle-bg-position cs) (resolve-bg-pos v fs)))))
+         ;; weft paints one layer: a comma-separated multi-layer value uses its first.
+         (let ((v (parse-value "background-position" (or (first (split-top-commas value)) value))))
+           (when (and (consp v) (not (eq v :invalid))) (setf (cstyle-bg-position cs) (resolve-bg-pos v fs)))))
         ((string= prop "background-size") (setf (cstyle-bg-size cs) (parse-bg-size value fs)))
         ((string= prop "background-attachment")
-         (setf (cstyle-bg-attachment cs) (string-downcase (string-trim '(#\Space) value))))
+         ;; weft paints one layer: use the first layer's attachment keyword.
+         (setf (cstyle-bg-attachment cs)
+               (string-downcase (string-trim '(#\Space) (or (first (split-top-commas value)) value)))))
         ((string= prop "background-origin")
          (let ((v (string-downcase (string-trim '(#\Space) value))))
            (when (member v '("border-box" "padding-box" "content-box") :test #'string=)

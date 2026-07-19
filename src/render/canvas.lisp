@@ -268,8 +268,8 @@ into the domain (1/radius for radial)."
   (let ((dl cx) (dr (- w cx)) (dt cy) (db (- h cy)) (rt2 (sqrt 2.0)))
     (flet ((mx (x) (max 0.001 x)))
       (ecase (first size)
-        (:len (values (mx (float (second size) 1.0))
-                      (mx (float (if (eq shape :circle) (second size) (third size)) 1.0))))
+        (:len (values (mx (grad-pos-px (second size) w))
+                      (mx (grad-pos-px (if (eq shape :circle) (second size) (third size)) h))))
         (:extent
          (let ((kw (second size)))
            (if (eq shape :circle)

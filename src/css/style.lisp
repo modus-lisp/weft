@@ -39,6 +39,10 @@
   ;; for BFC/clip-context detection (non-visible if EITHER axis clips); these carry
   ;; the axis values so paint can clip one axis while letting the other overflow.
   (overflow-x "visible") (overflow-y "visible")
+  ;; css-overflow-3 overflow-clip-margin: (BOX . LEN-px), BOX = :content|:padding|:border
+  ;; (the reference box the clip is taken from), LEN extends it outward.  NIL = default
+  ;; (padding box, 0px).  Applies only to overflow:clip.
+  (overflow-clip-margin nil)
   (vertical-align nil)  ; NIL=baseline | ("top"|"middle"|"bottom"|"sub"|"super") | (num "px"|"em"|"%") — not inherited
   (flex-direction "row") (justify-content "flex-start") (align-items "stretch") (align-content "stretch")
   (flex-wrap "nowrap") (flex-grow 0.0) (flex-shrink 1.0) (flex-basis "auto") (order 0) (gap 0.0)
@@ -1044,6 +1048,14 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
                      (cond ((and (vis x) (vis y)) "visible")
                            ((not (vis y)) y)
                            (t x)))))))
+        ((string= prop "overflow-clip-margin")
+         (let ((box :padding) (len 0.0))
+           (dolist (tok (split-tokens (string-downcase (string-trim '(#\Space) value))))
+             (cond ((string= tok "content-box") (setf box :content))
+                   ((string= tok "padding-box") (setf box :padding))
+                   ((string= tok "border-box") (setf box :border))
+                   (t (let ((px (resolve-len tok fs))) (when (and (numberp px) (>= px 0)) (setf len px))))))
+           (setf (cstyle-overflow-clip-margin cs) (cons box len))))
         ((string= prop "flex-direction") (setf (cstyle-flex-direction cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "flex-wrap") (setf (cstyle-flex-wrap cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "flex-flow")   ; shorthand: <flex-direction> and/or <flex-wrap>

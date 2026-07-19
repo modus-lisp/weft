@@ -408,29 +408,44 @@ children; a Text/Comment/CDATA/PI/DocumentType parent throws HierarchyRequestErr
                (dolist (it items) (h:dom-remove it) (h:dom-append frag it))
                frag)))))
 
+(defun insertion-nodes (ins)
+  "The nodes an insertion of INS actually places into a parent: a fragment is
+   flattened to its children (which INSERT-INTO moves out and empties), any other
+   node is itself.  Captured BEFORE the insertion so a <script> the insert brings
+   in can be found and run afterwards (HTML §4.12.1 script insertion steps)."
+  (cond ((null ins) nil)
+        ((eq (h:dnode-kind ins) :fragment) (coerce (h:dnode-children ins) 'list))
+        (t (list ins))))
+
 (defun install-parent-node-methods (ctx proto)
   "ParentNode mixin (DOM §4.2.6): append / prepend / replaceChildren."
   (macrolet ((n (this) `(require-node ctx ,this)))
     (defmethod* ctx proto "append" 1 (this a)
-      (let* ((parent (n this)) (ins (args->insertion ctx (owner-doc-node ctx parent) a)))
+      (let* ((parent (n this)) (ins (args->insertion ctx (owner-doc-node ctx parent) a))
+             (inserted (insertion-nodes ins)))
         (when ins
           (ensure-pre-insertion-validity ctx ins parent nil)
-          (insert-into parent ins nil) (setf (context-dirty ctx) t)))
+          (insert-into parent ins nil) (setf (context-dirty ctx) t)
+          (dolist (n2 inserted) (run-inserted-scripts ctx n2))))
       js:*undefined*)
     (defmethod* ctx proto "prepend" 1 (this a)
       (let* ((parent (n this)) (ins (args->insertion ctx (owner-doc-node ctx parent) a))
+             (inserted (insertion-nodes ins))
              (ch (h:dnode-children parent)) (ref (and (plusp (length ch)) (aref ch 0))))
         (when ins
           (ensure-pre-insertion-validity ctx ins parent ref)
-          (insert-into parent ins ref) (setf (context-dirty ctx) t)))
+          (insert-into parent ins ref) (setf (context-dirty ctx) t)
+          (dolist (n2 inserted) (run-inserted-scripts ctx n2))))
       js:*undefined*)
     (defmethod* ctx proto "replaceChildren" 1 (this a)
-      (let* ((parent (n this)) (ins (args->insertion ctx (owner-doc-node ctx parent) a)))
+      (let* ((parent (n this)) (ins (args->insertion ctx (owner-doc-node ctx parent) a))
+             (inserted (insertion-nodes ins)))
         ;; Validate before removing existing children (DOM §replaceChildren).
         (when ins (ensure-pre-insertion-validity ctx ins parent nil))
         (loop for c across (copy-seq (h:dnode-children parent)) do (h:dom-remove c))
         (when ins (insert-into parent ins nil))
-        (setf (context-dirty ctx) t))
+        (setf (context-dirty ctx) t)
+        (dolist (n2 inserted) (run-inserted-scripts ctx n2)))
       js:*undefined*)))
 
 (defun install-parent-node-queries (ctx proto)
@@ -1740,6 +1755,14 @@ the context node when it is an element, else NIL (a document/fragment root makes
     ;; forwards to `el.style.cssText = s`, i.e. replaces the inline style declaration.
     (defgetset ctx ep "style" (this) (element-style-object ctx (n this))
       (v) (progn (set-attr (n this) "style" (jstr v)) (setf (context-dirty ctx) t)))
+    ;; HTMLScriptElement/HTMLStyleElement/HTMLTitleElement/HTMLOptionElement/
+    ;; HTMLAnchorElement .text is the element's child text content: getting
+    ;; concatenates its Text children, setting replaces all children with one
+    ;; Text node (HTML §the-script-element etc.).  Reflecting through the real
+    ;; DOM (not an expando) is what lets `s.text='...'; head.appendChild(s)`
+    ;; hand source to the script insertion steps.
+    (defgetset ctx ep "text" (this) (or (dom:text-content (n this)) "")
+      (v) (progn (set-text-content (n this) (nullable-string v)) (setf (context-dirty ctx) t)))
     ;; src/data reflect their attribute and, for a browsing context (iframe/
     ;; object/frame), start loading the referenced document.
     (defgetset ctx ep "src" (this) (or (get-attr (n this) "src") "")
@@ -2097,7 +2120,9 @@ the context node when it is an element, else NIL (a document/fragment root makes
         (unless (and node (eq (h:dnode-kind node) :element))
           (js:js-throw (js:make-native-error "TypeError" "insertAdjacentElement expects an Element")))
         (let ((r (insert-adjacent ctx element where node)))
-          (setf (context-dirty ctx) t) (if r (wrap ctx r) js:*null*))))
+          (setf (context-dirty ctx) t)
+          (when r (run-inserted-scripts ctx r))
+          (if r (wrap ctx r) js:*null*))))
     (defmethod* ctx ep "insertAdjacentText" 2 (this a)
       (let* ((element (n this)) (where (jstr (arg a 0)))
              (text (h:make-text (jstr (arg a 1)))))

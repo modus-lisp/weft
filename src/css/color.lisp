@@ -1,6 +1,202 @@
 ;;;; src/css/color.lisp — CSS <color> value parser
 (in-package #:weft.css)
 
+;;;; ---- CSS Color 4/5: lab()/lch()/oklab()/oklch() and color-mix() ----------
+;;;; Modern frameworks (Tailwind v4 / turbopack) emit theme colors as lab()/
+;;;; oklch() with a hex fallback gated behind @supports.  weft flattens @supports
+;;;; (assumes supported), so the modern form wins the cascade and MUST resolve or
+;;;; every themed color collapses to unset.  We convert to sRGB here.
+
+(defun %srgb-encode (c)
+  "Linear-light sRGB component (0..1, may be out of gamut) -> gamma-encoded 0..255."
+  (let* ((c (max 0.0 (min 1.0 c)))
+         (v (if (<= c 0.0031308)
+                (* 12.92 c)
+                (- (* 1.055 (expt c (/ 1.0 2.4))) 0.055))))
+    (max 0 (min 255 (round (* v 255.0))))))
+
+(defun %lin-srgb->list (r g b a)
+  (list (%srgb-encode r) (%srgb-encode g) (%srgb-encode b) (float (max 0.0 (min 1.0 a)))))
+
+(defun %oklab->srgb (l a b alpha)
+  "OKLab (L 0..1, a,b) -> (r g b a) sRGB.  Björn Ottosson's OKLab matrices."
+  (let* ((l_ (+ l (* 0.3963377774 a) (* 0.2158037573 b)))
+         (m_ (+ l (* -0.1055613458 a) (* -0.0638541728 b)))
+         (s_ (+ l (* -0.0894841775 a) (* -1.2914855480 b)))
+         (ll (* l_ l_ l_)) (mm (* m_ m_ m_)) (ss (* s_ s_ s_))
+         (r (+ (* 4.0767416621 ll) (* -3.3077115913 mm) (* 0.2309699292 ss)))
+         (g (+ (* -1.2684380046 ll) (* 2.6097574011 mm) (* -0.3413193965 ss)))
+         (bl (+ (* -0.0041960863 ll) (* -0.7034186147 mm) (* 1.7076147010 ss))))
+    (%lin-srgb->list r g bl alpha)))
+
+(defun %lab->srgb (l a b alpha)
+  "CIE Lab (D50, L 0..100) -> (r g b a) sRGB, per CSS Color 4."
+  (let* ((kappa 903.2962962962963) (eps 0.008856451679035631)
+         (fy (/ (+ l 16.0) 116.0))
+         (fx (+ fy (/ a 500.0)))
+         (fz (- fy (/ b 200.0)))
+         (fx3 (* fx fx fx)) (fz3 (* fz fz fz))
+         (xr (if (> fx3 eps) fx3 (/ (- (* 116.0 fx) 16.0) kappa)))
+         (yr (if (> l (* kappa eps)) (let ((q (/ (+ l 16.0) 116.0))) (* q q q)) (/ l kappa)))
+         (zr (if (> fz3 eps) fz3 (/ (- (* 116.0 fz) 16.0) kappa)))
+         ;; D50 white point
+         (x (* xr 0.9642956764295677)) (y (* yr 1.0)) (z (* zr 0.8251046025104602))
+         ;; Bradford chromatic adaptation D50 -> D65
+         (x65 (+ (* 0.9554734527042182 x) (* -0.023098536874261423 y) (* 0.0632593086610217 z)))
+         (y65 (+ (* -0.028369706963208136 x) (* 1.0099954580058226 y) (* 0.021041398966943008 z)))
+         (z65 (+ (* 0.012314001688319899 x) (* -0.020507696433477912 y) (* 1.3303659366080753 z)))
+         ;; XYZ (D65) -> linear sRGB
+         (r (+ (* 3.2409699419045226 x65) (* -1.537383177570094 y65) (* -0.4986107602930034 z65)))
+         (g (+ (* -0.9692436362808796 x65) (* 1.8759675015077202 y65) (* 0.04155505740717559 z65)))
+         (bl (+ (* 0.05563007969699366 x65) (* -0.20397695888897652 y65) (* 1.0569715142428786 z65))))
+    (%lin-srgb->list r g bl alpha)))
+
+(defun %split-top-char (s ch)
+  "Split S on CH at top nesting level (ignoring CH inside parens)."
+  (let ((out '()) (depth 0) (start 0) (n (length s)))
+    (dotimes (i n)
+      (let ((c (char s i)))
+        (cond ((char= c #\() (incf depth))
+              ((char= c #\)) (when (plusp depth) (decf depth)))
+              ((and (char= c ch) (zerop depth))
+               (push (subseq s start i) out) (setf start (1+ i))))))
+    (push (subseq s start n) out)
+    (nreverse out)))
+
+(defun %color-fn-interior (s open-kw)
+  "Interior of `KW( ... )` in S (KW length via OPEN-KW), auto-closing at EOF."
+  (let* ((open (position #\( s))
+         (close (and open (matching-paren s open))))
+    (declare (ignore open-kw))
+    (and open (subseq s (1+ open) (or close (length s))))))
+
+(defun %split-color-components (interior)
+  "Split a modern color-function INTERIOR into (values main-list alpha-str).
+Components are whitespace/comma separated; an alpha follows a top-level `/`."
+  (let* ((slash (let ((depth 0) (pos nil))
+                  (dotimes (i (length interior))
+                    (case (char interior i)
+                      (#\( (incf depth)) (#\) (when (plusp depth) (decf depth)))
+                      (#\/ (when (and (zerop depth) (null pos)) (setf pos i)))))
+                  pos))
+         (main (if slash (subseq interior 0 slash) interior))
+         (alpha (and slash (css-trim (subseq interior (1+ slash))))))
+    ;; split main on whitespace/commas at top level
+    (let ((out '()) (depth 0) (start nil) (n (length main)))
+      (dotimes (i n)
+        (let ((c (char main i)))
+          (cond ((char= c #\() (incf depth) (unless start (setf start i)))
+                ((char= c #\)) (when (plusp depth) (decf depth)))
+                ((and (zerop depth) (member c '(#\Space #\Tab #\Newline #\,)))
+                 (when start (push (subseq main start i) out) (setf start nil)))
+                (t (unless start (setf start i))))))
+      (when start (push (subseq main start n) out))
+      (values (nreverse out) alpha))))
+
+(defun %num-or-pct (str pct100 &optional (default 0.0))
+  "Parse a modern-color component STR: a <number>, a <percentage> where 100% maps
+to PCT100, or `none` (-> DEFAULT).  NIL on failure."
+  (let ((str (css-trim str)))
+    (cond ((zerop (length str)) nil)
+          ((string-equal str "none") default)
+          ((char= (char str (1- (length str))) #\%)
+           (let ((v (safe-number (subseq str 0 (1- (length str))))))
+             (and v (* (/ v 100.0) pct100))))
+          (t (safe-number str)))))
+
+(defun %hue-deg (str)
+  "Parse a hue component (number in degrees, or angle unit) -> degrees float."
+  (let ((str (css-trim str)))
+    (cond ((zerop (length str)) 0.0)
+          ((string-equal str "none") 0.0)
+          ((angle-tok-p str) (let ((a (parse-value "angle" str)))
+                               (if (consp a) (angle->deg a) 0.0)))
+          (t (or (safe-number str) 0.0)))))
+
+(defun %parse-alpha-comp (str)
+  "Parse an alpha component -> 0..1, default 1.0 when NIL."
+  (if (null str) 1.0
+      (let ((str (css-trim str)))
+        (cond ((zerop (length str)) 1.0)
+              ((string-equal str "none") 1.0)
+              ((char= (char str (1- (length str))) #\%)
+               (let ((v (safe-number (subseq str 0 (1- (length str)))))) (if v (/ v 100.0) 1.0)))
+              (t (or (safe-number str) 1.0))))))
+
+(defun parse-lab-like (s kind)
+  "Parse lab()/lch()/oklab()/oklch() S (trimmed, downcased) -> (r g b a) or :invalid.
+KIND is one of :lab :lch :oklab :oklch."
+  (let ((interior (%color-fn-interior s nil)))
+    (unless interior (return-from parse-lab-like :invalid))
+    (multiple-value-bind (comps alpha-str) (%split-color-components interior)
+      (unless (>= (length comps) 3) (return-from parse-lab-like :invalid))
+      (let ((a (%parse-alpha-comp alpha-str)))
+        (ecase kind
+          (:oklab (let ((l (%num-or-pct (first comps) 1.0))
+                        (aa (%num-or-pct (second comps) 0.4))
+                        (bb (%num-or-pct (third comps) 0.4)))
+                    (if (and l aa bb) (%oklab->srgb l aa bb a) :invalid)))
+          (:lab (let ((l (%num-or-pct (first comps) 100.0))
+                      (aa (%num-or-pct (second comps) 125.0))
+                      (bb (%num-or-pct (third comps) 125.0)))
+                  (if (and l aa bb) (%lab->srgb l aa bb a) :invalid)))
+          (:oklch (let ((l (%num-or-pct (first comps) 1.0))
+                        (c (%num-or-pct (second comps) 0.4))
+                        (h (%hue-deg (third comps))))
+                    (if (and l c) (let ((rad (* h (/ (float pi 1.0) 180.0))))
+                                    (%oklab->srgb l (* c (cos rad)) (* c (sin rad)) a)) :invalid)))
+          (:lch (let ((l (%num-or-pct (first comps) 100.0))
+                      (c (%num-or-pct (second comps) 150.0))
+                      (h (%hue-deg (third comps))))
+                  (if (and l c) (let ((rad (* h (/ (float pi 1.0) 180.0))))
+                                  (%lab->srgb l (* c (cos rad)) (* c (sin rad)) a)) :invalid))))))))
+
+(defun parse-color-mix (s)
+  "Parse color-mix(in <space>, c1 [p1], c2 [p2]) (CSS Color 5) -> (r g b a).
+Mixes in premultiplied sRGB (a pragmatic first cut; the dominant real-world use —
+`X p%, transparent` — is colorspace-independent).  :invalid on failure."
+  (let ((interior (%color-fn-interior s nil)))
+    (unless interior (return-from parse-color-mix :invalid))
+    (let ((args (%split-top-char interior #\,)))
+      (unless (>= (length args) 3) (return-from parse-color-mix :invalid))
+      ;; args[0] = "in <space...>"; ignore the interpolation space (we mix in sRGB).
+      (flet ((split-color-pct (arg)
+               ;; "<color> [<percentage>]" -> (values color-string pct-or-nil)
+               (multiple-value-bind (toks alpha) (%split-color-components arg)
+                 (declare (ignore alpha))
+                 (let* ((last (car (last toks)))
+                        (pct (and last (plusp (length last))
+                                  (char= (char last (1- (length last))) #\%)
+                                  (safe-number (subseq last 0 (1- (length last)))))))
+                   (if pct
+                       (values (format nil "~{~a~^ ~}" (butlast toks)) pct)
+                       (values (css-trim arg) nil))))))
+        (multiple-value-bind (c1s p1) (split-color-pct (second args))
+          (multiple-value-bind (c2s p2) (split-color-pct (third args))
+            (let ((c1 (parse-value "color" c1s))
+                  (c2 (parse-value "color" c2s)))
+              (when (or (not (listp c1)) (not (listp c2)) (< (length c1) 4) (< (length c2) 4))
+                (return-from parse-color-mix :invalid))
+              ;; Resolve percentages per CSS Color 5 §2.1.
+              (let* ((both (and p1 p2))
+                     (p1n (cond (both p1) (p1 p1) (p2 (- 100.0 p2)) (t 50.0)))
+                     (p2n (cond (both p2) (p1 (- 100.0 p1)) (p2 p2) (t 50.0)))
+                     (sum (+ p1n p2n)))
+                (when (<= sum 0.0) (return-from parse-color-mix :invalid))
+                (let* ((alpha-mult (if (< sum 100.0) (/ sum 100.0) 1.0))
+                       (w1 (/ p1n sum)) (w2 (/ p2n sum))
+                       (a1 (float (fourth c1))) (a2 (float (fourth c2)))
+                       ;; premultiplied mixing
+                       (pa (+ (* a1 w1) (* a2 w2)))
+                       (mix (lambda (i)
+                              (let ((v (+ (* (nth i c1) a1 w1) (* (nth i c2) a2 w2))))
+                                (if (> pa 0.0) (/ v pa) 0.0))))
+                       (out-a (* pa alpha-mult)))
+                  (list (max 0 (min 255 (round (funcall mix 0))))
+                        (max 0 (min 255 (round (funcall mix 1))))
+                        (max 0 (min 255 (round (funcall mix 2))))
+                        (float (max 0.0 (min 1.0 out-a)))))))))))))
+
 (define-value-parser "color" (s)
   (let* ((s (css-trim s))
          (s (ascii-downcase s))
@@ -186,4 +382,11 @@
         ((and (> len 4) (or (string= (subseq s 0 5) "hsla(")
                             (string= (subseq s 0 4) "hsl(")))
          (parse-hsl))
+        ;; CSS Color 4 device-independent color functions.
+        ((and (>= len 6) (string= (subseq s 0 6) "oklch(")) (parse-lab-like s :oklch))
+        ((and (>= len 6) (string= (subseq s 0 6) "oklab(")) (parse-lab-like s :oklab))
+        ((and (>= len 4) (string= (subseq s 0 4) "lab(")) (parse-lab-like s :lab))
+        ((and (>= len 4) (string= (subseq s 0 4) "lch(")) (parse-lab-like s :lch))
+        ;; CSS Color 5 color-mix().
+        ((and (>= len 10) (string= (subseq s 0 10) "color-mix(")) (parse-color-mix s))
         (t :invalid)))))

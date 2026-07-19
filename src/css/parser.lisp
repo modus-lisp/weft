@@ -278,10 +278,106 @@ prelude matches (a bare @media)."
     (or (zerop (length text))
         (some (lambda (q) (%media-query-match q vw vh dpr)) (%media-split text #\,)))))
 
+(defun %sel-top-comma-p (s)
+  "True when S has a comma at the top level (outside ()/[])."
+  (let ((depth 0))
+    (loop for c across s do
+      (case c ((#\( #\[) (incf depth)) ((#\) #\]) (when (plusp depth) (decf depth)))
+        (#\, (when (zerop depth) (return-from %sel-top-comma-p t)))))
+    nil))
+
+(defun %sel-split-top-commas (s)
+  "Split S on top-level commas (outside ()/[]) into a list of parts."
+  (let ((out '()) (depth 0) (start 0))
+    (dotimes (i (length s))
+      (case (char s i)
+        ((#\( #\[) (incf depth)) ((#\) #\]) (when (plusp depth) (decf depth)))
+        (#\, (when (zerop depth) (push (subseq s start i) out) (setf start (1+ i))))))
+    (push (subseq s start (length s)) out)
+    (nreverse out)))
+
+(defun %replace-amp (s parent)
+  "Replace every top-level nesting selector `&` in S with PARENT."
+  (with-output-to-string (o)
+    (loop for c across s do (if (char= c #\&) (write-string parent o) (write-char c o)))))
+
+(defun resolve-nesting-selector (nested parent)
+  "Combine a NESTED rule's selector with its PARENT selector, per CSS Nesting L1:
+each comma-part containing `&` has it replaced by the parent; a part with no `&`
+is made a descendant of the parent (`&` implicitly prepended).  A parent that is a
+selector list is wrapped in :is() so specificity/grouping stay correct."
+  (let* ((parent (css-trim parent))
+         (pwrap (if (%sel-top-comma-p parent)
+                    (concatenate 'string ":is(" parent ")")
+                    parent)))
+    (format nil "~{~a~^, ~}"
+            (mapcar (lambda (part)
+                      (let ((p (css-trim part)))
+                        (if (find #\& p)
+                            (%replace-amp p pwrap)
+                            (concatenate 'string pwrap " " p))))
+                    (%sel-split-top-commas nested)))))
+
 (defun parse-stylesheet (css)
   "Parse a CSS string into a list of CSS-RULEs."
   (let* ((toks (css-tokenize css)) (n (length toks)) (i 0) (rules '()))
-    (labels ((collect-rules (start end)
+    (labels ((emit-rule (sel bstart bend)
+               ;; CSS Nesting L1: parse a qualified rule's block [BSTART,BEND) whose
+               ;; parent selector is SEL.  Direct declarations form a rule with SEL
+               ;; (hoisted above nested rules, per spec); nested qualified rules and
+               ;; nested @media/@supports/@layer are flattened with `&` resolved
+               ;; against SEL.  A non-nested block yields exactly one rule (== the
+               ;; pre-nesting behaviour), so ordinary stylesheets are untouched.
+               (let ((k bstart) (direct '()) (nested '()))
+                 (loop while (< k bend) do
+                   (loop while (and (< k bend) (member (ctok-type (aref toks k)) '(:ws :semicolon))) do (incf k))
+                   (when (>= k bend) (return))
+                   (let ((tk (aref toks k)))
+                     (cond
+                       ;; nested at-rule (@media / @supports / @layer): keep parent SEL
+                       ((eq (ctok-type tk) :at-keyword)
+                        (let ((kw (string-downcase (ctok-value tk))) (j (1+ k)))
+                          (loop while (and (< j bend) (not (member (ctok-type (aref toks j)) '(:lbrace :semicolon)))) do (incf j))
+                          (cond
+                            ((and (< j bend) (eq (ctok-type (aref toks j)) :lbrace))
+                             (let ((close (match-brace toks j)))
+                               (cond
+                                 ((string= kw "media")
+                                  (when (media-matches-p (toks-text toks (1+ k) j))
+                                    (push (list sel (1+ j) close) nested)))
+                                 ((member kw '("layer" "supports") :test #'string=)
+                                  (push (list sel (1+ j) close) nested))
+                                 (t nil))
+                               (setf k (1+ close))))
+                            (t (setf k (if (< j bend) (1+ j) bend))))))
+                       (t
+                        ;; a declaration or a nested qualified rule: scan to the first
+                        ;; top-level `{` (=> nested rule) or `;`/block-end (=> decl).
+                        (let ((j k) (depth 0) (kind :decl))
+                          (loop while (< j bend) do
+                            (let ((ty (ctok-type (aref toks j))))
+                              (cond ((member ty '(:lparen :lbracket)) (incf depth) (incf j))
+                                    ((member ty '(:rparen :rbracket)) (when (plusp depth) (decf depth)) (incf j))
+                                    ((and (eq ty :lbrace) (zerop depth)) (setf kind :rule) (return))
+                                    ((and (eq ty :semicolon) (zerop depth)) (setf kind :decl) (return))
+                                    (t (incf j)))))
+                          (cond
+                            ((eq kind :rule)
+                             (let* ((close (match-brace toks j))
+                                    (nsel (string-left-trim '(#\Space #\Tab #\Newline) (toks-text toks k j)))
+                                    (rsel (if (plusp (length nsel)) (resolve-nesting-selector nsel sel) sel)))
+                               (push (list rsel (1+ j) close) nested)
+                               (setf k (1+ close))))
+                            (t
+                             (dolist (d (parse-declarations toks k j)) (push d direct))
+                             (setf k (if (< j bend) (1+ j) bend)))))))))
+                 ;; hoist direct declarations above nested rules (source order kept
+                 ;; within each group via the nreverse below).
+                 (when direct
+                   (push (make-css-rule :selector sel :decls (nreverse direct)) rules))
+                 (dolist (nr (nreverse nested))
+                   (emit-rule (first nr) (second nr) (third nr)))))
+             (collect-rules (start end)
                (let ((i start))
                  (loop while (< i end) do
                    (loop while (and (< i end) (eq (ctok-type (aref toks i)) :ws)) do (incf i))
@@ -329,10 +425,10 @@ prelude matches (a bare @media)."
                                      ;; trim only leading whitespace — a trailing space
                                      ;; may be an escaped part of an identifier (`#\ `),
                                      ;; and the selector parser trims safely per part.
-                                     (sel (string-left-trim '(#\Space #\Tab #\Newline) (toks-text toks pstart j)))
-                                     (decls (parse-declarations toks (1+ j) close)))
+                                     (sel (string-left-trim '(#\Space #\Tab #\Newline) (toks-text toks pstart j))))
                                 (when (plusp (length sel))
-                                  (push (make-css-rule :selector sel :decls decls) rules))
+                                  ;; nesting-aware: emit direct decls + any nested rules
+                                  (emit-rule sel (1+ j) close))
                                 (setf i (1+ close)))
                               (setf i end))))))))))
       (collect-rules 0 n))

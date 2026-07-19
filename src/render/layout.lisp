@@ -3889,6 +3889,78 @@ the padding (CSS Backgrounds 3 §2.1)."
             (round (- (+ (lbox-x lb) (lbox-w lb)) inr))
             (round (- (+ (lbox-y lb) (lbox-h lb)) inb)))))
 
+(defun grad-tile-size (bs pw ph)
+  "Concrete gradient tile (w h) in a PW×PH positioning area under background-size BS.
+A gradient has no intrinsic size/ratio, so auto/contain/cover collapse to the area;
+explicit lengths/percentages size the tile (CSS Images 3 §4 default sizing)."
+  (flet ((c (spec avail) (cond ((numberp spec) (float spec 1.0))
+                               ((and (consp spec) (eq (first spec) :percent)) (* avail (/ (second spec) 100.0)))
+                               (t nil))))          ; :auto / unknown -> area dim
+    (cond ((consp bs) (values (or (c (first bs) pw) pw) (or (c (second bs) ph) ph)))
+          (t (values pw ph)))))
+
+(defun bg-repeat-axis-mode (rep axis)
+  "Per-AXIS (:x/:y) repeat mode :repeat | :norepeat | :space from a background-repeat
+keyword (CSS Backgrounds 3 §3.4)."
+  (cond ((string= rep "no-repeat") :norepeat)
+        ((string= rep "space") :space)
+        ((string= rep "repeat-x") (if (eq axis :x) :repeat :norepeat))
+        ((string= rep "repeat-y") (if (eq axis :y) :repeat :norepeat))
+        (t :repeat)))                        ; repeat / round (approx) / unknown
+
+(defun bg-axis-origins (mode astart alen tile off clip0 clip1)
+  "Tile origin coordinates along one axis: repeated across [CLIP0,CLIP1], a single
+positioned tile, or `space`-distributed whole tiles within the ALEN positioning area
+at ASTART (edge-to-edge, equal gaps; CSS Backgrounds 3 §3.4 <repeat-style> space)."
+  (ecase mode
+    (:norepeat (list (+ astart off)))
+    (:space (let ((n (if (> tile 0) (floor alen tile) 0)))
+              ;; gap is derived from the positioning area, but the spaced pattern then
+              ;; fills the whole painting/clip area (tiles repeat behind the border).
+              (if (<= n 1) (list (+ astart off))
+                  (let* ((gap (/ (- alen (* n tile)) (1- n)))
+                         (period (+ tile gap))
+                         (start (- astart (* period (ceiling (- astart clip0) period)))))
+                    (loop for t0 = start then (+ t0 period)
+                          while (< t0 clip1) when (> (+ t0 tile) clip0) collect t0)))))
+    (:repeat (let* ((o (+ astart off))
+                    (start (- o (* tile (ceiling (- o clip0) tile)))))
+               (loop for t0 = start then (+ t0 tile)
+                     while (< t0 clip1) when (> (+ t0 tile) clip0) collect t0)))))
+
+(defun tile-gradient (cv grad curcolor ax0 ay0 aw ah cx0 cy0 cx1 cy1 rep bs pos)
+  "Rasterise GRAD tiled: tile sized by background-size BS in the AW×AH positioning
+area anchored at (AX0,AY0), offset by background-position POS, repeated per REP,
+clipped to (CX0 CY0 CX1 CY1).  A sub-pixel-but-positive tile clamps to 1px (so a
+green→green gradient at background-size:0.2px still fills, not vanishes)."
+  (multiple-value-bind (iw ih) (grad-tile-size bs aw ah)
+    (setf iw (if (> iw 0) (max 1 (round iw)) 0)
+          ih (if (> ih 0) (max 1 (round ih)) 0))
+    (when (and (> cx1 cx0) (> cy1 cy0) (> iw 0) (> ih 0))
+      (let* ((offx (if pos (bg-pos-offset (first pos) (- aw iw)) 0))
+             (offy (if pos (bg-pos-offset (second pos) (- ah ih)) 0))
+             (xs (bg-axis-origins (bg-repeat-axis-mode rep :x) ax0 aw iw offx cx0 cx1))
+             (ys (bg-axis-origins (bg-repeat-axis-mode rep :y) ay0 ah ih offy cy0 cy1))
+             (*clip* (clip-intersect cx0 cy0 cx1 cy1))
+             (budget 200000))
+        (block tiles
+          (dolist (ty ys)
+            (when (and (< ty cy1) (> (+ ty ih) cy0))
+              (dolist (tx xs)
+                (when (and (< tx cx1) (> (+ tx iw) cx0))
+                  (fill-css-gradient cv tx ty iw ih grad curcolor)
+                  (when (<= (decf budget) 0) (return-from tiles)))))))))))
+
+(defun paint-bg-gradient (cv lb cs grad)
+  "Paint GRAD as a background image: rasterise into its tile (background-size),
+positioned by background-position within the background-origin box, repeated per
+background-repeat, clipped to the background-clip box (CSS Backgrounds 3 §3)."
+  (multiple-value-bind (px0 py0 px1 py1) (bg-box-edges lb cs (css:cstyle-bg-origin cs))
+    (multiple-value-bind (cx0 cy0 cx1 cy1) (bg-box-edges lb cs (css:cstyle-bg-clip cs))
+      (tile-gradient cv grad (css:cstyle-color cs) px0 py0 (- px1 px0) (- py1 py0)
+                     cx0 cy0 cx1 cy1
+                     (css:cstyle-bg-repeat cs) (css:cstyle-bg-size cs) (css:cstyle-bg-position cs)))))
+
 (defun paint-bg-image (cv lb cs url)
   "Decode URL (data: URI or network image) and tile it across the background
 positioning area (background-origin), clipped to the painting area (background-clip),
@@ -4085,14 +4157,19 @@ this matches how weft paints those border styles too)."
   (not (and cs (member (css:cstyle-visibility cs) '("hidden" "collapse") :test #'string=))))
 
 (defun gradient-visible-p (grad)
-  "NIL when both stops of GRAD (dir from-rgba to-rgba) are fully transparent — such
-   a gradient (e.g. HN's `linear-gradient(transparent,transparent)` fallback layered
-   under url(triangle.svg)) must paint nothing, not opaque black (FILL-GRADIENT drops
-   the stop alpha).  A stop with no alpha component is treated as opaque."
-  (destructuring-bind (dir from to) grad
-    (declare (ignore dir))
-    (flet ((opaque-ish (c) (or (< (length c) 4) (plusp (fourth c)))))
-      (or (opaque-ish from) (opaque-ish to)))))
+  "NIL when every color stop of GRAD is fully transparent — such a gradient (e.g.
+   HN's `linear-gradient(transparent,transparent)` fallback layered under
+   url(triangle.svg)) must paint nothing, not opaque black.  A stop with no alpha
+   component, or currentcolor, is treated as opaque."
+  (let ((stops (ecase (first grad)
+                 (:linear (third grad))
+                 (:radial (fifth grad))
+                 (:conic (fourth grad)))))
+    (some (lambda (st)
+            (and (eq (first st) :c)
+                 (let ((c (second st)))
+                   (or (eq c :currentcolor) (< (length c) 4) (plusp (fourth c))))))
+          stops)))
 
 (defun paint-box (cv lb)
   (handler-case (%paint-box cv lb) (error () nil)))
@@ -4108,11 +4185,9 @@ this matches how weft paints those border styles too)."
          ;; paint, so every style-dependent step is guarded by (when cs ...).
          (when cs
            (cond ((and (css:cstyle-bg-gradient cs) (gradient-visible-p (css:cstyle-bg-gradient cs)))
-                  (destructuring-bind (dir from to) (css:cstyle-bg-gradient cs)
-                    ;; pass the raw rgba stops (keep the 4th/alpha element) so a
-                    ;; translucent gradient composites over the box instead of
-                    ;; painting opaque black — RGB is just the first three elements.
-                    (fill-gradient cv (lbox-x lb) (lbox-y lb) (lbox-w lb) (lbox-h lb) dir from to)))
+                  ;; a CSS gradient is a background image: rasterise it (honouring
+                  ;; background-position/-size/-repeat) as a tiled layer over the box.
+                  (paint-bg-gradient cv lb cs (css:cstyle-bg-gradient cs)))
                  ((css:cstyle-background cs)
                   ;; background-clip: fill only the painting area (default border-box
                   ;; == the whole box; padding/content-box inset by border[+padding]).
@@ -4315,8 +4390,23 @@ background (used because the root is transparent) is positioned as if it were th
 root's.  The caller strips PE-CS's own image/gradient so paint-box does not repaint
 them at the element box.  Non-fixed image only; the colour is the canvas fill."
   (when (and (css:cstyle-bg-gradient pe-cs) (gradient-visible-p (css:cstyle-bg-gradient pe-cs)))
-    (destructuring-bind (dir from to) (css:cstyle-bg-gradient pe-cs)
-      (fill-gradient cv 0 0 width height dir from to)))
+    (let ((grad (css:cstyle-bg-gradient pe-cs)) (curcolor (css:cstyle-color pe-cs)))
+      (if (or (null anchor-lb) (string-equal (css:cstyle-bg-attachment pe-cs) "fixed"))
+          ;; background-attachment:fixed anchors the tile to the viewport origin (0,0),
+          ;; not the root's padding box (CSS Backgrounds 3 §3.10).
+          (if (string-equal (css:cstyle-bg-attachment pe-cs) "fixed")
+              (tile-gradient cv grad curcolor 0 0 width height 0 0 width height
+                             (css:cstyle-bg-repeat pe-cs) (css:cstyle-bg-size pe-cs)
+                             (css:cstyle-bg-position pe-cs))
+              (fill-css-gradient cv 0 0 width height grad curcolor))
+          ;; positioning area = root element's padding box; painting area = whole canvas
+          (let ((ax0 (round (+ (lbox-x anchor-lb) (used-border anchor-cs :l))))
+                (ay0 (round (+ (lbox-y anchor-lb) (used-border anchor-cs :t))))
+                (aw (round (- (lbox-w anchor-lb) (used-border anchor-cs :l) (used-border anchor-cs :r))))
+                (ah (round (- (lbox-h anchor-lb) (used-border anchor-cs :t) (used-border anchor-cs :b)))))
+            (tile-gradient cv grad curcolor ax0 ay0 aw ah 0 0 width height
+                           (css:cstyle-bg-repeat pe-cs) (css:cstyle-bg-size pe-cs)
+                           (css:cstyle-bg-position pe-cs))))))
   (when (and anchor-lb (css:cstyle-bg-image pe-cs)
              (not (string-equal (css:cstyle-bg-attachment pe-cs) "fixed")))
     (let* ((url (css:cstyle-bg-image pe-cs))

@@ -4154,12 +4154,18 @@ this matches how weft paints those border styles too)."
                                  (round (used-line-height cs))
                                  (css:cstyle-color cs) fs))))
          ;; overflow:hidden/clip/scroll clips descendants to this box's padding box.
+         ;; Clipping is per-axis (css-overflow-3): overflow-x:clip / overflow-y:visible
+         ;; clips horizontally while letting content overflow vertically.  A visible
+         ;; axis uses an effectively unbounded edge so only the clipped axis constrains.
          (if (and cs (member (css:cstyle-overflow cs) '("hidden" "clip" "scroll") :test #'string=))
-             (let ((*clip* (clip-intersect
-                            (round (+ (lbox-x lb) (used-border cs :l)))
-                            (round (+ (lbox-y lb) (used-border cs :t)))
-                            (round (- (+ (lbox-x lb) (lbox-w lb)) (used-border cs :r)))
-                            (round (- (+ (lbox-y lb) (lbox-h lb)) (used-border cs :b))))))
+             (let* ((cx (member (css:cstyle-overflow-x cs) '("hidden" "clip" "scroll") :test #'string=))
+                    (cy (member (css:cstyle-overflow-y cs) '("hidden" "clip" "scroll") :test #'string=))
+                    (bl (round (+ (lbox-x lb) (used-border cs :l))))
+                    (bt (round (+ (lbox-y lb) (used-border cs :t))))
+                    (brr (round (- (+ (lbox-x lb) (lbox-w lb)) (used-border cs :r))))
+                    (bb (round (- (+ (lbox-y lb) (lbox-h lb)) (used-border cs :b))))
+                    (*clip* (clip-intersect (if cx bl -1000000) (if cy bt -1000000)
+                                            (if cx brr 1000000) (if cy bb 1000000))))
                (paint-children cv (lbox-children lb)))
              (paint-children cv (lbox-children lb)))
          ;; outline paints on top of the box + descendants, and is NOT clipped by

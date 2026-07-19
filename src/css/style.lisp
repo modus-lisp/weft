@@ -35,6 +35,10 @@
   ;; layout can resolve them against the containing block inline size (CSS 2.1 §8.3).
   (margin-top-pct nil) (margin-right-pct nil) (margin-bottom-pct nil) (margin-left-pct nil)
   (float "none") (clear "none") (position "static") (box-sizing "content-box") (overflow "visible")
+  ;; per-axis overflow (css-overflow-3): OVERFLOW above is the combined value used
+  ;; for BFC/clip-context detection (non-visible if EITHER axis clips); these carry
+  ;; the axis values so paint can clip one axis while letting the other overflow.
+  (overflow-x "visible") (overflow-y "visible")
   (vertical-align nil)  ; NIL=baseline | ("top"|"middle"|"bottom"|"sub"|"super") | (num "px"|"em"|"%") — not inherited
   (flex-direction "row") (justify-content "flex-start") (align-items "stretch") (align-content "stretch")
   (flex-wrap "nowrap") (flex-grow 0.0) (flex-shrink 1.0) (flex-basis "auto") (order 0) (gap 0.0)
@@ -1021,7 +1025,25 @@ horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
         ((string= prop "position") (let ((v (parse-value "position" value))) (when (stringp v) (setf (cstyle-position cs) v))))
         ((string= prop "box-sizing") (let ((v (parse-value "box-sizing" value))) (when (stringp v) (setf (cstyle-box-sizing cs) v))))
         ((member prop '("overflow" "overflow-x" "overflow-y") :test #'string=)
-         (let ((v (parse-value "overflow" value))) (when (stringp v) (setf (cstyle-overflow cs) v))))
+         (flet ((ovkw (tok) (let ((v (parse-value "overflow" tok))) (and (stringp v) v))))
+           (cond
+             ((string= prop "overflow-x")
+              (let ((v (ovkw value))) (when v (setf (cstyle-overflow-x cs) v))))
+             ((string= prop "overflow-y")
+              (let ((v (ovkw value))) (when v (setf (cstyle-overflow-y cs) v))))
+             (t ;; `overflow` shorthand: one or two <visible|hidden|clip|scroll|auto>
+              (let* ((toks (remove "" (split-ws (string-downcase (string-trim '(#\Space) value))) :test #'string=))
+                     (x (ovkw (or (first toks) "")))
+                     (y (ovkw (or (second toks) (first toks) ""))))
+                (when x (setf (cstyle-overflow-x cs) x))
+                (when y (setf (cstyle-overflow-y cs) y)))))
+           ;; recompute the combined value: non-visible when EITHER axis clips.
+           (flet ((vis (o) (member o '("visible" nil) :test #'equal)))
+             (let ((x (cstyle-overflow-x cs)) (y (cstyle-overflow-y cs)))
+               (setf (cstyle-overflow cs)
+                     (cond ((and (vis x) (vis y)) "visible")
+                           ((not (vis y)) y)
+                           (t x)))))))
         ((string= prop "flex-direction") (setf (cstyle-flex-direction cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "flex-wrap") (setf (cstyle-flex-wrap cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "flex-flow")   ; shorthand: <flex-direction> and/or <flex-wrap>

@@ -2304,6 +2304,13 @@ size BW x BH, taken around its transform-origin — or NIL when there is no tran
                                           (when (second a) (incf ty (tf-len (second a) fs bh))))
               ((string= fn "translatez"))                                        ; no 2D effect
               (t (return nil)))))))
+(defun tf-axis-aligned-p (m)
+  "True when affine M (a b c d e f) has no rotation/skew — its off-diagonal terms
+vanish — so the transform keeps the box axis-aligned and the geometry/AABB path
+suffices.  A non-axis map (rotate/skew/general matrix) must be rasterised instead."
+  (destructuring-bind (a b c d e f) m
+    (declare (ignore a d e f))
+    (and (< (abs b) 1.0d-4) (< (abs c) 1.0d-4))))
 (defun apply-transforms (box)
   "Post-layout pass: apply each element's CSS transform to its box.  Children are
 processed first so an ancestor's translation shifts an already-transformed subtree
@@ -2318,7 +2325,12 @@ processed first so an ancestor's translation shifts an already-transformed subtr
             (if tx
                 (shift-box box (round tx) (round ty))       ; exact; moves text frags too
                 (let ((m (box-transform-matrix cs (lbox-x box) (lbox-y box) bw bh)))
-                  (when m
+                  ;; Only an axis-aligned map (scale, projected 3D) collapses to a box
+                  ;; resize — adjust it to the transformed AABB here.  A rotate/skew/
+                  ;; general matrix can't: it is rasterised at paint time (see
+                  ;; PAINT-TRANSFORMED), so its geometry is left untouched for the
+                  ;; painter to render the subtree upright and inverse-map it.
+                  (when (and m (tf-axis-aligned-p m))
                     (multiple-value-bind (nx ny nw nh) (tf-aabb m (lbox-x box) (lbox-y box) bw bh)
                       (setf (lbox-x box) (round nx) (lbox-y box) (round ny)
                             (lbox-w box) (round nw) (lbox-h box) (round nh))))))))))))
@@ -4435,9 +4447,125 @@ this matches how weft paints those border styles too)."
                    (or (eq c :currentcolor) (< (length c) 4) (plusp (fourth c))))))
           stops)))
 
+;;; ---- 2D transform rasterisation (CSS Transforms 1 §6) --------------------
+;;; A rotate/skew/general-matrix transform cannot be reduced to a box move, so the
+;;; element and its descendants are painted UPRIGHT into an offscreen buffer and
+;;; then inverse-mapped through the transform matrix onto the main canvas.  Because
+;;; the RGB canvas has no alpha, coverage is recovered by painting the subtree twice
+;;; — once over black, once over white: out = a*c over bg gives black->a*c and
+;;; white->a*c+(1-a)*255, so a = 1-(white-black)/255 and c = black/a.  This yields
+;;; correct fractional coverage along antialiased/rotated edges.
+(defun box-raster-transform-matrix (lb)
+  "The absolute affine matrix for LB's transform when it must be rasterised (a
+rotate/skew/general non-axis-aligned map), else NIL.  Pure translations (already
+geometry-shifted) and axis-aligned scales (AABB-adjusted) return NIL so they keep
+their byte-identical fast paths."
+  (let ((cs (lbox-style lb)))
+    (when (and cs (css:cstyle-transform cs) (not (equal (css:cstyle-transform cs) '("none"))))
+      (let ((tl (css:cstyle-transform cs)) (fs (css:cstyle-font-size cs))
+            (bw (lbox-w lb)) (bh (lbox-h lb)))
+        (unless (tf-pure-translate tl fs bw bh)
+          (let ((m (box-transform-matrix cs (lbox-x lb) (lbox-y lb) bw bh)))
+            (when (and m (not (tf-axis-aligned-p m))) m)))))))
+
+(defun subtree-paint-bounds (lb)
+  "Device-space integer bounds (values x0 y0 x1 y1) enclosing LB and every descendant
+box/fragment — the region the subtree paints into when rendered upright."
+  (let ((x0 (lbox-x lb)) (y0 (lbox-y lb))
+        (x1 (+ (lbox-x lb) (lbox-w lb))) (y1 (+ (lbox-y lb) (lbox-h lb))))
+    (labels ((rec (b)
+               (setf x0 (min x0 (lbox-x b)) y0 (min y0 (lbox-y b))
+                     x1 (max x1 (+ (lbox-x b) (lbox-w b)))
+                     y1 (max y1 (+ (lbox-y b) (lbox-h b))))
+               (if (eq (lbox-kind b) :line)
+                   (dolist (it (lbox-children b))
+                     (if (frag-p it)
+                         (setf x0 (min x0 (frag-x it))
+                               x1 (max x1 (+ (frag-x it) (frag-w it))))
+                         (when (lbox-p it) (rec it))))
+                   (dolist (c (lbox-children b)) (when (lbox-p c) (rec c))))))
+      (rec lb))
+    (values (floor x0) (floor y0) (ceiling x1) (ceiling y1))))
+
+(declaim (inline %bilerp))
+(defun %bilerp (px w h fx fy)
+  "Bilinear-sample RGB buffer PX (W×H, pixel centres at integer+0.5) at continuous
+point (FX,FY); returns (values r g b) as floats, edge-clamped."
+  (let* ((gx (- fx 0.5)) (gy (- fy 0.5))
+         (x0 (floor gx)) (y0 (floor gy))
+         (tx (- gx x0)) (ty (- gy y0))
+         (x1 (1+ x0)) (y1 (1+ y0)))
+    (setf x0 (max 0 (min (1- w) x0)) x1 (max 0 (min (1- w) x1))
+          y0 (max 0 (min (1- h) y0)) y1 (max 0 (min (1- h) y1)))
+    (flet ((at (x y ch) (aref px (+ (* 3 (+ (* y w) x)) ch))))
+      (flet ((ch (k)
+               (let ((top (+ (* (at x0 y0 k) (- 1.0 tx)) (* (at x1 y0 k) tx)))
+                     (bot (+ (* (at x0 y1 k) (- 1.0 tx)) (* (at x1 y1 k) tx))))
+                 (+ (* top (- 1.0 ty)) (* bot ty)))))
+        (values (ch 0) (ch 1) (ch 2))))))
+
+(defun composite-transformed (cv m offA offB sx0 sy0 sw sh)
+  "Inverse-map the offscreen buffers (subtree painted over black=OFFA and white=OFFB)
+through M onto CV: for each destination pixel in the transformed AABB, find the source
+point, sample both buffers, recover colour + coverage, and alpha-composite (honouring
+the ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT)."
+  (destructuring-bind (a b c d e f) m
+    (let ((det (- (* a d) (* b c))))
+      (when (> (abs det) 1.0d-9)
+        (let* ((iaa (/ d det)) (ibb (/ (- b) det)) (icc (/ (- c) det)) (idd (/ a det))
+               (iee (- (+ (* iaa e) (* icc f)))) (iff (- (+ (* ibb e) (* idd f))))
+               (pa (canvas-pixels offA)) (pb (canvas-pixels offB))
+               (xs '()) (ys '()))
+          (dolist (p (list (cons sx0 sy0) (cons (+ sx0 sw) sy0)
+                           (cons sx0 (+ sy0 sh)) (cons (+ sx0 sw) (+ sy0 sh))))
+            (multiple-value-bind (px py) (mat-pt m (car p) (cdr p))
+              (push px xs) (push py ys)))
+          (let ((dx0 (max 0 (floor (reduce #'min xs))))
+                (dy0 (max 0 (floor (reduce #'min ys))))
+                (dx1 (min (canvas-width cv) (ceiling (reduce #'max xs))))
+                (dy1 (min (canvas-height cv) (ceiling (reduce #'max ys)))))
+            (loop for dy from dy0 below dy1 do
+              (loop for dx from dx0 below dx1 do
+                (let* ((fx (+ dx 0.5)) (fy (+ dy 0.5))
+                       (u (+ (* iaa fx) (* icc fy) iee))
+                       (v (+ (* ibb fx) (* idd fy) iff))
+                       (lx (- u sx0)) (ly (- v sy0)))
+                  (when (and (>= lx -0.5) (>= ly -0.5) (< lx (+ sw 0.5)) (< ly (+ sh 0.5)))
+                    (multiple-value-bind (ar ag ab) (%bilerp pa sw sh lx ly)
+                      (multiple-value-bind (br bg bb) (%bilerp pb sw sh lx ly)
+                        (let ((cov (- 1.0 (/ (+ (- br ar) (- bg ag) (- bb ab)) 765.0))))
+                          (when (> cov 0.004)
+                            (flet ((cc (v) (min 255 (max 0 (round (/ v cov))))))
+                              (blend-put cv dx dy (cc ar) (cc ag) (cc ab)
+                                         (min 255 (max 0 (round (* 255.0 cov))))))))))))))))))))
+
+(defun paint-transformed (cv lb m)
+  "Render LB's subtree upright into two offscreen buffers and composite it through the
+transform matrix M (rotate/skew/general-matrix, CSS Transforms 1 §6)."
+  (multiple-value-bind (sx0 sy0 sx1 sy1) (subtree-paint-bounds lb)
+    (decf sx0) (decf sy0) (incf sx1) (incf sy1)          ; 1px pad for edge AA
+    (let ((sw (- sx1 sx0)) (sh (- sy1 sy0)))
+      (when (and (plusp sw) (plusp sh) (<= (* sw sh) 16000000))
+        (let ((offa (make-canvas sw sh '(0 0 0)))
+              (offb (make-canvas sw sh '(255 255 255))))
+          ;; paint the subtree upright at offset (-sx0,-sy0) into each buffer
+          (shift-box lb (- sx0) (- sy0))
+          (let ((*clip* nil) (*round-clip* nil))
+            (%paint-box-content offa lb)
+            (%paint-box-content offb lb))
+          (shift-box lb sx0 sy0)
+          (composite-transformed cv m offa offb sx0 sy0 sw sh))))))
+
 (defun paint-box (cv lb)
   (handler-case (%paint-box cv lb) (error () nil)))
 (defun %paint-box (cv lb)
+  ;; A rotate/skew/general-matrix transform is rasterised (subtree painted upright,
+  ;; then inverse-mapped); everything else — untransformed, pure-translate, axis
+  ;; scale — paints byte-identically through %PAINT-BOX-CONTENT.
+  (when lb
+    (let ((m (box-raster-transform-matrix lb)))
+      (if m (paint-transformed cv lb m) (%paint-box-content cv lb)))))
+(defun %paint-box-content (cv lb)
   (when lb
     (case (lbox-kind lb)
       (:block

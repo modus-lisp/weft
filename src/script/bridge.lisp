@@ -422,7 +422,7 @@
              (j+1<s.length?B64.charAt((b1&15)<<2|b2>>6):'=')+
              (j+2<s.length?B64.charAt(b2&63):'=');}
       return out;};
-    G.atob=function(s){s=String(s).replace(/[ \t\n\f\r]/g,'');
+    G.atob=function(s){s=String(s).replace(/[ \\t\\n\\f\\r]/g,'');
       if(s.length%4===1)throw new DOMException('The string to be decoded is not correctly encoded.','InvalidCharacterError');
       s=s.replace(/=+$/,'');var out='',bits=0,nbits=0;
       for(var i=0;i<s.length;i++){var c=B64.indexOf(s.charAt(i));

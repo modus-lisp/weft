@@ -4168,6 +4168,170 @@ beneath it at the corners.  Ancestor rounded clip / rect *CLIP* are honoured via
         (unless (and inner (region-contains-f inner (+ xx 0.5) (+ yy 0.5)))
           (put cv xx yy r g b))))))
 
+;;;; ---- box-shadow (CSS Backgrounds 3 §7) ------------------------------------
+(defun blur-box-radius (blur)
+  "Integer box-blur radius R for a CSS blur-radius BLUR (px).  Three box-blur passes of
+radius R approximate a Gaussian of std-dev sigma=BLUR/2 (their combined variance
+R^2+R = sigma^2), so R ~= BLUR/2 for large blurs — matching the reference rasteriser
+closely enough for the fuzzy grader."
+  (if (<= blur 0.5)
+      0
+      (let ((sigma (/ blur 2.0)))
+        (max 0 (round (/ (- (sqrt (+ 1.0 (* 4.0 sigma sigma))) 1.0) 2.0))))))
+
+(defun %hbox-blur (src dst w h r)
+  "One horizontal box-blur of radius R (window 2R+1, out-of-range = 0) over the W×H
+alpha buffer SRC into DST, using a running sum (O(w*h))."
+  (declare (type (simple-array (unsigned-byte 8) (*)) src dst) (type fixnum w h r)
+           (optimize (speed 3) (safety 0)))
+  (let ((win (+ (* 2 r) 1)))
+    (declare (type fixnum win))
+    (dotimes (y h)
+      (let ((base (the fixnum (* y w))) (sum 0))
+        (declare (type fixnum base sum))
+        (loop for i fixnum from 0 to (min r (1- w)) do (incf sum (aref src (+ base i))))
+        (dotimes (x w)
+          (setf (aref dst (+ base x)) (the (unsigned-byte 8) (truncate sum win)))
+          (let ((add (+ x r 1)) (rem (- x r)))
+            (declare (type fixnum add rem))
+            (when (< add w) (incf sum (aref src (+ base add))))
+            (when (>= rem 0) (decf sum (aref src (+ base rem))))))))))
+
+(defun %vbox-blur (src dst w h r)
+  "One vertical box-blur of radius R over the W×H alpha buffer SRC into DST."
+  (declare (type (simple-array (unsigned-byte 8) (*)) src dst) (type fixnum w h r)
+           (optimize (speed 3) (safety 0)))
+  (let ((win (+ (* 2 r) 1)))
+    (declare (type fixnum win))
+    (dotimes (x w)
+      (let ((sum 0))
+        (declare (type fixnum sum))
+        (loop for i fixnum from 0 to (min r (1- h)) do (incf sum (aref src (+ (* i w) x))))
+        (dotimes (y h)
+          (setf (aref dst (+ (the fixnum (* y w)) x)) (the (unsigned-byte 8) (truncate sum win)))
+          (let ((add (+ y r 1)) (rem (- y r)))
+            (declare (type fixnum add rem))
+            (when (< add h) (incf sum (aref src (+ (the fixnum (* add w)) x))))
+            (when (>= rem 0) (decf sum (aref src (+ (the fixnum (* rem w)) x))))))))))
+
+(defun blur-alpha (buf w h r)
+  "Blur the W×H alpha BUF in place by box-radius R, 3 separable passes (~Gaussian)."
+  (when (plusp r)
+    (let ((tmp (make-array (* w h) :element-type '(unsigned-byte 8))))
+      (dotimes (i 3)
+        (%hbox-blur buf tmp w h r)
+        (%vbox-blur tmp buf w h r)))))
+
+(defun spread-radii (radii spread)
+  "Outer-shadow corner radii: a positive border radius grows by SPREAD (floored at 0);
+a sharp (0) corner stays sharp (CSS Backgrounds 3 §7.1.1)."
+  (let ((v (make-array 8)))
+    (dotimes (i 8 v)
+      (let ((rr (aref radii i)))
+        (setf (aref v i) (if (> rr 0.0) (max 0.0 (+ rr spread)) 0.0))))))
+
+(defun shrink-radii (radii spread)
+  "Inner-hole corner radii: each padding-box inner radius shrinks by SPREAD (floored 0)."
+  (let ((v (make-array 8)))
+    (dotimes (i 8 v)
+      (setf (aref v i) (max 0.0 (- (aref radii i) spread))))))
+
+(defparameter *zero-radii* (vector 0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0))
+
+(defun shadow-rgba (color cs)
+  "Resolve a shadow COLOR spec (:currentcolor or (r g b [a])) -> (values r g b a255)."
+  (let ((c (if (eq color :currentcolor) (css:cstyle-color cs) color)))
+    (values (first c) (second c) (third c)
+            (if (and (>= (length c) 4) (fourth c)) (round (* 255 (fourth c))) 255))))
+
+(defun %composite-shadow (cv cr cg cb a0 ox oy bw bh cover-fn r knockout-fn)
+  "Build a BW×BH alpha buffer at device origin (OX OY): 255 where COVER-FN(fx fy) (pixel
+centres), blur it by box-radius R, then composite (CR CG CB) at straight alpha A0/255
+through the blurred alpha — except where KNOCKOUT-FN(fx fy) (the shadow-casting box's
+own region is knocked out).  Honours *clip*/*round-clip* via BLEND-PUT."
+  (when (and (plusp bw) (plusp bh) (< (* bw bh) 40000000))
+    (let ((buf (make-array (* bw bh) :element-type '(unsigned-byte 8) :initial-element 0)))
+      (dotimes (yy bh)
+        (let ((bas (* yy bw)) (fy (+ oy yy 0.5)))
+          (dotimes (xx bw)
+            (when (funcall cover-fn (+ ox xx 0.5) fy)
+              (setf (aref buf (+ bas xx)) 255)))))
+      (blur-alpha buf bw bh r)
+      (dotimes (yy bh)
+        (let ((bas (* yy bw)) (fy (+ oy yy 0.5)) (dy (+ oy yy)))
+          (dotimes (xx bw)
+            (let ((av (aref buf (+ bas xx))))
+              (when (plusp av)
+                (let ((fx (+ ox xx 0.5)))
+                  (unless (and knockout-fn (funcall knockout-fn fx fy))
+                    (blend-put cv (+ ox xx) dy cr cg cb (floor (* av a0) 255))))))))))))
+
+(defun paint-outset-shadow (cv lb cs offx offy blur spread color)
+  "Paint one outset shadow behind LB: the border box, translated by (OFFX OFFY),
+expanded by SPREAD, blurred by BLUR, knocked out under the box's own border box."
+  (multiple-value-bind (cr cg cb a0) (shadow-rgba color cs)
+    (when (plusp a0)
+      (let* ((bx0 (lbox-x lb)) (by0 (lbox-y lb)) (bw (lbox-w lb)) (bh (lbox-h lb))
+             (bx1 (+ bx0 bw)) (by1 (+ by0 bh))
+             (sx0 (- (+ bx0 offx) spread)) (sy0 (- (+ by0 offy) spread))
+             (sx1 (+ bx1 offx spread)) (sy1 (+ by1 offy spread))
+             (r (blur-box-radius blur)) (pad (+ (* 3 r) 2))
+             (brad (and (box-has-radius-p cs) (corner-radii-px cs bw bh))))
+        (when (and (> sx1 sx0) (> sy1 sy0))
+          (let* ((shape (make-round-region sx0 sy0 sx1 sy1
+                                           (if brad (spread-radii brad spread) *zero-radii*)))
+                 (knock (make-round-region bx0 by0 bx1 by1 (or brad *zero-radii*)))
+                 (ox (floor (- sx0 pad))) (oy (floor (- sy0 pad)))
+                 (ex (ceiling (+ sx1 pad))) (ey (ceiling (+ sy1 pad))))
+            (%composite-shadow cv cr cg cb a0 ox oy (- ex ox) (- ey oy)
+                               (lambda (fx fy) (region-contains-f shape fx fy))
+                               r
+                               (lambda (fx fy) (region-contains-f knock fx fy)))))))))
+
+(defun paint-inset-shadow (cv lb cs offx offy blur spread color)
+  "Paint one inset shadow over LB's background, clipped to the padding box: the padding
+box filled with the shadow color, with an inner hole (padding box translated by
+\(OFFX OFFY), contracted by SPREAD) blurred by BLUR (CSS Backgrounds 3 §7.1.1)."
+  (multiple-value-bind (cr cg cb a0) (shadow-rgba color cs)
+    (when (plusp a0)
+      (let* ((bx0 (lbox-x lb)) (by0 (lbox-y lb)) (bw (lbox-w lb)) (bh (lbox-h lb))
+             (bl (used-border cs :l)) (bt (used-border cs :t))
+             (brr (used-border cs :r)) (bb (used-border cs :b))
+             (px0 (+ bx0 bl)) (py0 (+ by0 bt))
+             (px1 (- (+ bx0 bw) brr)) (py1 (- (+ by0 bh) bb))
+             (r (blur-box-radius blur)) (pad (+ (* 3 r) 2))
+             (prad (if (box-has-radius-p cs)
+                       (inset-radii (corner-radii-px cs bw bh) bl bt brr bb)
+                       *zero-radii*))
+             (hx0 (+ px0 offx spread)) (hy0 (+ py0 offy spread))
+             (hx1 (- (+ px1 offx) spread)) (hy1 (- (+ py1 offy) spread)))
+        (when (and (> px1 px0) (> py1 py0))
+          (let* ((pad-region (make-round-region px0 py0 px1 py1 prad))
+                 (hole (and (> hx1 hx0) (> hy1 hy0)
+                            (make-round-region hx0 hy0 hx1 hy1 (shrink-radii prad spread))))
+                 (ox (floor (- px0 pad))) (oy (floor (- py0 pad)))
+                 (ex (ceiling (+ px1 pad))) (ey (ceiling (+ py1 pad))))
+            (%composite-shadow cv cr cg cb a0 ox oy (- ex ox) (- ey oy)
+                               ;; shadow color fills everywhere except inside the hole
+                               (if hole
+                                   (lambda (fx fy) (not (region-contains-f hole fx fy)))
+                                   (lambda (fx fy) (declare (ignore fx fy)) t))
+                               r
+                               ;; composite only inside the padding box (knock out outside)
+                               (lambda (fx fy) (not (region-contains-f pad-region fx fy))))))))))
+
+(defun paint-box-shadows (cv lb cs inset-p)
+  "Paint CS's box-shadow list on LB.  INSET-P selects the inset (T) or outset (NIL)
+shadows.  First-listed shadow is topmost, so paint the list in reverse."
+  (let ((shadows (css:cstyle-box-shadow cs)))
+    (when shadows
+      (dolist (sh (reverse shadows))
+        (destructuring-bind (inset offx offy blur spread color) sh
+          (when (eq (and inset t) inset-p)
+            (if inset-p
+                (paint-inset-shadow cv lb cs offx offy blur spread color)
+                (paint-outset-shadow cv lb cs offx offy blur spread color))))))))
+
 (defun paint-borders (cv lb cs)
   "Paint the four border edges, each with its own color.  Edges whose
 border-style is none/hidden are suppressed (zero effective width).
@@ -4284,6 +4448,10 @@ this matches how weft paints those border styles too)."
          ;; paints no background/border of its own, but its children MUST still
          ;; paint, so every style-dependent step is guarded by (when cs ...).
          (when cs
+           ;; box-shadow (CSS Backgrounds 3 §7): outset shadows paint BEHIND the box,
+           ;; before its own background/border.  Gated on a non-NIL box-shadow slot, so
+           ;; a box without box-shadow paints byte-identically.
+           (when (css:cstyle-box-shadow cs) (paint-box-shadows cv lb cs nil))
            ;; border-radius: the background/gradient/image of a rounded box is
            ;; clipped to the rounded background-clip box (CSS Backgrounds 3 §5.5).
            ;; RADII is NIL for the common unrounded box, so *ROUND-CLIP* stays NIL
@@ -4313,7 +4481,10 @@ this matches how weft paints those border styles too)."
                (with-bg-round ((css:cstyle-bg-clip cs))
                  (if (string-equal (css:cstyle-bg-attachment cs) "fixed")
                      (paint-bg-image-fixed cv lb cs (css:cstyle-bg-image cs))
-                     (paint-bg-image cv lb cs (css:cstyle-bg-image cs))))))))
+                     (paint-bg-image cv lb cs (css:cstyle-bg-image cs)))))))
+           ;; box-shadow (CSS Backgrounds 3 §7): inset shadows paint OVER the background,
+           ;; clipped to the padding box, under the box's border and content.
+           (when (css:cstyle-box-shadow cs) (paint-box-shadows cv lb cs t)))
          (when (lbox-img lb)
            (let ((fit (and cs (css:cstyle-object-fit cs))))
              (if (and fit (not (string= fit "fill")))

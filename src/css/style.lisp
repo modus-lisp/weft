@@ -94,6 +94,11 @@
   ;; CSS Transforms: TRANSFORM is a list of (fn arg...) (e.g. ("translate" "10px" "5px")),
   ;; NIL = none.  TRANSFORM-ORIGIN is ((val unit) (val unit)) or NIL (= 50% 50%).
   (transform nil) (transform-origin nil)
+  ;; CSS Backgrounds 3 §7 box-shadow: a list of shadows, first listed = topmost.
+  ;; Each shadow is (INSET OFFX OFFY BLUR SPREAD COLOR): INSET boolean, OFFX/OFFY/
+  ;; BLUR/SPREAD px floats (BLUR>=0), COLOR an (r g b a) list or :currentcolor.
+  ;; NIL = none.  Not inherited.
+  (box-shadow nil)
   ;; CSS 2.1 §12.4 counters: each an alist of (name . integer) — NOT inherited.
   (counter-reset nil) (counter-increment nil)
   ;; CSS 2.1 §12.3.1 quotes: a vector of (open . close) string pairs by nesting
@@ -566,6 +571,36 @@ configuration item (direction/shape/position) apart from a first color stop."
   (if (string-equal (string-trim '(#\Space) tok) "currentcolor")
       :currentcolor
       (resolve-color tok)))
+
+;;;; ---- box-shadow (CSS Backgrounds 3 §7) ------------------------------------
+(defun parse-one-shadow (s fs)
+  "Parse one comma-separated box-shadow item S -> (INSET OFFX OFFY BLUR SPREAD COLOR),
+or NIL if invalid.  Order-flexible per §7: an optional `inset` keyword, 2-4 lengths
+\(offset-x offset-y [blur] [spread]) and an optional <color> (default currentColor)."
+  (let ((toks (ws-split-top (string-trim '(#\Space #\Tab #\Newline) s)))
+        (inset nil) (color nil) (lens '()))
+    (dolist (tok toks)
+      (cond ((string-equal tok "inset") (setf inset t))
+            ((and (null color) (gcolor-token-p tok)) (setf color (gcolor tok)))
+            (t (let ((px (resolve-len tok fs)))
+                 (if (numberp px)
+                     (push px lens)
+                     (return-from parse-one-shadow nil))))))  ; unknown token -> invalid
+    (setf lens (nreverse lens))
+    (when (and (>= (length lens) 2) (<= (length lens) 4))
+      (list inset (first lens) (second lens)
+            (max 0.0 (or (third lens) 0.0))    ; blur-radius (>= 0)
+            (or (fourth lens) 0.0)             ; spread-radius
+            (or color :currentcolor)))))
+
+(defun parse-box-shadow (value fs)
+  "Parse a box-shadow property VALUE -> list of shadows (topmost first), or NIL for
+`none` / invalid (an invalid item invalidates the whole declaration, §7)."
+  (let ((v (string-trim '(#\Space #\Tab #\Newline) value)))
+    (if (or (string= v "") (string-equal v "none"))
+        nil
+        (let ((shs (mapcar (lambda (s) (parse-one-shadow s fs)) (split-top-commas v))))
+          (if (member nil shs) nil shs)))))
 
 (defun gstop-pos (tok type fs)
   "Parse a stop position token -> (:pct f) | (:px n) | (:deg d) | NIL."
@@ -1422,6 +1457,15 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
          (let ((tl (parse-value "transform" value)))
            (setf (cstyle-transform cs)
                  (if (and (listp tl) (not (equal tl '("none")))) tl nil))))
+        ((string= prop "box-shadow")
+         (let ((v (string-trim '(#\Space #\Tab #\Newline) value)))
+           (cond ((string-equal v "inherit")
+                  ;; box-shadow is not inherited by default; `inherit` copies the
+                  ;; parent's computed shadow list (CSS 2.1 §6.2.1).
+                  (setf (cstyle-box-shadow cs) (and parent-cs (cstyle-box-shadow parent-cs))))
+                 ((or (string-equal v "initial") (string-equal v "unset"))
+                  (setf (cstyle-box-shadow cs) nil))   ; initial == none for this longhand
+                 (t (setf (cstyle-box-shadow cs) (parse-box-shadow value (cstyle-font-size cs)))))))
         ((string= prop "transform-origin")
          (let ((toks (remove "" (split-ws (string-downcase (string-trim '(#\Space) value))) :test #'string=)))
            (setf (cstyle-transform-origin cs) (and toks (subseq toks 0 (min 2 (length toks)))))))

@@ -846,6 +846,12 @@ or `-`+digit (e.g. the attribute name in `[-1foo]`) is NOT an identifier."
     "autofill" "defined" "fullscreen" "modal" "picture-in-picture" "popover-open"
     "user-invalid" "user-valid" "blank" "first" "left" "right" "muted" "volume-locked"
     "seeking" "buffering" "stalled" "open" "closed"
+    ;; Shadow-tree host selectors (CSS Scoping Module 1 §3.2/§3.3).  weft has no
+    ;; shadow DOM, so :host/:host-context never match here — but they MUST be
+    ;; recognized as valid, or a rule like `:root,:host{…}` is dropped whole,
+    ;; taking its :root half with it.  Framework theme blocks (Tailwind v4 defines
+    ;; every design token under `:root,:host`) rely on that :root half applying.
+    "host" "host-context"
     ;; legacy pseudo-elements accepted with a single colon
     "before" "after" "first-line" "first-letter")
   "Simple (argument-less) pseudo-classes weft accepts as valid selectors.")

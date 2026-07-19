@@ -401,14 +401,38 @@ remainder (CSS 2.1 §5.12.2).  Returns the possibly-modified WORDS list."
            (u (subseq s 0 (or end (length s)))))
       (and (plusp (length u)) u))))
 
+(defun %noscript-fallback-src (node)
+  "The real image URL for a lazy <img> whose own src/srcset are populated only by a
+   scripted IntersectionObserver — never fired by a static, non-scrolling render.
+   The author's <noscript> fallback (a sibling within the enclosing <picture>, or a
+   following sibling in the wrapper) carries a plain <img src>; HTML 4.12.2 defines a
+   <noscript>'s children as the content the document offers when the script can't act,
+   so a viewportless render treats that fallback as the source.  Returns the first
+   descendant <img src> of a sibling <noscript>, else NIL."
+  (labels ((elem-p (n) (eq (h:dnode-kind n) :element))
+           (img-src (n)
+             (and (elem-p n) (string-equal (h:dnode-name n) "img")
+                  (let ((v (cdr (assoc "src" (h:dnode-attrs n) :test #'string-equal))))
+                    (and v (plusp (length (string-trim '(#\Space) v))) v))))
+           (find-img (n)
+             (when (elem-p n)
+               (or (img-src n)
+                   (loop for c across (h:dnode-children n) thereis (find-img c))))))
+    (let ((parent (h:dnode-parent node)))
+      (when (and parent (elem-p parent))
+        (loop for c across (h:dnode-children parent)
+              when (and (elem-p c) (string-equal (h:dnode-name c) "noscript"))
+                do (let ((r (find-img c))) (when r (return r))))))))
+
 (defun img-source-url (node)
   "The image URL for an <img>: src, else the first srcset candidate, else the
    lazy-load data-src / data-srcset — many sites defer the real URL into a data-
    attribute until a script swaps it into src on scroll, which a static render never
-   triggers."
+   triggers — else the <noscript> fallback for the script-populated lazy <img>."
   (flet ((a (name) (let ((v (cdr (assoc name (h:dnode-attrs node) :test #'string-equal))))
                      (and v (plusp (length (string-trim '(#\Space) v))) v))))
-    (or (a "src") (%srcset-url (a "srcset")) (a "data-src") (%srcset-url (a "data-srcset")))))
+    (or (a "src") (%srcset-url (a "srcset")) (a "data-src") (%srcset-url (a "data-srcset"))
+        (%noscript-fallback-src node))))
 
 (defun replaced-ratio (cs iw ih)
   "The width/height ratio a replaced element sizes by: its explicit CSS aspect-ratio

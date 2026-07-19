@@ -3,6 +3,12 @@
   (:use #:cl)
   (:local-nicknames (#:h #:weft.html) (#:css #:weft.css)
                     (#:g #:gesso) (#:st #:stencil) (#:sc #:scribe))
+  ;; image/SVG codecs live in the standalone `pigment` library; weft imports the
+  ;; IMG struct + accessors and the decode entry points so layout/vector/image
+  ;; keep calling them unqualified.
+  (:import-from #:pigment
+   #:img #:make-img #:img-w #:img-h #:img-rgba #:img-sw #:img-sh #:img-sr
+   #:decode-image #:decode-image-bytes #:rgba-canvas->img #:base64-decode)
   (:export #:canvas #:make-canvas #:canvas-width #:canvas-height
            #:fill-rect #:draw-text #:write-png #:canvas->png
            #:layout-tree #:render-to-png #:render-to-canvas #:canvas-ink #:canvas-pixels

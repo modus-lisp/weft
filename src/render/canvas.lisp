@@ -230,7 +230,10 @@ into the domain (1/radius for radial)."
         (when repeating
           (let ((period (- pl p0)))
             (if (<= period 1e-6)
-                (setf off p0)
+                ;; degenerate: a zero-length repeating gradient is drawn as the last
+                ;; color-stop's solid color (CSS Images 3 §3.5).
+                (let ((c (aref col (1- n))))
+                  (return-from grad-sample (values (clampb (first c)) (clampb (second c)) (clampb (third c)) (fourth c))))
                 (setf off (+ p0 (mod (- off p0) period))))))
         (cond
           ((<= off p0) (let ((c (aref col 0))) (values (clampb (first c)) (clampb (second c)) (clampb (third c)) (fourth c))))

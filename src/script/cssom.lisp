@@ -61,12 +61,15 @@
   (and (>= (length s) (length prefix)) (string= s prefix :end1 (length prefix))))
 
 (defun %risky-color-tokens-p (lower)
-  "Color values whose canonical serialization weft would get wrong: `none`
-   components keep the function form (hsl(none ...) stays hsl), and calc()/var()
-   are not resolved.  Such values are stored verbatim rather than mis-serialized."
-  (or (search "none" lower) (search "calc" lower) (search "var(" lower)
-      (search "from" lower)                 ; relative color, e.g. rgb(from red r g b)
-      (search "min(" lower) (search "max(" lower) (search "clamp(" lower)))
+  "Color FUNCTIONS whose canonical serialization weft would get wrong: `none`
+   components keep the function form (hsl(none ...) stays hsl), relative colors
+   (rgb(from ...)) and calc()/var() are not resolved.  Such values are stored
+   verbatim rather than mis-serialized.  Gated on a `(` so the bare keyword
+   `none` (an invalid <color>) still reaches the reject path."
+  (and (find #\( lower)
+       (or (search "none" lower) (search "calc" lower) (search "var(" lower)
+           (search "from" lower)             ; relative color, e.g. rgb(from red r g b)
+           (search "min(" lower) (search "max(" lower) (search "clamp(" lower))))
 
 (defun canon-color-value (value)
   "Canonicalize a <color> specified VALUE (CSS Color 4 / CSSOM serialization).
@@ -89,12 +92,12 @@
       ((or (%prefix-p lower "rgb(") (%prefix-p lower "rgba(")
            (%prefix-p lower "hsl(") (%prefix-p lower "hsla("))
        (let ((c (css:parse-value "color" v))) (if (consp c) (rgb-str c) :invalid)))
-      ;; A single unmatched token (no function parens, no interior whitespace) can
-      ;; only be a bare identifier or number — neither is a valid <color> -> reject.
-      ((and (not (find #\( v))
-            (not (find-if (lambda (c) (member c '(#\Space #\Tab #\Newline #\Return))) v)))
-       :invalid)
-      ;; Unknown function / multi-token forms weft doesn't model -> leave verbatim.
+      ;; Any remaining value with no function parens is not a valid <color>: every
+      ;; paren-free color (keyword, named/system color, hex) was handled above, so a
+      ;; bare identifier, number, or multi-token run (`black white`) -> reject.
+      ((not (find #\( v)) :invalid)
+      ;; Unknown function forms weft doesn't model (lab/oklch/hwb/color()/color-mix/
+      ;; light-dark/relative) -> leave verbatim so they are never wrongly dropped.
       (t nil))))
 
 (defun canon-opacity-value (value)

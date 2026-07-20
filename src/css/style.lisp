@@ -243,12 +243,15 @@ ex/ch use the right per-face metric (WPT's Ahem: x-height 0.8em, char advance 1.
                        ((string= unit "em") (* num font-size))
                        ((string= unit "rem") (* num 16.0))
                        ;; absolute units at the CSS reference 96px/in
-                       ((string= unit "in") (* num 96.0))
-                       ((string= unit "cm") (* num 37.795))    ; 96/2.54
-                       ((string= unit "mm") (* num 3.7795))    ; 96/25.4
-                       ((string= unit "q")  (* num 0.94488))   ; 96/101.6 (quarter-mm)
-                       ((string= unit "pt") (* num 1.33333))   ; 96/72
-                       ((string= unit "pc") (* num 16.0))      ; 12pt
+                       ;; exact rational factors (not rounded decimals) so a calc()
+                       ;; write-path serializer folding these to px stays bit-identical
+                       ;; with the cascade's resolution (used/computed re-resolution).
+                       ((string= unit "in") (* num 96))
+                       ((string= unit "cm") (* num 4800/127))   ; 96/2.54
+                       ((string= unit "mm") (* num 480/127))    ; 96/25.4
+                       ((string= unit "q")  (* num 120/127))    ; 96/101.6 (quarter-mm)
+                       ((string= unit "pt") (* num 4/3))        ; 96/72
+                       ((string= unit "pc") (* num 16))         ; 12pt
                        ;; viewport units (resolve against the viewport when known)
                        ((and (string= unit "vw") *viewport-w*) (* num (/ *viewport-w* 100.0)))
                        ((and (string= unit "vh") *viewport-h*) (* num (/ *viewport-h* 100.0)))

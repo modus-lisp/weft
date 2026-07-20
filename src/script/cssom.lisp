@@ -30,6 +30,19 @@
             (format nil "rgb(~a, ~a, ~a)" (round r) (round g) (round b))))
       ""))
 
+(defparameter +computed-props+
+  '("display" "white-space" "position" "float" "clear" "overflow" "text-align"
+    "cursor" "text-transform" "box-sizing" "font-style" "z-index" "font-weight"
+    "font-size" "line-height" "color" "width" "height" "min-width" "max-width"
+    "min-height" "max-height" "margin-top" "margin-right" "margin-bottom"
+    "margin-left" "padding-top" "padding-right" "padding-bottom" "padding-left"
+    "top" "left" "right" "bottom")
+  "Dashed property names getComputedStyle resolves; `property in getComputedStyle(el)`
+   must report true for these (test_computed_value's support guard, CSSOM).")
+
+(defun computed-prop-p (dashed)
+  (and (member dashed +computed-props+ :test #'string=) t))
+
 (defun computed-prop (cs dashed)
   "A JS string for computed property DASHED off cstyle CS."
   (macrolet ((s (accessor) `(,accessor cs)))
@@ -131,6 +144,13 @@
                         (if cs (computed-prop cs (string-downcase (jstr (arg a 0)))) "")))
                     1)))
     (js:make-host-object realm
+      :has (lambda (o key)
+             (let ((key (js:to-property-key key)))
+               (if (and (stringp key)
+                        (or (string= key "getPropertyValue")
+                            (computed-prop-p (prop->dashed key))))
+                   js:*true*
+                   (js::ordinary-has o key))))
       :get (lambda (o key rcv) (declare (ignore rcv))
              (setf key (js:to-property-key key))
              (cond
@@ -296,6 +316,77 @@
                         (if (< i (length sheets)) (make-stylesheet-object ctx (nth i sheets)) js:*undefined*)))
                      (t (js:js-get (js:js-object-proto o) key o))))))))
 
+;;; ---- the CSS namespace object (CSSOM §The CSS interface) ------------------
+(defun css-escape (s)
+  "CSS.escape: serialize S as a CSS identifier (CSSOM §serialize an identifier)."
+  (with-output-to-string (o)
+    (loop with n = (length s)
+          for i from 0 below n
+          for c = (char s i)
+          for cc = (char-code c)
+          do (cond
+               ((= cc 0) (write-char (code-char #xFFFD) o))
+               ((or (<= 1 cc #x1F) (= cc #x7F))
+                (format o "\\~(~x~) " cc))
+               ((and (= i 0) (<= #x30 cc #x39))
+                (format o "\\~(~x~) " cc))
+               ((and (= i 1) (<= #x30 cc #x39) (char= (char s 0) #\-))
+                (format o "\\~(~x~) " cc))
+               ((and (= i 0) (= n 1) (char= c #\-))
+                (write-string "\\-" o))
+               ((or (>= cc #x80) (char= c #\-) (char= c #\_)
+                    (<= #x30 cc #x39) (<= #x41 cc #x5A) (<= #x61 cc #x7A))
+                (write-char c o))
+               (t (write-char #\\ o) (write-char c o))))))
+
+(defun css-supports-decl-p (property value)
+  "True if declaration PROPERTY:VALUE is well-formed (CSS.supports 2-arg form).
+   Parsed through the real CSS parser so malformed input is rejected; unknown
+   properties are accepted (weft doesn't maintain a full property registry)."
+  (and (stringp property) (stringp value)
+       (plusp (length (string-trim '(#\Space #\Tab) property)))
+       (plusp (length (string-trim '(#\Space #\Tab) value)))
+       (not (find #\; value)) (not (find #\{ value)) (not (find #\} value))
+       (handler-case
+           (let* ((sheet (css:parse-stylesheet
+                          (format nil "*{~a:~a}" property value)))
+                  (decls (and sheet (css:css-rule-decls (first sheet)))))
+             (and decls
+                  (some (lambda (d)
+                          (and (string-equal (css:css-decl-prop d)
+                                             (string-trim '(#\Space #\Tab) property))
+                               (plusp (length (string-trim '(#\Space #\Tab)
+                                                           (css:css-decl-value d))))))
+                        decls)))
+         (error () nil))))
+
+(defun css-supports-condition-p (text)
+  "CSS.supports 1-arg form: a supports-condition string, e.g. \"(display: flex)\".
+   Handles a single parenthesised declaration; compound and/or/selector() forms
+   fall through to NIL (weft doesn't evaluate them)."
+  (let ((s (string-trim '(#\Space #\Tab) (or text ""))))
+    (when (and (plusp (length s)) (char= (char s 0) #\() (char= (char s (1- (length s))) #\)))
+      (let* ((inner (subseq s 1 (1- (length s))))
+             (colon (position #\: inner)))
+        (when (and colon (not (search ") and " inner)) (not (search ") or " inner)))
+          (css-supports-decl-p (subseq inner 0 colon) (subseq inner (1+ colon))))))))
+
+(defun make-css-namespace (realm)
+  (let ((css (js:make-host-object realm)))
+    (js:put css "escape"
+            (js:native-function realm "escape"
+              (lambda (this a) (declare (ignore this)) (css-escape (jstr (arg a 0)))) 1)
+            :enumerable nil)
+    (js:put css "supports"
+            (js:native-function realm "supports"
+              (lambda (this a) (declare (ignore this))
+                (if (js:js-undefined-p (arg a 1))
+                    (if (css-supports-condition-p (jstr (arg a 0))) js:*true* js:*false*)
+                    (if (css-supports-decl-p (jstr (arg a 0)) (jstr (arg a 1))) js:*true* js:*false*)))
+              2)
+            :enumerable nil)
+    css))
+
 (defun install-cssom (ctx)
   (let* ((realm (context-realm ctx))
          (gcs (js:native-function realm "getComputedStyle"
@@ -303,7 +394,10 @@
                   (let ((node (node-of ctx (arg args 0))))
                     (if node (computed-style-object ctx node)
                         (js:make-host-object realm))))
-                2)))
+                2))
+         (css (make-css-namespace realm)))
     (js:define-global realm "getComputedStyle" gcs)
+    (js:define-global realm "CSS" css)
     (when (proto ctx :window)
-      (js:put (proto ctx :window) "getComputedStyle" gcs :enumerable nil))))
+      (js:put (proto ctx :window) "getComputedStyle" gcs :enumerable nil)
+      (js:put (proto ctx :window) "CSS" css :enumerable nil))))

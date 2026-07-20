@@ -97,11 +97,30 @@
       ;; Unknown function / multi-token forms weft doesn't model -> leave verbatim.
       (t nil))))
 
+(defun canon-opacity-value (value)
+  "Canonicalize an <opacity-value> = <number> | <percentage> (CSS Color 4 §opacity).
+   The specified value keeps a number as-is and folds a percentage to its number
+   (50% -> 0.5), unclamped.  calc()/min()/max()/clamp() are left verbatim (weft
+   has no calc serializer).  Returns a string, :invalid, or NIL (verbatim)."
+  (let* ((v (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+         (lower (string-downcase v)))
+    (cond
+      ((zerop (length v)) :invalid)
+      ((member lower +css-wide-keywords+ :test #'string=) lower)
+      ((or (search "calc" lower) (search "min(" lower) (search "max(" lower)
+           (search "clamp(" lower) (search "var(" lower)) nil)
+      ((char= (char v (1- (length v))) #\%)
+       (let ((n (css:parse-value "number" (subseq v 0 (1- (length v))))))
+         (if (numberp n) (num->css (/ n 100.0)) :invalid)))
+      (t (let ((n (css:parse-value "number" v)))
+           (if (numberp n) (num->css n) :invalid))))))
+
 (defun canon-declaration (dashed value)
   "Canonical specified-value serialization for property DASHED given raw VALUE.
    :invalid -> drop the declaration; a string -> store it; NIL -> store verbatim."
   (cond
     ((member dashed +color-props+ :test #'string=) (canon-color-value value))
+    ((string= dashed "opacity") (canon-opacity-value value))
     (t nil)))
 
 (defparameter +computed-props+

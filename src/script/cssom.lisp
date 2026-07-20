@@ -100,6 +100,316 @@
       ;; light-dark/relative) -> leave verbatim so they are never wrongly dropped.
       (t nil))))
 
+;;; ---- calc() simplification + serialization (CSS Values 4 §10.9/§10.10) -----
+;;; A dedicated write-path simplifier that keeps units SYMBOLIC (the cascade's
+;;; EVAL-CALC collapses every length to px+pct and so cannot serialize
+;;; `calc(10px + 1em)` as `calc(1em + 10px)`).  It parses a math function into a
+;;; linear combination of units (a Sum), folding same-unit terms and constant
+;;; min()/max()/clamp(), then serializes per §10.10 (number, then percentage, then
+;;; dimensions sorted ASCII case-insensitively by unit).  Absolute lengths
+;;; canonicalise to px with EXACT rational factors so `1pc + 1in` folds to `112px`
+;;; with no float noise.  Anything not modelled (var()/env(), advanced functions,
+;;; symbolic min/max, malformed input) returns :BAIL -> the value is stored
+;;; verbatim (never wrongly dropped); only a proven type error returns :INVALID.
+
+(defparameter +calc-abs-len+
+  '(("px" . 1) ("cm" . 4800/127) ("mm" . 480/127) ("q" . 120/127)
+    ("in" . 96) ("pt" . 4/3) ("pc" . 16))
+  "Absolute length units -> exact px factor (CSS Values 4 §5.2); all fold to px.")
+
+(defparameter +calc-rel-len+
+  '("em" "rem" "ex" "rex" "cap" "rcap" "ch" "rch" "ic" "ric" "lh" "rlh"
+    "vw" "vh" "vi" "vb" "vmin" "vmax"
+    "svw" "svh" "svi" "svb" "svmin" "svmax"
+    "lvw" "lvh" "lvi" "lvb" "lvmin" "lvmax"
+    "dvw" "dvh" "dvi" "dvb" "dvmin" "dvmax"
+    "cqw" "cqh" "cqi" "cqb" "cqmin" "cqmax")
+  "Relative length units that stay symbolic (each keeps its own unit key).")
+
+(defun calc-parse-rational (str)
+  "Parse an unsigned decimal STR (\"25.4\", \".5\", \"10\") to an EXACT rational."
+  (let ((dot (position #\. str)))
+    (if dot
+        (let* ((ip (subseq str 0 dot)) (fp (subseq str (1+ dot)))
+               (iv (if (plusp (length ip)) (parse-integer ip) 0))
+               (fv (if (plusp (length fp)) (parse-integer fp) 0)))
+          (+ iv (/ fv (expt 10 (length fp)))))
+        (parse-integer str))))
+
+(defun calc-lex (s)
+  "Tokenize math-function interior S -> list of :plus/:minus/:star/:slash/:lparen/
+   :rparen/:comma, (:num rational unit) and (:ident name); :BAD on any unmodelled
+   character (caller then bails)."
+  (let ((toks '()) (i 0) (n (length s)))
+    (loop while (< i n) do
+      (let ((c (char s i)))
+        (cond
+          ((member c '(#\Space #\Tab #\Newline #\Return)) (incf i))
+          ((char= c #\() (push :lparen toks) (incf i))
+          ((char= c #\)) (push :rparen toks) (incf i))
+          ((char= c #\,) (push :comma toks) (incf i))
+          ((char= c #\+) (push :plus toks) (incf i))
+          ((char= c #\-) (push :minus toks) (incf i))
+          ((char= c #\*) (push :star toks) (incf i))
+          ((and (char= c #\/) (< (1+ i) n) (char= (char s (1+ i)) #\*))
+           ;; CSS comment /* ... */ is whitespace-equivalent (CSS Syntax §4.3.2)
+           (let ((end (search "*/" s :start2 (+ i 2))))
+             (if end (setf i (+ end 2)) (return-from calc-lex :bad))))
+          ((char= c #\/) (push :slash toks) (incf i))
+          ((or (digit-char-p c)
+               (and (char= c #\.) (< (1+ i) n) (digit-char-p (char s (1+ i)))))
+           (let ((j i))
+             (loop while (and (< j n) (or (digit-char-p (char s j)) (char= (char s j) #\.)))
+                   do (incf j))
+             (let ((numstr (subseq s i j)) (unit ""))
+               (setf i j)
+               (cond ((and (< i n) (char= (char s i) #\%)) (setf unit "%") (incf i))
+                     (t (let ((k i))
+                          (loop while (and (< k n) (alpha-char-p (char s k))) do (incf k))
+                          (setf unit (string-downcase (subseq s i k)) i k))))
+               (push (list :num (calc-parse-rational numstr) unit) toks))))
+          ((alpha-char-p c)
+           (let ((j i))
+             (loop while (and (< j n) (alpha-char-p (char s j))) do (incf j))
+             (push (list :ident (string-downcase (subseq s i j))) toks) (setf i j)))
+          (t (return-from calc-lex :bad)))))
+    (nreverse toks)))
+
+;;; A simplified value (cval) is either (:map . alist(unit . rational)) — a Sum —
+;;; or the symbol :INVALID (proven type error) or :BAIL (unmodelled -> verbatim).
+(defun cval-map (alist) (cons :map alist))
+(defun cval-map-p (x) (and (consp x) (eq (car x) :map)))
+(defun cval-alist (x) (cdr x))
+
+(defun calc-merge (a b sign)
+  "Merge two Sum alists, B scaled by SIGN (+1/-1)."
+  (let ((out (mapcar (lambda (kv) (cons (car kv) (cdr kv))) a)))
+    (dolist (kv b out)
+      (let ((cell (assoc (car kv) out :test #'string=)))
+        (if cell (incf (cdr cell) (* sign (cdr kv)))
+            (push (cons (car kv) (* sign (cdr kv))) out))))))
+
+(defun calc-scale (alist k)
+  (mapcar (lambda (kv) (cons (car kv) (* (cdr kv) k))) alist))
+
+(defun calc-number-value (alist)
+  "The rational when ALIST is a pure number ({} or {\"\":n}), else NIL."
+  (cond ((null alist) 0)
+        ((and (null (cdr alist)) (string= (caar alist) "")) (cdar alist))
+        (t nil)))
+
+(defun calc-either (a b)
+  "Propagate a non-map cval: :INVALID dominates :BAIL; NIL when both are maps."
+  (cond ((or (eq a :invalid) (eq b :invalid)) :invalid)
+        ((or (eq a :bail) (eq b :bail)) :bail)
+        (t nil)))
+
+(defun calc-add (a b sign)
+  (or (calc-either a b) (cval-map (calc-merge (cval-alist a) (cval-alist b) sign))))
+
+(defun calc-mul (a b)
+  (or (calc-either a b)
+      (let ((na (calc-number-value (cval-alist a)))
+            (nb (calc-number-value (cval-alist b))))
+        (cond (nb (cval-map (calc-scale (cval-alist a) nb)))
+              (na (cval-map (calc-scale (cval-alist b) na)))
+              (t :bail)))))            ; dimension * dimension -> not modelled
+
+(defun calc-div (a b)
+  (or (calc-either a b)
+      (let ((nb (calc-number-value (cval-alist b))))
+        (cond ((null nb) :bail)        ; divide by a dimension -> not modelled
+              ((zerop nb) :bail)       ; divide by zero -> infinity, not modelled
+              (t (cval-map (calc-scale (cval-alist a) (/ 1 nb))))))))
+
+(defun calc-num->cval (rational unit)
+  "A single numeric token -> a Sum, folding absolute lengths to px; unknown units
+   -> :BAIL (not modelled)."
+  (let ((abs (assoc unit +calc-abs-len+ :test #'string=)))
+    (cond ((string= unit "") (cval-map (list (cons "" rational))))
+          ((string= unit "%") (cval-map (list (cons "%" rational))))
+          (abs (cval-map (list (cons "px" (* rational (cdr abs))))))
+          ((member unit +calc-rel-len+ :test #'string=)
+           (cval-map (list (cons unit rational))))
+          (t :bail))))
+
+(defun calc-single-term (alist)
+  "(unit . coeff) when ALIST has exactly one term (or number 0 when empty), else NIL."
+  (cond ((null alist) (cons "" 0))
+        ((null (cdr alist)) (first alist))
+        (t nil)))
+
+(defun calc-comparison (name args)
+  "Fold min()/max()/clamp() ARGS (cvals) when each reduces to a single-term Sum of
+   the SAME unit; else :BAIL (kept symbolic) or :INVALID (propagated)."
+  (cond
+    ((some (lambda (a) (eq a :invalid)) args) :invalid)
+    ((some (lambda (a) (not (cval-map-p a))) args) :bail)
+    ((and (string= name "clamp") (/= (length args) 3)) :bail)
+    ((null args) :bail)
+    (t (let ((terms (mapcar (lambda (a) (calc-single-term (cval-alist a))) args)))
+         (if (some #'null terms) :bail
+             (let ((unit (car (first terms))))
+               (if (notevery (lambda (tm) (string= (car tm) unit)) terms) :bail
+                   (let ((vals (mapcar #'cdr terms)))
+                     (cval-map
+                      (list (cons unit
+                                  (cond ((string= name "min") (reduce #'min vals))
+                                        ((string= name "max") (reduce #'max vals))
+                                        (t (max (first vals)
+                                                (min (second vals) (third vals))))))))))))))))
+
+(defun calc-eval-tokens (toks)
+  "Recursive-descent parse + simplify a token list -> a cval."
+  (let ((tv (coerce toks 'vector)) (pos 0))
+    (labels ((peek () (when (< pos (length tv)) (aref tv pos)))
+             (kind (tk) (if (consp tk) (car tk) tk))
+             (advance () (prog1 (aref tv pos) (incf pos)))
+             (parse-expr ()
+               (let ((left (parse-term)))
+                 (loop for tk = (peek)
+                       while (member (kind tk) '(:plus :minus))
+                       do (advance)
+                          (setf left (calc-add left (parse-term)
+                                                (if (eq (kind tk) :plus) 1 -1))))
+                 left))
+             (parse-term ()
+               (let ((left (parse-factor)))
+                 (loop for tk = (peek)
+                       while (member (kind tk) '(:star :slash))
+                       do (advance)
+                          (setf left (if (eq (kind tk) :star)
+                                         (calc-mul left (parse-factor))
+                                         (calc-div left (parse-factor)))))
+                 left))
+             (parse-factor ()
+               (let ((tk (peek)))
+                 (cond ((eq (kind tk) :minus) (advance)
+                        (let ((v (parse-factor)))
+                          (if (cval-map-p v) (cval-map (calc-scale (cval-alist v) -1)) v)))
+                       ((eq (kind tk) :plus) (advance) (parse-factor))
+                       (t (parse-primary)))))
+             (parse-primary ()
+               (let ((tk (peek)))
+                 (cond
+                   ((null tk) :bail)
+                   ((eq (kind tk) :num) (advance) (calc-num->cval (second tk) (third tk)))
+                   ((eq (kind tk) :lparen) (advance)
+                    (let ((v (parse-expr)))
+                      (if (and (peek) (eq (kind (peek)) :rparen)) (progn (advance) v) :bail)))
+                   ((eq (kind tk) :ident) (parse-function))
+                   (t :bail))))
+             (parse-args ()
+               (advance)                     ; consume the '('
+               (let ((args '()))
+                 (loop
+                   (push (parse-expr) args)
+                   (let ((tk (peek)))
+                     (cond ((and tk (eq (kind tk) :comma)) (advance))
+                           ((and tk (eq (kind tk) :rparen)) (advance)
+                            (return (nreverse args)))
+                           (t (return :bad)))))))
+             (parse-function ()
+               (let ((name (second (advance))))
+                 (if (and (peek) (eq (kind (peek)) :lparen))
+                     (let ((args (parse-args)))
+                       (cond
+                         ((not (listp args)) :bail)
+                         ((string= name "calc")
+                          (if (= 1 (length args)) (first args) :bail))
+                         ((member name '("min" "max" "clamp") :test #'string=)
+                          (calc-comparison name args))
+                         (t :bail)))       ; var()/env()/advanced funcs -> verbatim
+                     :bail))))
+      (let ((v (parse-expr)))
+        (if (= pos (length tv)) v :bail)))))
+
+(defun simplify-math-function (value)
+  "Parse+simplify a top-level math function VALUE (calc/min/max/clamp) -> a cval.
+   Non-math or unmodelled input -> :BAIL."
+  (handler-case
+      (let* ((v (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+             (lower (string-downcase v)))
+        (if (or (%prefix-p lower "calc(") (%prefix-p lower "min(")
+                (%prefix-p lower "max(") (%prefix-p lower "clamp("))
+            (let ((toks (calc-lex v)))
+              (if (eq toks :bad) :bail (calc-eval-tokens toks)))
+            :bail))
+    (error () :bail)))
+
+(defun calc-term-str (coeff unit)
+  (concatenate 'string (num->css coeff) (if (string= unit "") "" unit)))
+
+(defun calc-serialize-sum (alist)
+  "Serialize a simplified Sum ALIST to the calc() BODY string (CSS Values 4 §10.10):
+   number first, then percentage, then dimensions sorted ASCII case-insensitively by
+   unit; terms joined by ' + ' / ' - '."
+  (let* ((num (assoc "" alist :test #'string=))
+         (pct (assoc "%" alist :test #'string=))
+         (dims (sort (remove-if (lambda (kv) (member (car kv) '("" "%") :test #'string=))
+                                (copy-list alist))
+                     #'string< :key #'car))
+         (ordered (append (and num (list num)) (and pct (list pct)) dims)))
+    (with-output-to-string (o)
+      (loop for kv in ordered for first = t then nil
+            for coeff = (cdr kv) for unit = (car kv)
+            do (cond (first (write-string (calc-term-str coeff unit) o))
+                     ((minusp coeff)
+                      (write-string " - " o) (write-string (calc-term-str (- coeff) unit) o))
+                     (t (write-string " + " o) (write-string (calc-term-str coeff unit) o)))))))
+
+(defun canon-calc-length (value)
+  "Canonicalize a math function VALUE for a <length-percentage> property.  Returns a
+   'calc(...)' string, :INVALID (a bare number in a length Sum is a proven type
+   error), or NIL (bail -> store verbatim)."
+  (let ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return) value)))
+    (if (string= trimmed "0")
+        "0px"                            ; unitless 0 <length> serializes as 0px (CSSOM)
+        (let ((cv (simplify-math-function value)))
+          (cond ((eq cv :invalid) :invalid)
+                ((not (cval-map-p cv)) nil)
+                (t (let* ((alist (cval-alist cv))
+                          (pxcell (assoc "px" alist :test #'string=)))
+                     (cond ((null alist) nil)
+                           ((assoc "" alist :test #'string=) :invalid)  ; number + length
+                           ;; A non-integer px coefficient (from an absolute-unit
+                           ;; conversion like 1cm -> 4800/127 px) does not round-trip
+                           ;; through weft's single-float length parser, so a used/
+                           ;; computed re-resolution of our calc() would diverge from
+                           ;; the cascade's direct resolution.  Keep such values
+                           ;; verbatim (the cascade already serializes them correctly).
+                           ((and pxcell (not (integerp (cdr pxcell)))) nil)
+                           (t (concatenate 'string
+                                           "calc(" (calc-serialize-sum alist) ")"))))))))))
+
+(defun canon-calc-opacity (value)
+  "Canonicalize a math function VALUE for opacity (<number> | <percentage>).  A
+   length term -> :INVALID; a number+percentage mix -> NIL (verbatim)."
+  (let ((cv (simplify-math-function value)))
+    (cond ((eq cv :invalid) :invalid)
+          ((not (cval-map-p cv)) nil)
+          (t (let* ((alist (cval-alist cv))
+                    (keys (mapcar #'car alist)))
+               (cond ((null alist) nil)
+                     ((some (lambda (k) (not (member k '("" "%") :test #'string=))) keys)
+                      :invalid)
+                     ((and (member "" keys :test #'string=) (member "%" keys :test #'string=))
+                      nil)
+                     (t (concatenate 'string "calc(" (calc-serialize-sum alist) ")"))))))))
+
+(defparameter +length-calc-props+
+  '("width" "height" "min-width" "max-width" "min-height" "max-height"
+    "top" "left" "right" "bottom"
+    "margin-top" "margin-right" "margin-bottom" "margin-left"
+    "padding-top" "padding-right" "padding-bottom" "padding-left"
+    "inline-size" "block-size" "min-inline-size" "max-inline-size"
+    "min-block-size" "max-block-size"
+    "inset-block-start" "inset-block-end" "inset-inline-start" "inset-inline-end"
+    "margin-block-start" "margin-block-end" "margin-inline-start" "margin-inline-end"
+    "padding-block-start" "padding-block-end" "padding-inline-start" "padding-inline-end")
+  "Properties whose <length-percentage> calc() write-path we canonicalize; non-math
+   values fall through to :BAIL -> stored verbatim, so no other value is affected.")
+
 (defun canon-opacity-value (value)
   "Canonicalize an <opacity-value> = <number> | <percentage> (CSS Color 4 §opacity).
    The specified value keeps a number as-is and folds a percentage to its number
@@ -110,6 +420,9 @@
     (cond
       ((zerop (length v)) :invalid)
       ((member lower +css-wide-keywords+ :test #'string=) lower)
+      ((or (%prefix-p lower "calc(") (%prefix-p lower "min(")
+           (%prefix-p lower "max(") (%prefix-p lower "clamp("))
+       (canon-calc-opacity value))
       ((or (search "calc" lower) (search "min(" lower) (search "max(" lower)
            (search "clamp(" lower) (search "var(" lower)) nil)
       ((char= (char v (1- (length v))) #\%)
@@ -124,6 +437,7 @@
   (cond
     ((member dashed +color-props+ :test #'string=) (canon-color-value value))
     ((string= dashed "opacity") (canon-opacity-value value))
+    ((member dashed +length-calc-props+ :test #'string=) (canon-calc-length value))
     (t nil)))
 
 (defparameter +computed-props+

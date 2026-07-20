@@ -26,7 +26,7 @@
   (if (and (consp c) (>= (length c) 3))
       (destructuring-bind (r g b &optional (a 1.0)) c
         (if (and a (< a 1))
-            (format nil "rgba(~a, ~a, ~a, ~a)" (round r) (round g) (round b) a)
+            (format nil "rgba(~a, ~a, ~a, ~a)" (round r) (round g) (round b) (num->css a))
             (format nil "rgb(~a, ~a, ~a)" (round r) (round g) (round b))))
       ""))
 
@@ -36,7 +36,7 @@
     "font-size" "line-height" "color" "width" "height" "min-width" "max-width"
     "min-height" "max-height" "margin-top" "margin-right" "margin-bottom"
     "margin-left" "padding-top" "padding-right" "padding-bottom" "padding-left"
-    "top" "left" "right" "bottom")
+    "top" "left" "right" "bottom" "visibility" "background-color")
   "Dashed property names getComputedStyle resolves; `property in getComputedStyle(el)`
    must report true for these (test_computed_value's support guard, CSSOM).")
 
@@ -64,6 +64,9 @@
       ((string= dashed "font-size") (px (s css:cstyle-font-size)))
       ((string= dashed "line-height") (px (s css:cstyle-line-height)))
       ((string= dashed "color") (rgb-str (s css:cstyle-color)))
+      ((string= dashed "visibility") (s css:cstyle-visibility))
+      ((string= dashed "background-color")
+       (rgb-str (or (s css:cstyle-background) '(0 0 0 0))))
       ((string= dashed "width") (px (s css:cstyle-width)))
       ((string= dashed "height") (px (s css:cstyle-height)))
       ((string= dashed "min-width") (px (s css:cstyle-min-width)))

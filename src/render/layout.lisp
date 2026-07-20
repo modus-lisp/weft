@@ -4870,6 +4870,24 @@ ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
                                                         :test #'string=))
                                            (frag-x nxt)
                                            (+ (frag-x it) (frag-w it))))))
+                          ;; CSS Text Decoration 3 §text-shadow: paint each shadow
+                          ;; BEHIND the glyphs, bottom-most first (the first-listed
+                          ;; shadow ends up on top).  Sharp offset copy in the shadow
+                          ;; colour (currentColor -> the run's own colour); blur is
+                          ;; not rasterised.  A transparent shadow colour (alpha 0)
+                          ;; paints nothing, so opacity-zero shadows are free.
+                          (dolist (sh (reverse (css:cstyle-text-shadow cs)))
+                            (destructuring-bind (offx offy blur scolor) sh
+                              (declare (ignore blur))
+                              (draw-text-scribe cv (frag-text it)
+                                   (round (+ (frag-x it) fdx offx))
+                                   (+ (lbox-y lb) fdy offy) (lbox-h lb)
+                                   (if (eq scolor :currentcolor) (css:cstyle-color cs) scolor)
+                                   (css:cstyle-font-size cs)
+                                   :face (style-face cs)
+                                   :bold (>= (css:cstyle-font-weight cs) 600)
+                                   :letter-spacing (css:cstyle-letter-spacing cs)
+                                   :baseline-off (lbox-baseline lb))))
                           (draw-text-scribe cv (frag-text it) (round (+ (frag-x it) fdx))
                                    (+ (lbox-y lb) fdy) (lbox-h lb)
                                    (css:cstyle-color cs)

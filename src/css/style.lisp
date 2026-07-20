@@ -104,6 +104,11 @@
   ;; BLUR/SPREAD px floats (BLUR>=0), COLOR an (r g b a) list or :currentcolor.
   ;; NIL = none.  Not inherited.
   (box-shadow nil)
+  ;; CSS Text Decoration 3 §text-shadow: a list of shadows, first listed = topmost
+  ;; (all painted BEHIND the text).  Each shadow is (OFFX OFFY BLUR COLOR): OFFX/OFFY/
+  ;; BLUR px floats (BLUR>=0), COLOR an (r g b a) list or :currentcolor.  NIL = none.
+  ;; Inherited (unlike box-shadow).  Blur is painted sharp (no gaussian) for now.
+  (text-shadow nil)
   ;; CSS 2.1 §12.4 counters: each an alist of (name . integer) — NOT inherited.
   (counter-reset nil) (counter-increment nil)
   ;; CSS 2.1 §12.3.1 quotes: a vector of (open . close) string pairs by nesting
@@ -160,7 +165,8 @@
             (cstyle-caption-side cs) (cstyle-caption-side parent-cs)
             (cstyle-border-collapse cs) (cstyle-border-collapse parent-cs)
             (cstyle-list-style cs) (cstyle-list-style parent-cs)
-            (cstyle-accent-color cs) (cstyle-accent-color parent-cs)))
+            (cstyle-accent-color cs) (cstyle-accent-color parent-cs)
+            (cstyle-text-shadow cs) (cstyle-text-shadow parent-cs)))
     (cond ((member tag *none-tags* :test #'string=) (setf (cstyle-display cs) "none"))
           ((string= tag "li") (setf (cstyle-display cs) "list-item"))
           ((string= tag "table") (setf (cstyle-display cs) "table"))
@@ -668,6 +674,34 @@ or NIL if invalid.  Order-flexible per §7: an optional `inset` keyword, 2-4 len
     (if (or (string= v "") (string-equal v "none"))
         nil
         (let ((shs (mapcar (lambda (s) (parse-one-shadow s fs)) (split-top-commas v))))
+          (if (member nil shs) nil shs)))))
+
+;;;; ---- text-shadow (CSS Text Decoration 3 §text-shadow) --------------------
+(defun parse-one-text-shadow (s fs)
+  "Parse one comma-separated text-shadow item S -> (OFFX OFFY BLUR COLOR), or NIL if
+invalid.  Order-flexible: an optional <color> and 2-3 lengths (offset-x offset-y
+[blur]); no inset/spread (unlike box-shadow)."
+  (let ((toks (ws-split-top (string-trim '(#\Space #\Tab #\Newline) s)))
+        (color nil) (lens '()))
+    (dolist (tok toks)
+      (cond ((and (null color) (gcolor-token-p tok)) (setf color (gcolor tok)))
+            (t (let ((px (resolve-len tok fs)))
+                 (if (numberp px)
+                     (push px lens)
+                     (return-from parse-one-text-shadow nil))))))
+    (setf lens (nreverse lens))
+    (when (and (>= (length lens) 2) (<= (length lens) 3))
+      (list (first lens) (second lens)
+            (max 0.0 (or (third lens) 0.0))    ; blur-radius (>= 0)
+            (or color :currentcolor)))))
+
+(defun parse-text-shadow (value fs)
+  "Parse a text-shadow property VALUE -> list of shadows (topmost first), or NIL for
+`none` / invalid (an invalid item invalidates the whole declaration)."
+  (let ((v (string-trim '(#\Space #\Tab #\Newline) value)))
+    (if (or (string= v "") (string-equal v "none"))
+        nil
+        (let ((shs (mapcar (lambda (s) (parse-one-text-shadow s fs)) (split-top-commas v))))
           (if (member nil shs) nil shs)))))
 
 (defun gstop-pos (tok type fs)
@@ -1601,6 +1635,14 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
                  ((or (string-equal v "initial") (string-equal v "unset"))
                   (setf (cstyle-box-shadow cs) nil))   ; initial == none for this longhand
                  (t (setf (cstyle-box-shadow cs) (parse-box-shadow value (cstyle-font-size cs)))))))
+        ((string= prop "text-shadow")
+         (let ((v (string-trim '(#\Space #\Tab #\Newline) value)))
+           (cond ((or (string-equal v "inherit") (string-equal v "unset"))
+                  ;; text-shadow IS inherited, so `unset` == `inherit`.
+                  (setf (cstyle-text-shadow cs) (and parent-cs (cstyle-text-shadow parent-cs))))
+                 ((string-equal v "initial")
+                  (setf (cstyle-text-shadow cs) nil))   ; initial == none
+                 (t (setf (cstyle-text-shadow cs) (parse-text-shadow value (cstyle-font-size cs)))))))
         ((string= prop "transform-origin")
          (let ((toks (remove "" (split-ws (string-downcase (string-trim '(#\Space) value))) :test #'string=)))
            (setf (cstyle-transform-origin cs) (and toks (subseq toks 0 (min 2 (length toks)))))))

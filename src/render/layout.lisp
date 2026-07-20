@@ -2367,6 +2367,12 @@ processed first so an ancestor's translation shifts an already-transformed subtr
   (let* ((cs (st styles item)) (basis (css:cstyle-flex-basis cs))
          (w (css:cstyle-width cs)))
     (cond
+      ;; flex-basis:N% resolves against the flex container's inner main size
+      ;; (CSS Flexbox 1 §9.2.3.A); resolve-len returns NIL for percentages, which
+      ;; would otherwise collapse the item to 0.
+      ((and (stringp basis) (plusp (length basis)) (char= (char basis (1- (length basis))) #\%))
+       (let ((p (css::parse-value "percentage" basis)))
+         (if (numberp p) (* content-w (/ p 100.0)) 0)))
       ((and (stringp basis) (not (member basis '("auto" "content") :test #'string=)))
        (let ((v (css::resolve-len basis (css:cstyle-font-size cs)))) (if (numberp v) v 0)))
       ((numberp w) w)

@@ -4596,11 +4596,12 @@ point (FX,FY); returns (values r g b) as floats, edge-clamped."
                  (+ (* top (- 1.0 ty)) (* bot ty)))))
         (values (ch 0) (ch 1) (ch 2))))))
 
-(defun composite-transformed (cv m offA offB sx0 sy0 sw sh)
+(defun composite-transformed (cv m offA offB sx0 sy0 sw sh &optional (alpha 1.0))
   "Inverse-map the offscreen buffers (subtree painted over black=OFFA and white=OFFB)
 through M onto CV: for each destination pixel in the transformed AABB, find the source
 point, sample both buffers, recover colour + coverage, and alpha-composite (honouring
-the ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT)."
+the ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT).  ALPHA (<1 for group opacity) scales
+the recovered coverage, so the whole subtree blends as one group (CSS Color 4 §opacity)."
   (destructuring-bind (a b c d e f) m
     (let ((det (- (* a d) (* b c))))
       (when (> (abs det) 1.0d-9)
@@ -4629,11 +4630,12 @@ the ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT)."
                           (when (> cov 0.004)
                             (flet ((cc (v) (min 255 (max 0 (round (/ v cov))))))
                               (blend-put cv dx dy (cc ar) (cc ag) (cc ab)
-                                         (min 255 (max 0 (round (* 255.0 cov))))))))))))))))))))
+                                         (min 255 (max 0 (round (* 255.0 cov alpha))))))))))))))))))))
 
-(defun paint-transformed (cv lb m)
+(defun paint-transformed (cv lb m &optional (alpha 1.0))
   "Render LB's subtree upright into two offscreen buffers and composite it through the
-transform matrix M (rotate/skew/general-matrix, CSS Transforms 1 §6)."
+transform matrix M (rotate/skew/general-matrix, CSS Transforms 1 §6).  ALPHA (<1)
+applies group opacity to the transformed result."
   (multiple-value-bind (sx0 sy0 sx1 sy1) (subtree-paint-bounds lb)
     (decf sx0) (decf sy0) (incf sx1) (incf sy1)          ; 1px pad for edge AA
     (let ((sw (- sx1 sx0)) (sh (- sy1 sy0)))
@@ -4646,17 +4648,56 @@ transform matrix M (rotate/skew/general-matrix, CSS Transforms 1 §6)."
             (%paint-box-content offa lb)
             (%paint-box-content offb lb))
           (shift-box lb sx0 sy0)
-          (composite-transformed cv m offa offb sx0 sy0 sw sh))))))
+          (composite-transformed cv m offa offb sx0 sy0 sw sh alpha))))))
+
+(defun paint-opacity (cv lb alpha)
+  "Group opacity (CSS Color 4 §opacity): render LB's subtree upright into two offscreen
+buffers (over black and over white), recover per-pixel coverage + colour, and composite
+1:1 onto CV at global ALPHA — the element's whole subtree blends against the backdrop as
+one group (self-overlap composites once, unlike per-operation alpha).  Honours the
+ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
+  (multiple-value-bind (sx0 sy0 sx1 sy1) (subtree-paint-bounds lb)
+    (decf sx0) (decf sy0) (incf sx1) (incf sy1)          ; 1px pad for edge AA
+    (let ((sw (- sx1 sx0)) (sh (- sy1 sy0)))
+      (when (and (plusp sw) (plusp sh) (<= (* sw sh) 16000000))
+        (let ((offa (make-canvas sw sh '(0 0 0)))
+              (offb (make-canvas sw sh '(255 255 255))))
+          (shift-box lb (- sx0) (- sy0))
+          (let ((*clip* nil) (*round-clip* nil))
+            (%paint-box-content offa lb)
+            (%paint-box-content offb lb))
+          (shift-box lb sx0 sy0)
+          (let ((pa (canvas-pixels offa)) (pb (canvas-pixels offb)))
+            (dotimes (sy sh)
+              (let ((dy (+ sy0 sy)))
+                (when (and (>= dy 0) (< dy (canvas-height cv)))
+                  (dotimes (sx sw)
+                    (let ((dx (+ sx0 sx)))
+                      (when (and (>= dx 0) (< dx (canvas-width cv)))
+                        (let* ((i (* 3 (+ (* sy sw) sx)))
+                               (ar (aref pa i)) (ag (aref pa (+ i 1))) (ab (aref pa (+ i 2)))
+                               (br (aref pb i)) (bg (aref pb (+ i 1))) (bb (aref pb (+ i 2)))
+                               (cov (- 1.0 (/ (+ (- br ar) (- bg ag) (- bb ab)) 765.0))))
+                          (when (> cov 0.004)
+                            (flet ((cc (v) (min 255 (max 0 (round (/ v cov))))))
+                              (blend-put cv dx dy (cc ar) (cc ag) (cc ab)
+                                         (min 255 (max 0 (round (* 255.0 cov alpha))))))))))))))))))))
 
 (defun paint-box (cv lb)
   (handler-case (%paint-box cv lb) (error () nil)))
 (defun %paint-box (cv lb)
   ;; A rotate/skew/general-matrix transform is rasterised (subtree painted upright,
   ;; then inverse-mapped); everything else — untransformed, pure-translate, axis
-  ;; scale — paints byte-identically through %PAINT-BOX-CONTENT.
+  ;; scale — paints byte-identically through %PAINT-BOX-CONTENT.  An opacity < 1
+  ;; renders the subtree to offscreen buffers and composites it as one group.
   (when lb
-    (let ((m (box-raster-transform-matrix lb)))
-      (if m (paint-transformed cv lb m) (%paint-box-content cv lb)))))
+    (let* ((m (box-raster-transform-matrix lb))
+           (cs (lbox-style lb))
+           (op (and cs (let ((o (css:cstyle-opacity cs)))
+                         (and (numberp o) (>= o 0.0) (< o 1.0) (float o 1.0))))))
+      (cond (op (if m (paint-transformed cv lb m op) (paint-opacity cv lb op)))
+            (m (paint-transformed cv lb m))
+            (t (%paint-box-content cv lb))))))
 (defun %paint-box-content (cv lb)
   (when lb
     (case (lbox-kind lb)

@@ -12,8 +12,11 @@
 
 (define-value-parser "aspect-ratio" (s)
   "auto | <ratio> | auto <ratio>, where <ratio> is `<number> [ / <number> ]?`.
-Returns the width/height ratio as a double, :AUTO (prefer the intrinsic ratio, no
-explicit ratio), or :INVALID.  A ratio combined with `auto` is treated as the ratio."
+Returns the width/height ratio as a double (explicit ratio — applies to the
+box-sizing box), (:AUTO . ratio) when the `auto` keyword accompanies the ratio
+(the ratio applies to the CONTENT box; a replaced element with a natural ratio
+prefers that instead — CSS Sizing 4 §aspect-ratio), :AUTO (prefer the intrinsic
+ratio, no explicit ratio), or :INVALID."
   (let ((str (ascii-downcase (css-trim s))))
     (if (string= str "")
         :invalid
@@ -30,4 +33,6 @@ explicit ratio), or :INVALID.  A ratio combined with `auto` is treated as the ra
                       (slash (position #\/ joined))
                       (w (%ar-number (if slash (subseq joined 0 slash) joined)))
                       (h (if slash (%ar-number (subseq joined (1+ slash))) 1d0)))
-                 (if (and w h (plusp w) (plusp h)) (/ w h) :invalid))))))))
+                 (if (and w h (plusp w) (plusp h))
+                     (let ((r (/ w h))) (if has-auto (cons :auto r) r))
+                     :invalid))))))))

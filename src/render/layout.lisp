@@ -1689,6 +1689,11 @@ Returns (values lbox advance-height)."
            ;; explicit aspect-ratio (CSS Sizing 4) for a non-replaced box: a positive
            ;; ratio derives the auto axis from the definite one (width<->height).
            (ar (let ((r (css:cstyle-aspect-ratio cs))) (and (numberp r) (plusp r) r)))
+           ;; `aspect-ratio: auto <ratio>` applies the ratio to the CONTENT box even
+           ;; under box-sizing:border-box (CSS Sizing 4 §aspect-ratio); an explicit
+           ;; ratio applies to the box-sizing box.  AR-BORDER-BOX = the box the ratio
+           ;; transfer uses (false when the `auto` keyword forces the content box).
+           (ar-border-box (and border-box (not (css:cstyle-aspect-ratio-auto cs))))
            (min-h (css::resolve-min-height (css:cstyle-min-height cs) avail-h))
            (max-h (css::resolve-max-height (css:cstyle-max-height cs) avail-h))
            ;; the USED content-box height (min/max-clamped) when height is definite,
@@ -1754,7 +1759,7 @@ Returns (values lbox advance-height)."
                                   ;; (border-box = border-height*ratio; content-box adds
                                   ;; the horizontal padding+border).
                                   ((and ar used-h (null spec-w))
-                                   (if border-box (* (+ used-h pt pb bt bb) ar) (+ (* used-h ar) pad-bord)))
+                                   (if ar-border-box (* (+ used-h pt pb bt bb) ar) (+ (* used-h ar) pad-bord)))
                                   (shrink (min (- avail-w ml mr)
                                                (+ (pref-content-width node styles (- avail-w ml mr))
                                                   pad-bord)))
@@ -1803,7 +1808,7 @@ Returns (values lbox advance-height)."
            ;; hands it to children as their containing block and column-wrapping
            ;; sees it (CSS Sizing 4 §4).  NIL when height is definite or no ratio.
            (ar-h (when (and ar (null used-h))
-                   (let ((rh (if border-box (max 0 (- (/ width ar) pt pb bt bb))
+                   (let ((rh (if ar-border-box (max 0 (- (/ width ar) pt pb bt bb))
                                  (/ content-w ar))))
                      (when (numberp max-h) (setf rh (min rh max-h)))
                      (when (and (numberp min-h) (> min-h 0)) (setf rh (max rh min-h)))

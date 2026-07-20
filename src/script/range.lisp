@@ -300,13 +300,23 @@
         (setf (rg-sc rr) n (rg-so rr) 0 (rg-ec rr) n (rg-eo rr) (node-len n)))
       js:*undefined*)
     (defmethod* ctx rp "compareBoundaryPoints" 2 (this a)
-      (let* ((how (int-arg a 0)) (rr (r this)) (other (rg-of ctx (arg a 1))))
+      ;; `how` is a WebIDL unsigned short: convert per ToUint16 (int-arg already
+      ;; maps NaN/±Infinity -> 0; `mod 65536` wraps the rest).  DOM §Range: a value
+      ;; that is not START_TO_START/START_TO_END/END_TO_END/END_TO_START throws
+      ;; NotSupportedError, and ranges with different roots throw WrongDocumentError
+      ;; — neither may abort the caller (the old ECASE crashed on e.g. how=-1).
+      (let* ((how (mod (int-arg a 0) 65536)) (rr (r this)) (other (rg-of ctx (arg a 1))))
+        (unless (<= 0 how 3)
+          (throw-dom ctx "NotSupportedError" 9 "compareBoundaryPoints: invalid how"))
         (multiple-value-bind (ca oa cb ob)
-            (ecase how
+            (case how
               (0 (values (rg-sc rr) (rg-so rr) (rg-sc other) (rg-so other)))
               (1 (values (rg-ec rr) (rg-eo rr) (rg-sc other) (rg-so other)))
               (2 (values (rg-ec rr) (rg-eo rr) (rg-ec other) (rg-eo other)))
               (3 (values (rg-sc rr) (rg-so rr) (rg-ec other) (rg-eo other))))
+          (unless (eq (range-root ca) (range-root cb))
+            (throw-dom ctx "WrongDocumentError" 4
+                       "compareBoundaryPoints: ranges are in different documents"))
           (num (bp-pos ca oa cb ob)))))
     (defmethod* ctx rp "cloneRange" 0 (this a)
       (let* ((rr (r this)) (obj (js:make-object :proto rp)))

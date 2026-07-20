@@ -331,6 +331,18 @@
            (search "from" lower)             ; relative color, e.g. rgb(from red r g b)
            (search "min(" lower) (search "max(" lower) (search "clamp(" lower))))
 
+(defun %specified-lab (v fname)
+  "Specified-value serialization of a non-calc lab/lch/oklab/oklch <color> V; NIL
+   on failure (caller stores verbatim)."
+  (ignore-errors
+   (let ((interior (css::%color-fn-interior v fname)))
+     (when interior
+       (multiple-value-bind (comps alpha) (css::%split-color-components interior)
+         (%serialize-modern-lab
+          (cond ((string= fname "lab") :lab) ((string= fname "lch") :lch)
+                ((string= fname "oklab") :oklab) (t :oklch))
+          comps alpha))))))
+
 (defun canon-color-value (value)
   "Canonicalize a <color> specified VALUE (CSS Color 4 / CSSOM serialization).
    Named colors, system colors, currentcolor and transparent serialize as their
@@ -369,6 +381,16 @@
            ((and (member fname '("hwb" "lab" "lch" "oklab" "oklch") :test #'string=)
                  (find #\, v))
             :invalid)
+           ;; lab/lch/oklab/oklch SPECIFIED serialization equals the computed form
+           ;; for non-calc inputs (percentages resolved, L clamped, chroma >= 0,
+           ;; hue mod 360, alpha [0,1] omitted at 1).  calc()/var()/sign()/relative
+           ;; keep authored calc/reference forms weft doesn't serialize -> verbatim.
+           ((and (member fname '("lab" "lch" "oklab" "oklch") :test #'string=)
+                 (not (search "calc(" lower)) (not (search "var(" lower))
+                 (not (search "sign(" lower)) (not (search "min(" lower))
+                 (not (search "max(" lower)) (not (search "clamp(" lower))
+                 (not (search "from" lower)))
+            (or (%specified-lab v fname) nil))
            (t nil)))))))
 
 ;;; ---- calc() simplification + serialization (CSS Values 4 §10.9/§10.10) -----

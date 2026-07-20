@@ -564,6 +564,97 @@
       ((eq (sizing-length-percentage lower) :valid) nil)   ; valid l-p -> verbatim
       (t :invalid))))                                       ; provably outside the grammar
 
+;;; ---- background/border keyword & size grammar rejection (CSS Backgrounds 3) --
+;;; Closed keyword enums (per background layer, comma-separated) and the
+;;; <bg-size> grammar.  On the element.style write path a value outside the
+;;; grammar is dropped so test_invalid_value passes; a value containing a
+;;; function is left verbatim (never risk mis-parsing a gradient/var()/calc()).
+
+(defparameter +bg-attachment-kw+ '("scroll" "fixed" "local"))
+(defparameter +bg-box-kw+ '("border-box" "padding-box" "content-box"))
+(defparameter +bg-clip-kw+
+  '("border-box" "padding-box" "content-box" "border-area" "text"))
+(defparameter +bg-repeat-kw+ '("repeat" "space" "round" "no-repeat"))
+(defparameter +border-style-kw+
+  '("none" "hidden" "dotted" "dashed" "solid" "double" "groove" "ridge"
+    "inset" "outset"))
+
+(defun %ws-tokens (s)
+  (remove "" (uiop:split-string s :separator '(#\Space #\Tab #\Newline #\Return))
+          :test #'string=))
+
+(defun %comma-layers (s)
+  (mapcar (lambda (x) (string-trim '(#\Space #\Tab) x)) (uiop:split-string s :separator ",")))
+
+(defun bg-layer-valid-p (dashed layer)
+  "Validate one comma-separated LAYER (lowercased) of background property DASHED."
+  (let ((toks (%ws-tokens layer)))
+    (cond
+      ((null toks) nil)
+      ((string= dashed "background-attachment")
+       (and (= 1 (length toks)) (member (first toks) +bg-attachment-kw+ :test #'string=)))
+      ((string= dashed "background-origin")
+       (and (= 1 (length toks)) (member (first toks) +bg-box-kw+ :test #'string=)))
+      ((string= dashed "background-clip")
+       (and (<= (length toks) 2)
+            (every (lambda (tk) (member tk +bg-clip-kw+ :test #'string=)) toks)))
+      ((string= dashed "background-repeat")
+       (cond ((= 1 (length toks))
+              (or (member (first toks) '("repeat-x" "repeat-y") :test #'string=)
+                  (member (first toks) +bg-repeat-kw+ :test #'string=)))
+             ((= 2 (length toks))
+              (every (lambda (tk) (member tk +bg-repeat-kw+ :test #'string=)) toks))
+             (t nil)))
+      ((string= dashed "background-size")
+       (cond ((= 1 (length toks))
+              (or (member (first toks) '("cover" "contain") :test #'string=)
+                  (string= (first toks) "auto")
+                  (eq (sizing-length-percentage (first toks)) :valid)))
+             ((= 2 (length toks))
+              (every (lambda (tk) (or (string= tk "auto")
+                                      (eq (sizing-length-percentage tk) :valid)))
+                     toks))
+             (t nil)))
+      (t nil))))
+
+(defun canon-bg-keyword-value (dashed value)
+  "Validate a comma-layered background keyword/size property; NIL (verbatim) when
+   every layer is valid, :INVALID otherwise, keyword for a css-wide value."
+  (let* ((v (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+         (lower (string-downcase v)))
+    (cond
+      ((zerop (length v)) :invalid)
+      ((member lower +css-wide-keywords+ :test #'string=) lower)
+      ((find #\( v) nil)                    ; functions (var/calc/gradient) -> verbatim
+      (t (let ((layers (%comma-layers lower)))
+           (if (and layers (every (lambda (l) (bg-layer-valid-p dashed l)) layers))
+               nil :invalid))))))
+
+(defparameter +bg-keyword-props+
+  '("background-attachment" "background-origin" "background-clip"
+    "background-repeat" "background-size"))
+
+(defun canon-border-style-value (dashed value)
+  "border-style (1-4 keywords) and border-<side>-style (exactly 1).  A keyword
+   outside the <line-style> set, or too many values, is rejected."
+  (let* ((v (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+         (lower (string-downcase v)))
+    (cond
+      ((zerop (length v)) :invalid)
+      ((member lower +css-wide-keywords+ :test #'string=) lower)
+      ((find #\( v) nil)
+      (t (let ((toks (%ws-tokens lower))
+               (maxn (if (string= dashed "border-style") 4 1)))
+           (if (and toks (<= (length toks) maxn)
+                    (every (lambda (tk) (member tk +border-style-kw+ :test #'string=)) toks))
+               nil :invalid))))))
+
+(defparameter +border-style-props+
+  '("border-style" "border-top-style" "border-right-style"
+    "border-bottom-style" "border-left-style"
+    "border-block-start-style" "border-block-end-style"
+    "border-inline-start-style" "border-inline-end-style"))
+
 (defun canon-opacity-value (value)
   "Canonicalize an <opacity-value> = <number> | <percentage> (CSS Color 4 §opacity).
    The specified value keeps a number as-is and folds a percentage to its number
@@ -591,6 +682,8 @@
   (cond
     ((member dashed +color-props+ :test #'string=) (canon-color-value value))
     ((string= dashed "opacity") (canon-opacity-value value))
+    ((member dashed +bg-keyword-props+ :test #'string=) (canon-bg-keyword-value dashed value))
+    ((member dashed +border-style-props+ :test #'string=) (canon-border-style-value dashed value))
     ((member dashed +sizing-props+ :test #'string=) (canon-sizing-value dashed value))
     ((member dashed +length-calc-props+ :test #'string=) (canon-calc-length value))
     (t nil)))

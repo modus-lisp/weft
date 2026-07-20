@@ -81,6 +81,11 @@
   (writing-mode "horizontal-tb") ; horizontal-tb | vertical-rl | vertical-lr (inherited)
   (direction "ltr")   ; ltr | rtl (inherited)
   (aspect-ratio nil)  ; preferred width/height ratio (a double), or NIL (auto/intrinsic)
+  ;; CSS Sizing 4 §aspect-ratio: T when the ratio came with the `auto` keyword
+  ;; (`aspect-ratio: auto <ratio>`), in which case the ratio applies to the CONTENT
+  ;; box regardless of box-sizing; an explicit ratio (NIL here) applies to the
+  ;; box-sizing box.  Not inherited.
+  (aspect-ratio-auto nil)
   (min-height 0.0) (max-height :none)
   (cursor "auto")     ; CSS cursor keyword (inherited)
   (text-transform "none") ; none | capitalize | uppercase | lowercase (inherited)
@@ -1340,7 +1345,12 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
          (let ((v (parse-value "object-fit" value))) (when (stringp v) (setf (cstyle-object-fit cs) v))))
         ((string= prop "aspect-ratio")
          (let ((v (parse-value "aspect-ratio" value)))
-           (setf (cstyle-aspect-ratio cs) (if (numberp v) v nil))))
+           (cond ((numberp v) (setf (cstyle-aspect-ratio cs) v (cstyle-aspect-ratio-auto cs) nil))
+                 ;; (:auto . ratio): the ratio applies to the content box (CSS Sizing 4)
+                 ((and (consp v) (eq (car v) :auto))
+                  (setf (cstyle-aspect-ratio cs) (cdr v) (cstyle-aspect-ratio-auto cs) t))
+                 ;; :auto (no ratio) / :invalid — no explicit preferred ratio
+                 (t (setf (cstyle-aspect-ratio cs) nil (cstyle-aspect-ratio-auto cs) nil)))))
         ((string= prop "font-size")
          (let ((base (if parent-cs (cstyle-font-size parent-cs) 16.0)))
            (cond ((search "%" value) (let ((p (parse-value "percentage" value))) (when (numberp p) (setf (cstyle-font-size cs) (* base (/ p 100.0))))))

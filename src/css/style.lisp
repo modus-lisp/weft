@@ -1272,14 +1272,43 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
                    (when boxes
                      (setf (cstyle-bg-origin cs) (first boxes)
                            (cstyle-bg-clip cs) (or (second boxes) (first boxes)))))
-                 ;; pull a background-position (length/percent/keyword pair, e.g.
-                 ;; the `1px 0` in Acid2's eye images) out of the shorthand
-                 (let ((postoks (remove-if-not #'bg-position-token-p toks)))
-                   (when postoks
-                     (let ((v (parse-value "background-position"
-                                           (format nil "~{~a~^ ~}" postoks))))
-                       (when (and (consp v) (not (eq v :invalid)))
-                         (setf (cstyle-bg-position cs) (resolve-bg-pos v fs)))))))))))
+                 ;; pull a background-position [ / background-size ] out of the
+                 ;; shorthand's first layer (CSS Backgrounds 3 §3.10 <bg-position>
+                 ;; [ / <bg-size> ]).  Strip url() first so a slash inside
+                 ;; url(path/img.png) isn't read as the position/size separator.
+                 (let* ((layer1 (or (first (split-top-commas value)) value))
+                        (up (search "url(" layer1 :test #'char-equal))
+                        (layer1 (if up
+                                    (let ((e (position #\) layer1 :start (+ up 4))))
+                                      (if e (concatenate 'string (subseq layer1 0 up) " "
+                                                         (subseq layer1 (1+ e)))
+                                          layer1))
+                                    layer1))
+                        (slash (position #\/ layer1))
+                        (pos-str (if slash (subseq layer1 0 slash) layer1))
+                        (size-str (and slash (subseq layer1 (1+ slash)))))
+                   (let ((postoks (remove-if-not #'bg-position-token-p
+                                                 (css-background-tokens pos-str))))
+                     (when postoks
+                       (let ((v (parse-value "background-position"
+                                             (format nil "~{~a~^ ~}" postoks))))
+                         (when (and (consp v) (not (eq v :invalid)))
+                           (setf (cstyle-bg-position cs) (resolve-bg-pos v fs))))))
+                   (when size-str
+                     ;; the tokens right after `/` form <bg-size>: contain|cover (one
+                     ;; token) or up to two of <length-percentage>|auto; stop at the
+                     ;; first non-size keyword (repeat, attachment, box, ...).
+                     (let* ((stoks (css-background-tokens size-str))
+                            (size-toks
+                              (cond ((and stoks (member (first stoks) '("contain" "cover")
+                                                        :test #'string=))
+                                     (list (first stoks)))
+                                    (t (loop for tk in stoks
+                                             while (bg-size-comp tk fs)
+                                             repeat 2 collect tk)))))
+                       (when size-toks
+                         (let ((sz (parse-bg-size (format nil "~{~a~^ ~}" size-toks) fs)))
+                           (when sz (setf (cstyle-bg-size cs) sz))))))))))))
         ((string= prop "background-repeat")
          (let ((v (parse-value "background-repeat" value))) (when (stringp v) (setf (cstyle-bg-repeat cs) v))))
         ((string= prop "background-position")

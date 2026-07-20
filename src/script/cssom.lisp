@@ -22,12 +22,34 @@
         ((numberp v) (concatenate 'string (num->css v) "px"))
         ((stringp v) v) ((null v) "") (t (princ-to-string v))))
 
+(defun round-channel (x)
+  "Round an sRGB 8-bit channel value: nearest integer, ties away from zero
+   (Chrome/CSSOM), unlike CL ROUND's ties-to-even (which yields 76 for 76.5
+   where CSS Color serialization wants 77)."
+  (let ((x (max 0 (min 255 x))))
+    (if (minusp x) (- (floor (+ (- x) 1/2))) (floor (+ x 1/2)))))
+
+(defun serialize-alpha (a)
+  "Serialize an <alpha-value> per CSSOM sRGB serialization: the shortest decimal
+   (0-3 places) that rounds to the same 8-bit alpha (round(a*255)).  Avoids the
+   single-float leak of NUM->CSS on a stored float alpha (0.2f0 -> 0.2, not
+   0.20000000298...)."
+  (let* ((a (max 0d0 (min 1d0 (float a 1d0))))
+         (a255 (round (* a 255))))
+    (loop for places from 0 to 3
+          for scale = (expt 10 places)
+          for cand = (/ (round (* (/ a255 255d0) scale)) scale)
+          when (= (round (* cand 255)) a255)
+            return (num->css (float cand 1d0))
+          finally (return (num->css a)))))
+
 (defun rgb-str (c)
   (if (and (consp c) (>= (length c) 3))
       (destructuring-bind (r g b &optional (a 1.0)) c
         (if (and a (< a 1))
-            (format nil "rgba(~a, ~a, ~a, ~a)" (round r) (round g) (round b) (num->css a))
-            (format nil "rgb(~a, ~a, ~a)" (round r) (round g) (round b))))
+            (format nil "rgba(~a, ~a, ~a, ~a)" (round-channel r) (round-channel g)
+                    (round-channel b) (serialize-alpha a))
+            (format nil "rgb(~a, ~a, ~a)" (round-channel r) (round-channel g) (round-channel b))))
       ""))
 
 (defun box-shorthand (top right bottom left)

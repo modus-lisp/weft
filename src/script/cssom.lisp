@@ -665,6 +665,89 @@
     "border-block-start-style" "border-block-end-style"
     "border-inline-start-style" "border-inline-end-style"))
 
+;;; ---- border-image-* longhand grammar rejection (CSS Backgrounds 3 §6) ------
+;;; Each border-image longhand has a small closed grammar.  On the element.style
+;;; WRITE path we reject values with a PROVABLY invalid piece (a negative number/
+;;; percentage, a percentage/keyword where the grammar forbids it, or too many
+;;; components) so test_invalid_value passes.  Anything containing `(` (url()/
+;;; gradient/calc()/var()/image-set()) is stored VERBATIM — never risk a valid
+;;; value.  A numeric token with an unrecognised unit classifies :unknown (kept),
+;;; so the check can never drop a value the cascade would honour.
+(defparameter +border-image-repeat-kw+ '("stretch" "repeat" "round" "space"))
+(defparameter +border-image-props+
+  '("border-image-source" "border-image-slice" "border-image-width"
+    "border-image-outset" "border-image-repeat"))
+
+(defun %top-level-comma-p (s)
+  "True when S has a comma outside any parentheses."
+  (let ((depth 0))
+    (loop for c across s do
+      (case c (#\( (incf depth)) (#\) (when (plusp depth) (decf depth)))
+        (#\, (when (zerop depth) (return t)))))))
+
+(defun %bi-ident-p (tok)
+  (and (plusp (length tok))
+       (every (lambda (c) (or (char<= #\a c #\z) (char= c #\-))) tok)))
+
+(defun %bi-classify (tok kws percent-ok length-ok)
+  "Classify one border-image numeric/keyword TOK: :ok, :bad, or :unknown.  KWS =
+   the allowed bare keywords; PERCENT-OK / LENGTH-OK gate <percentage>/<length>."
+  (cond
+    ((%bi-ident-p tok) (if (member tok kws :test #'string=) :ok :bad))
+    ((and (plusp (length tok)) (char= (char tok (1- (length tok))) #\%))
+     (let ((n (css:parse-value "number" (subseq tok 0 (1- (length tok))))))
+       (cond ((not (numberp n)) :unknown)
+             ((minusp n) :bad)
+             (percent-ok :ok)
+             (t :bad))))
+    (t (let ((n (css:parse-value "number" tok)))
+         (cond ((and (numberp n) (minusp n)) :bad)
+               ((numberp n) :ok)                      ; non-negative <number>
+               (t (let ((l (css:parse-value "length" tok)))
+                    (cond ((and (consp l) (numberp (first l)) (minusp (first l))) :bad)
+                          ((consp l) (if length-ok :ok :bad))
+                          (t :unknown)))))))))
+
+(defun %bi-list-ok (toks kws percent-ok length-ok)
+  "1-4 components, none PROVABLY bad -> NIL (accept); else :INVALID."
+  (cond ((or (null toks) (> (length toks) 4)) :invalid)
+        ((some (lambda (tk) (eq :bad (%bi-classify tk kws percent-ok length-ok))) toks) :invalid)
+        (t nil)))
+
+(defun canon-border-image-value (dashed value)
+  "Validate a border-image longhand VALUE.  NIL = accept (store verbatim),
+   :INVALID = drop the declaration."
+  (let* ((v (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+         (lower (string-downcase v)))
+    (cond
+      ((zerop (length v)) :invalid)
+      ((member lower +css-wide-keywords+ :test #'string=) nil)
+      ((%top-level-comma-p v) :invalid)          ; no longhand takes a comma list
+      ((find #\( v) nil)                          ; url()/gradient/calc()/var() -> verbatim
+      ((string= dashed "border-image-source")
+       (if (string= lower "none") nil :invalid))  ; <image> forms all carry `(`
+      ((string= dashed "border-image-repeat")
+       (let ((toks (%ws-tokens lower)))
+         (if (and toks (<= (length toks) 2)
+                  (every (lambda (tk) (member tk +border-image-repeat-kw+ :test #'string=)) toks))
+             nil :invalid)))
+      ((string= dashed "border-image-slice")
+       (let* ((toks (%ws-tokens lower))
+              (fills (count "fill" toks :test #'string=))
+              (nums (remove "fill" toks :test #'string=)))
+         (cond ((null toks) :invalid)
+               ((> fills 1) :invalid)
+               ;; `fill` is only valid at the start or end of the slice list
+               ((and (= fills 1) (not (or (string= (first toks) "fill")
+                                          (string= (car (last toks)) "fill")))) :invalid)
+               ;; <number>|<percentage> only (no <length>), 1-4, non-negative
+               (t (%bi-list-ok nums '() t nil)))))
+      ((string= dashed "border-image-width")
+       (%bi-list-ok (%ws-tokens lower) '("auto") t t))
+      ((string= dashed "border-image-outset")   ; <length>|<number>, no % / auto
+       (%bi-list-ok (%ws-tokens lower) '() nil t))
+      (t nil))))
+
 (defun parse-num-double (s)
   "Read an already-validated CSS <number> string S as a DOUBLE (so 0.7 serializes
    canonically as \"0.7\", not the single-float 0.699999988), or NIL if it does not
@@ -709,6 +792,7 @@
     ((string= dashed "opacity") (canon-opacity-value value))
     ((member dashed +bg-keyword-props+ :test #'string=) (canon-bg-keyword-value dashed value))
     ((member dashed +border-style-props+ :test #'string=) (canon-border-style-value dashed value))
+    ((member dashed +border-image-props+ :test #'string=) (canon-border-image-value dashed value))
     ((member dashed +sizing-props+ :test #'string=) (canon-sizing-value dashed value))
     ((member dashed +length-calc-props+ :test #'string=) (canon-calc-length value))
     (t nil)))

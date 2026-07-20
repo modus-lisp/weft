@@ -5,7 +5,8 @@
            #:define-value-parser
            ;; tokenizer + parser
            #:css-tokenize #:parse-stylesheet #:collect-font-faces
-           #:css-rule #:css-rule-selector #:css-rule-decls
+           #:sheet-has-container-queries-p
+           #:css-rule #:css-rule-selector #:css-rule-decls #:css-rule-container
            #:css-decl #:css-decl-prop #:css-decl-value #:css-decl-important
            #:ctok #:ctok-type #:ctok-value #:ctok-unit
            ;; selectors
@@ -53,4 +54,5 @@
            #:cstyle-bg-origin #:cstyle-bg-clip #:cstyle-bg-clip-list #:cstyle-bg-layers
            #:cstyle-object-fit #:cstyle-aspect-ratio
            #:cstyle-outline-width #:cstyle-outline-style #:cstyle-outline-color #:cstyle-outline-offset
-           #:cstyle-accent-color #:cstyle-box-shadow #:cstyle-opacity))
+           #:cstyle-accent-color #:cstyle-box-shadow #:cstyle-opacity
+           #:cstyle-container-type #:cstyle-container-name))

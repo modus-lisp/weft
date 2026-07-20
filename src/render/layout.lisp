@@ -3689,6 +3689,68 @@ enclosing scroll container (else the viewport VP-RECT) and its containing block.
                    (when (typep c 'lbox) (walk c sr cr)))))))
     (walk root vp-rect vp-rect)))
 
+;;; ---- @container query resolution (CSS Containment 3) --------------------
+(defun cq-container-size (lb cs)
+  "Logical content-box size of a laid-out query container LB with style CS.
+Returns (values PW PH IW BH) — physical width/height and inline/block sizes px."
+  (let* ((bl (used-border cs :l)) (br (used-border cs :r))
+         (bt (used-border cs :t)) (bb (used-border cs :b))
+         (pl (css:cstyle-padding-left cs)) (pr (css:cstyle-padding-right cs))
+         (pt (css:cstyle-padding-top cs)) (pb (css:cstyle-padding-bottom cs))
+         (pw (max 0.0 (- (lbox-w lb) bl br pl pr)))
+         (ph (max 0.0 (- (lbox-h lb) bt bb pt pb)))
+         (horiz (string= (css:cstyle-writing-mode cs) "horizontal-tb")))
+    (values pw ph (if horiz pw ph) (if horiz ph pw))))
+
+(defun measure-containers (root sizes)
+  "Populate SIZES (a node->size-plist hash) from the laid-out tree ROOT for every
+query container (container-type size/inline-size).  Returns T if any size moved
+from its previous value — the signal to iterate the container-query pass."
+  (let ((changed nil))
+    (labels ((walk (lb)
+               (when (typep lb 'lbox)
+                 (let ((node (lbox-node lb)) (cs (lbox-style lb)))
+                   (when (and node cs
+                              (member (css:cstyle-container-type cs) '("size" "inline-size")
+                                      :test #'string=))
+                     (multiple-value-bind (pw ph iw bh) (cq-container-size lb cs)
+                       ;; An inline-size container contains (and can be queried on)
+                       ;; only its inline axis; the block axis is unavailable (NIL).
+                       (let* ((inline-only (string= (css:cstyle-container-type cs) "inline-size"))
+                              (horiz (string= (css:cstyle-writing-mode cs) "horizontal-tb"))
+                              (new (list :pw (if (and inline-only (not horiz)) nil pw)
+                                         :ph (if (and inline-only horiz) nil ph)
+                                         :iw iw :bh (if inline-only nil bh)
+                                         :fs (css:cstyle-font-size cs)
+                                         :wm (css:cstyle-writing-mode cs)))
+                              (old (gethash node sizes)))
+                         (unless (equal old new) (setf changed t))
+                         (setf (gethash node sizes) new))))
+                   (dolist (c (lbox-children lb)) (walk c))))))
+      (walk root))
+    changed))
+
+(defun layout-with-container-queries (document styles sheet width
+                                      &optional viewport-height scroll-to abs-vh)
+  "Cascade + lay out, resolving @container queries via a bounded post-layout
+re-cascade.  DOCUMENT is already cascaded into STYLES (with no @container
+declarations applied).  When SHEET holds @container rules, measure each query
+container from the laid-out tree, re-cascade with those sizes so matching
+@container declarations apply, and re-lay-out — iterating up to 3 passes until
+container sizes stabilise.  Returns (values ROOT ADV STYLES)."
+  (multiple-value-bind (root adv) (layout-tree document styles width viewport-height scroll-to abs-vh)
+    (if (css:sheet-has-container-queries-p sheet)
+        (let ((sizes (make-hash-table :test 'eq)))
+          (loop for iter from 0 below 3 do
+            (let ((changed (measure-containers root sizes)))
+              (when (and (plusp iter) (not changed)) (return))
+              (let ((ns (css:compute-styles document sheet sizes)))
+                (multiple-value-bind (nr na)
+                    (layout-tree document ns width viewport-height scroll-to abs-vh)
+                  (setf root nr adv na styles ns)))))
+          (values root adv styles))
+        (values root adv styles))))
+
 (defun layout-tree (document styles width &optional viewport-height scroll-to abs-vh)
   (let* ((*floats* nil) (*abs-pending* nil) (*fixed-pending* nil)
          (*intrinsic-cache* (make-hash-table :test 'equal))
@@ -4925,9 +4987,10 @@ Two height models:
          (viewport-p (and viewport-height (root-clips-p doc styles)))
          (vph (and viewport-p (round viewport-height))))
     (declare (ignore pre-hook))
-    (multiple-value-bind (root adv) (layout-tree doc styles width vph
-                                                 (and viewport-p scroll-to)
-                                                 (and viewport-height (round viewport-height)))
+    (multiple-value-bind (root adv styles)
+        (layout-with-container-queries doc styles sheet width vph
+                                       (and viewport-p scroll-to)
+                                       (and viewport-height (round viewport-height)))
       (declare (ignore adv))
       (let* ((content-h (if root (round (+ (lbox-y root) (lbox-h root) 8)) min-height))
              (height (if vph vph (min max-height (max min-height content-h))))

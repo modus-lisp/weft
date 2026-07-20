@@ -9,8 +9,16 @@
 
 (declaim (special *viewport-w* *viewport-h*))   ; defined in style.lisp; used for @media evaluation
 
-(defstruct css-rule selector decls)        ; selector: string; decls: list of (prop value . important)
+(defstruct css-rule selector decls
+  ;; CSS Containment 3 §container queries: NIL for an unconditional rule, else a
+  ;; list of enclosing @container query specs (each (NAME . COND-AST), innermost
+  ;; last), ALL of which must evaluate true for the rule's declarations to apply.
+  container)
 (defstruct css-decl prop value important)
+
+(defvar *container-cq* nil
+  "Dynamic list of enclosing @container query specs stamped onto every CSS-RULE
+emitted while parsing inside an @container block (see CSS-RULE-CONTAINER).")
 
 (defun css-escape-ident (s)
   "Re-escape an ident value when reconstructing source text.  The tokenizer
@@ -318,6 +326,165 @@ selector list is wrapped in :is() so specificity/grouping stay correct."
                             (concatenate 'string pwrap " " p))))
                     (%sel-split-top-commas nested)))))
 
+;;; ---- @container query preludes (CSS Containment 3 §container queries) ----
+(defun %cq-split-tokens (s)
+  "Tokenize a container condition on whitespace, keeping a balanced (...) group
+(nesting-aware) as a single token — e.g. `(a) and (b)` -> (\"(a)\" \"and\" \"(b)\")."
+  (let ((toks '()) (i 0) (n (length s)))
+    (loop while (< i n) do
+      (loop while (and (< i n) (member (char s i) '(#\Space #\Tab #\Newline #\Return))) do (incf i))
+      (when (>= i n) (return))
+      (if (char= (char s i) #\()
+          (let ((depth 0) (start i))
+            (loop while (< i n) do
+              (case (char s i) (#\( (incf depth)) (#\) (decf depth)))
+              (incf i)
+              (when (<= depth 0) (return)))
+            (push (subseq s start i) toks))
+          (let ((start i))
+            (loop while (and (< i n) (not (member (char s i) '(#\Space #\Tab #\Newline #\Return #\())))
+                  do (incf i))
+            (push (subseq s start i) toks))))
+    (nreverse toks)))
+
+(defparameter *cq-size-features* '("width" "height" "inline-size" "block-size")
+  "Size features weft evaluates in a container query; others -> :unknown.")
+
+(defun %cq-op-sym (s)
+  (cond ((string= s "<=") :<=) ((string= s ">=") :>=)
+        ((string= s "<") :<) ((string= s ">") :>) ((string= s "=") :=) (t nil)))
+
+(defun %cq-op-flip (op)
+  "Reverse a comparison operator when its operands are swapped."
+  (ecase op (:< :>) (:<= :>=) (:> :<) (:>= :<=) (:= :=)))
+
+(defun %cq-value-token-p (s)
+  "True when S looks like a <length>/<number> value (vs a feature name)."
+  (and (plusp (length s))
+       (let ((c (char s 0))) (or (digit-char-p c) (member c '(#\+ #\- #\.))))))
+
+(defun %cq-scan-ops (s)
+  "Return an alist (POS . OP-STRING) of top-level comparison operators in S."
+  (let ((out '()) (i 0) (n (length s)))
+    (loop while (< i n) do
+      (let ((c (char s i)))
+        (cond ((and (member c '(#\< #\>)) (< (1+ i) n) (char= (char s (1+ i)) #\=))
+               (push (cons i (subseq s i (+ i 2))) out) (incf i 2))
+              ((member c '(#\< #\>)) (push (cons i (string c)) out) (incf i))
+              ((and (char= c #\=) (or (zerop i) (not (member (char s (1- i)) '(#\< #\>)))))
+               (push (cons i "=") out) (incf i))
+              (t (incf i)))))
+    (nreverse out)))
+
+(defun parse-size-feature (inner)
+  "Parse a size-feature interior (the text inside `(...)`) into an AST node:
+(:feature NAME OP VALUE-STRING) or (:unknown).  Handles the colon forms
+(min-/max-width:), single comparisons (width > 300px) and ranges
+(200px <= width < 400px)."
+  (let* ((inner (css-trim inner))
+         (colon (position #\: inner)))
+    (cond
+      ;; `[min-|max-]<feature>: <value>`
+      (colon
+       (let* ((name (string-downcase (css-trim (subseq inner 0 colon))))
+              (val (css-trim (subseq inner (1+ colon))))
+              (op :=))
+         (cond ((and (> (length name) 4) (string= (subseq name 0 4) "min-"))
+                (setf op :>= name (subseq name 4)))
+               ((and (> (length name) 4) (string= (subseq name 0 4) "max-"))
+                (setf op :<= name (subseq name 4))))
+         (if (and (member name *cq-size-features* :test #'string=) (plusp (length val)))
+             (list :feature name op val)
+             '(:unknown))))
+      ;; comparison / range form
+      (t
+       (let ((ops (%cq-scan-ops inner)))
+         (case (length ops)
+           (1 (let* ((p (caar ops)) (op (%cq-op-sym (cdar ops)))
+                     (lhs (string-downcase (css-trim (subseq inner 0 p))))
+                     (rhs (css-trim (subseq inner (+ p (length (cdar ops)))))))
+                (cond
+                  ((null op) '(:unknown))
+                  ;; feature OP value
+                  ((member lhs *cq-size-features* :test #'string=)
+                   (list :feature lhs op rhs))
+                  ;; value OP feature  -> flip
+                  ((member (string-downcase rhs) *cq-size-features* :test #'string=)
+                   (list :feature (string-downcase rhs) (%cq-op-flip op) lhs))
+                  (t '(:unknown)))))
+           (2 (let* ((p1 (car (first ops))) (o1 (cdr (first ops)))
+                     (p2 (car (second ops))) (o2 (cdr (second ops)))
+                     (v1 (css-trim (subseq inner 0 p1)))
+                     (name (string-downcase (css-trim (subseq inner (+ p1 (length o1)) p2))))
+                     (v2 (css-trim (subseq inner (+ p2 (length o2)))))
+                     (op1 (%cq-op-sym o1)) (op2 (%cq-op-sym o2)))
+                ;; `v1 op1 name op2 v2`  ->  name (flip op1) v1  AND  name op2 v2
+                (if (and op1 op2 (member name *cq-size-features* :test #'string=)
+                         (%cq-value-token-p v1) (%cq-value-token-p v2))
+                    (list :and (list :feature name (%cq-op-flip op1) v1)
+                          (list :feature name op2 v2))
+                    '(:unknown))))
+           (t '(:unknown))))))))
+
+(defun %cq-query-in-parens (tok)
+  "Parse a `(...)` query token into an AST — either a nested condition or a size
+feature.  A non-paren token is :unknown."
+  (if (and tok (plusp (length tok)) (char= (char tok 0) #\())
+      (let* ((close (position #\) tok :from-end t))
+             (inner (css-trim (subseq tok 1 (or close (length tok))))))
+        (cond ((zerop (length inner)) '(:unknown))
+              ;; nested condition: starts with `(` or leads with `not`
+              ((or (char= (char inner 0) #\()
+                   (let ((ts (%cq-split-tokens inner)))
+                     (and (rest ts) (member (string-downcase (first ts)) '("not") :test #'string=))))
+               (parse-container-condition inner))
+              ;; grouped and/or: a `(...)` immediately followed by and/or at top level
+              ((let ((ts (%cq-split-tokens inner)))
+                 (and (rest ts) (%paren-group-p (first ts))
+                      (member (string-downcase (second ts)) '("and" "or") :test #'string=)))
+               (parse-container-condition inner))
+              (t (parse-size-feature inner))))
+      '(:unknown)))
+
+(defun parse-container-condition (s)
+  "Parse a <container-condition> string into an evaluable AST:
+(:and c...) | (:or c...) | (:not c) | (:feature name op val) | (:unknown)."
+  (let ((toks (%cq-split-tokens (css-trim s))))
+    (cond
+      ((null toks) '(:unknown))
+      ((string-equal (first toks) "not")
+       (list :not (%cq-query-in-parens (second toks))))
+      (t
+       (let ((terms (list (%cq-query-in-parens (first toks)))) (op nil) (rest (rest toks)))
+         (block chain
+           (loop while rest do
+             (let ((conn (string-downcase (first rest))))
+               (cond ((member conn '("and" "or") :test #'string=)
+                      (when (and op (not (string= op conn)))
+                        (return-from chain '(:unknown)))   ; mixing and/or needs grouping
+                      (setf op conn)
+                      (push (%cq-query-in-parens (second rest)) terms)
+                      (setf rest (cddr rest)))
+                     (t (return-from chain '(:unknown)))))
+             finally (return-from chain
+                       (cond ((null op) (first terms))
+                             ((string= op "and") (cons :and (nreverse terms)))
+                             (t (cons :or (nreverse terms))))))))))))
+
+(defun parse-container-prelude (prelude)
+  "Parse an @container prelude `[<name>]? <container-condition>` into a query spec
+(NAME . COND-AST): NAME a lowercased ident string or NIL."
+  (let* ((s (css-trim prelude))
+         (toks (%cq-split-tokens s)))
+    (if (and toks
+             (not (%paren-group-p (first toks)))
+             (not (member (string-downcase (first toks)) '("not") :test #'string=)))
+        ;; leading ident = container-name; the rest is the condition
+        (let* ((name (string-downcase (first toks)))
+               (rest (css-trim (subseq s (+ (or (search (first toks) s) 0) (length (first toks)))))))
+          (cons name (parse-container-condition rest)))
+        (cons nil (parse-container-condition s)))))
+
 (defun parse-stylesheet (css)
   "Parse a CSS string into a list of CSS-RULEs."
   (let* ((toks (css-tokenize css)) (n (length toks)) (i 0) (rules '()))
@@ -346,7 +513,13 @@ selector list is wrapped in :is() so specificity/grouping stay correct."
                                   (when (media-matches-p (toks-text toks (1+ k) j))
                                     (push (list sel (1+ j) close) nested)))
                                  ((member kw '("layer" "supports") :test #'string=)
-                                  (push (list sel (1+ j) close) nested))
+                                  (push (list sel (1+ j) close nil) nested))
+                                 ;; nested @container: defer with the query recorded so
+                                 ;; inner rules are stamped when emitted (source order).
+                                 ((string= kw "container")
+                                  (push (list sel (1+ j) close
+                                              (parse-container-prelude (toks-text toks (1+ k) j)))
+                                        nested))
                                  (t nil))
                                (setf k (1+ close))))
                             (t (setf k (if (< j bend) (1+ j) bend))))))
@@ -366,7 +539,7 @@ selector list is wrapped in :is() so specificity/grouping stay correct."
                              (let* ((close (match-brace toks j))
                                     (nsel (string-left-trim '(#\Space #\Tab #\Newline) (toks-text toks k j)))
                                     (rsel (if (plusp (length nsel)) (resolve-nesting-selector nsel sel) sel)))
-                               (push (list rsel (1+ j) close) nested)
+                               (push (list rsel (1+ j) close nil) nested)
                                (setf k (1+ close))))
                             (t
                              (dolist (d (parse-declarations toks k j)) (push d direct))
@@ -374,9 +547,14 @@ selector list is wrapped in :is() so specificity/grouping stay correct."
                  ;; hoist direct declarations above nested rules (source order kept
                  ;; within each group via the nreverse below).
                  (when direct
-                   (push (make-css-rule :selector sel :decls (nreverse direct)) rules))
+                   (push (make-css-rule :selector sel :decls (nreverse direct)
+                                        :container *container-cq*)
+                         rules))
                  (dolist (nr (nreverse nested))
-                   (emit-rule (first nr) (second nr) (third nr)))))
+                   (let ((*container-cq* (if (fourth nr)
+                                             (append *container-cq* (list (fourth nr)))
+                                             *container-cq*)))
+                     (emit-rule (first nr) (second nr) (third nr))))))
              (collect-rules (start end)
                (let ((i start))
                  (loop while (< i end) do
@@ -403,6 +581,17 @@ selector list is wrapped in :is() so specificity/grouping stay correct."
                                  ;; conditions are assumed met (progressive enhancement).
                                  ((member kw '("layer" "supports") :test #'string=)
                                   (collect-rules (1+ j) close))
+                                 ;; @container: capture inner rules, stamping each with
+                                 ;; the (name . condition) query so the cascade applies
+                                 ;; them only when the queried container matches
+                                 ;; (CSS Containment 3 §container queries).  Nested
+                                 ;; @container appends, so all enclosing queries must hold.
+                                 ((string= kw "container")
+                                  (let ((*container-cq*
+                                          (append *container-cq*
+                                                  (list (parse-container-prelude
+                                                         (toks-text toks (1+ i) j))))))
+                                    (collect-rules (1+ j) close)))
                                  ;; @font-face holds descriptors (font-family, src,
                                  ;; font-weight/style), not a qualified rule — capture
                                  ;; them under the sentinel selector "@font-face" so a
@@ -433,3 +622,8 @@ selector list is wrapped in :is() so specificity/grouping stay correct."
                               (setf i end))))))))))
       (collect-rules 0 n))
     (nreverse rules)))
+
+(defun sheet-has-container-queries-p (stylesheet)
+  "True when any rule in STYLESHEET was captured inside an @container block — the
+signal that a post-layout container-query resolution pass is needed."
+  (some #'css-rule-container stylesheet))

@@ -220,7 +220,11 @@ Mixes in premultiplied sRGB (a pragmatic first cut; the dominant real-world use 
          (clamp (v lo hi)
            (max lo (min hi v)))
          (try-parse-num (str)
-           (ignore-errors (read-from-string str)))
+           ;; Only a real number is a valid numeric component; a bare ident like
+           ;; `none` reads as a SYMBOL, which must not leak into the arithmetic
+           ;; below (CSS Color 4 `none` is unmodeled -> reject the component).
+           (let ((v (ignore-errors (let ((*read-eval* nil)) (read-from-string str)))))
+             (and (realp v) v)))
          ;; Hex parsing
          (parse-hex ()
            (let* ((body (subseq s 1))

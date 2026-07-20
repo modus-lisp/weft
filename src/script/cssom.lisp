@@ -30,6 +30,80 @@
             (format nil "rgb(~a, ~a, ~a)" (round r) (round g) (round b))))
       ""))
 
+;;; ---- specified-value canonicalization (CSSOM setProperty) -----------------
+;;; test_valid_value / test_invalid_value require element.style to canonicalize a
+;;; property's SPECIFIED value and DROP invalid declarations.  We route only the
+;;; setProperty / style[prop]= path (never the cascade) through the property's
+;;; grammar, reusing weft's cascade value parsers so "valid" here means exactly
+;;; what layout accepts.  A value we cannot prove valid is stored VERBATIM (NIL
+;;; result) — never rejected — so canonicalization can never drop a declaration
+;;; the cascade would have honoured (guards the pixel/HN gates).
+
+(defparameter +css-wide-keywords+
+  '("inherit" "initial" "unset" "revert" "revert-layer"))
+
+(defparameter +system-colors+
+  ;; CSS Color 4 §system colors — valid <color>s that serialize lowercased.
+  '("activetext" "buttonborder" "buttonface" "buttontext" "canvas"
+    "canvastext" "field" "fieldtext" "graytext" "highlight" "highlighttext"
+    "linktext" "mark" "marktext" "visitedtext" "selecteditem"
+    "selecteditemtext" "accentcolor" "accentcolortext"))
+
+(defparameter +color-props+
+  '("color" "background-color" "border-top-color" "border-right-color"
+    "border-bottom-color" "border-left-color" "outline-color"
+    "text-decoration-color" "column-rule-color" "caret-color"
+    "border-block-start-color" "border-block-end-color"
+    "border-inline-start-color" "border-inline-end-color"
+    "text-emphasis-color" "-webkit-text-fill-color" "-webkit-text-stroke-color"))
+
+(defun %prefix-p (s prefix)
+  (and (>= (length s) (length prefix)) (string= s prefix :end1 (length prefix))))
+
+(defun %risky-color-tokens-p (lower)
+  "Color values whose canonical serialization weft would get wrong: `none`
+   components keep the function form (hsl(none ...) stays hsl), and calc()/var()
+   are not resolved.  Such values are stored verbatim rather than mis-serialized."
+  (or (search "none" lower) (search "calc" lower) (search "var(" lower)
+      (search "from" lower)                 ; relative color, e.g. rgb(from red r g b)
+      (search "min(" lower) (search "max(" lower) (search "clamp(" lower)))
+
+(defun canon-color-value (value)
+  "Canonicalize a <color> specified VALUE (CSS Color 4 / CSSOM serialization).
+   Named colors, system colors, currentcolor and transparent serialize as their
+   lowercased keyword; hex and rgb()/hsl() normalize to rgb()/rgba().  Returns a
+   canonical string, :invalid (reject), or NIL (store verbatim — for forms weft
+   doesn't fully model: lab/oklch/hwb/color()/color-mix/light-dark/relative)."
+  (let* ((v (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+         (lower (string-downcase v)))
+    (cond
+      ((zerop (length v)) :invalid)
+      ((member lower +css-wide-keywords+ :test #'string=) lower)
+      ((string= lower "currentcolor") "currentcolor")
+      ((string= lower "transparent") "transparent")
+      ((member lower +system-colors+ :test #'string=) lower)
+      ((gethash lower css::*named-colors*) lower)
+      ((%risky-color-tokens-p lower) nil)
+      ((char= (char v 0) #\#)
+       (let ((c (css:parse-value "color" v))) (if (consp c) (rgb-str c) :invalid)))
+      ((or (%prefix-p lower "rgb(") (%prefix-p lower "rgba(")
+           (%prefix-p lower "hsl(") (%prefix-p lower "hsla("))
+       (let ((c (css:parse-value "color" v))) (if (consp c) (rgb-str c) :invalid)))
+      ;; A single unmatched token (no function parens, no interior whitespace) can
+      ;; only be a bare identifier or number — neither is a valid <color> -> reject.
+      ((and (not (find #\( v))
+            (not (find-if (lambda (c) (member c '(#\Space #\Tab #\Newline #\Return))) v)))
+       :invalid)
+      ;; Unknown function / multi-token forms weft doesn't model -> leave verbatim.
+      (t nil))))
+
+(defun canon-declaration (dashed value)
+  "Canonical specified-value serialization for property DASHED given raw VALUE.
+   :invalid -> drop the declaration; a string -> store it; NIL -> store verbatim."
+  (cond
+    ((member dashed +color-props+ :test #'string=) (canon-color-value value))
+    (t nil)))
+
 (defparameter +computed-props+
   '("display" "white-space" "position" "float" "clear" "overflow" "text-align"
     "cursor" "text-transform" "box-sizing" "font-style" "z-index" "font-weight"
@@ -196,12 +270,18 @@
                  (if cell (cdr cell) "")))
              (set-prop (name val)
                ;; Setting the empty string removes the declaration (CSSOM §setProperty).
+               ;; A parseable value is stored in its canonical form; a value proven
+               ;; invalid is ignored (existing declaration untouched); anything else
+               ;; is stored verbatim (CSSOM §setProperty / CSS value serialization).
                (let* ((d (string-downcase name)) (alist (decls))
                       (cell (assoc d alist :test #'string=)))
                  (cond ((zerop (length (string-trim '(#\Space #\Tab #\Newline #\Return) (or val ""))))
                         (when cell (store (remove cell alist))))
-                       (cell (setf (cdr cell) val) (store alist))
-                       (t (store (append alist (list (cons d val))))))))
+                       (t (let ((canon (canon-declaration d (or val ""))))
+                            (unless (eq canon :invalid)
+                              (let ((stored (if (stringp canon) canon val)))
+                                (cond (cell (setf (cdr cell) stored) (store alist))
+                                      (t (store (append alist (list (cons d stored)))))))))))))
              (remove-prop (name)
                (let* ((d (string-downcase name)) (alist (decls))
                       (cell (assoc d alist :test #'string=)))

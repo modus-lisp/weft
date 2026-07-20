@@ -182,10 +182,12 @@
 (defun cval-alist (x) (cdr x))
 
 (defun calc-merge (a b sign)
-  "Merge two Sum alists, B scaled by SIGN (+1/-1)."
+  "Merge two Sum alists, B scaled by SIGN (+1/-1).  Keys may be unit strings or
+   symbolic min()/max()/clamp() nodes, so compare with EQUAL (never string=,
+   which would error on a node key)."
   (let ((out (mapcar (lambda (kv) (cons (car kv) (cdr kv))) a)))
     (dolist (kv b out)
-      (let ((cell (assoc (car kv) out :test #'string=)))
+      (let ((cell (assoc (car kv) out :test #'equal)))
         (if cell (incf (cdr cell) (* sign (cdr kv)))
             (push (cons (car kv) (* sign (cdr kv))) out))))))
 
@@ -195,7 +197,7 @@
 (defun calc-number-value (alist)
   "The rational when ALIST is a pure number ({} or {\"\":n}), else NIL."
   (cond ((null alist) 0)
-        ((and (null (cdr alist)) (string= (caar alist) "")) (cdar alist))
+        ((and (null (cdr alist)) (equal (caar alist) "")) (cdar alist))
         (t nil)))
 
 (defun calc-either (a b)
@@ -207,12 +209,23 @@
 (defun calc-add (a b sign)
   (or (calc-either a b) (cval-map (calc-merge (cval-alist a) (cval-alist b) sign))))
 
+(defun calc-scaled-cval (alist k)
+  "Scale Sum ALIST by scalar K, but :BAIL when the result is a MULTI-TERM Sum that
+   still contains a symbolic min/max/clamp node.  Distributing a scalar across such
+   a Sum would discard the canonical `n * (…)` Product form the spec preserves —
+   e.g. 2*(min(a,b)+max(c,d)) stays a Product, not 2·min + 2·max (§10.9).  A lone
+   scaled node (n * min(…)) is fine and stays."
+  (let ((s (calc-scale alist k)))
+    (if (and (cdr s) (some (lambda (kv) (calc-key-node-p (car kv))) s))
+        :bail
+        (cval-map s))))
+
 (defun calc-mul (a b)
   (or (calc-either a b)
       (let ((na (calc-number-value (cval-alist a)))
             (nb (calc-number-value (cval-alist b))))
-        (cond (nb (cval-map (calc-scale (cval-alist a) nb)))
-              (na (cval-map (calc-scale (cval-alist b) na)))
+        (cond (nb (calc-scaled-cval (cval-alist a) nb))
+              (na (calc-scaled-cval (cval-alist b) na))
               (t :bail)))))            ; dimension * dimension -> not modelled
 
 (defun calc-div (a b)
@@ -220,7 +233,7 @@
       (let ((nb (calc-number-value (cval-alist b))))
         (cond ((null nb) :bail)        ; divide by a dimension -> not modelled
               ((zerop nb) :bail)       ; divide by zero -> infinity, not modelled
-              (t (cval-map (calc-scale (cval-alist a) (/ 1 nb))))))))
+              (t (calc-scaled-cval (cval-alist a) (/ 1 nb)))))))
 
 (defun calc-num->cval (rational unit)
   "A single numeric token -> a Sum, folding absolute lengths to px; unknown units
@@ -240,24 +253,36 @@
         (t nil)))
 
 (defun calc-comparison (name args)
-  "Fold min()/max()/clamp() ARGS (cvals) when each reduces to a single-term Sum of
-   the SAME unit; else :BAIL (kept symbolic) or :INVALID (propagated)."
+  "Simplify min()/max()/clamp() over its ARGS (cvals).  A one-argument min()/max()
+   reduces to its argument; when every argument reduces to a single-term Sum of the
+   SAME real unit the comparison folds to one term; otherwise the function is kept
+   SYMBOLIC as a node term (:node name arg-alists) with coefficient 1, so it can be
+   summed/scaled and serialized per CSS Values 4 §10.10.  :INVALID is propagated;
+   an argument weft cannot model (:BAIL) leaves the whole value verbatim."
   (cond
     ((some (lambda (a) (eq a :invalid)) args) :invalid)
     ((some (lambda (a) (not (cval-map-p a))) args) :bail)
-    ((and (string= name "clamp") (/= (length args) 3)) :bail)
     ((null args) :bail)
+    ((and (string= name "clamp") (/= (length args) 3)) :bail)
+    ((and (member name '("min" "max") :test #'string=) (= (length args) 1))
+     (first args))                       ; min(x)/max(x) == x
     (t (let ((terms (mapcar (lambda (a) (calc-single-term (cval-alist a))) args)))
-         (if (some #'null terms) :bail
-             (let ((unit (car (first terms))))
-               (if (notevery (lambda (tm) (string= (car tm) unit)) terms) :bail
-                   (let ((vals (mapcar #'cdr terms)))
-                     (cval-map
-                      (list (cons unit
-                                  (cond ((string= name "min") (reduce #'min vals))
-                                        ((string= name "max") (reduce #'max vals))
-                                        (t (max (first vals)
-                                                (min (second vals) (third vals))))))))))))))))
+         (if (and (notany #'null terms)
+                  (every (lambda (tm) (stringp (car tm))) terms)
+                  ;; Percentages are NOT folded: their basis is unknown at computed
+                  ;; time and may be negative, so min(1%,2%) cannot be ordered
+                  ;; (CSS Values 4 §10.9) — keep such comparisons symbolic.
+                  (not (string= (car (first terms)) "%"))
+                  (let ((u (car (first terms))))
+                    (every (lambda (tm) (string= (car tm) u)) terms)))
+             ;; all arguments are one-term sums of the same real unit -> fold
+             (let ((unit (car (first terms))) (vals (mapcar #'cdr terms)))
+               (cval-map (list (cons unit
+                 (cond ((string= name "min") (reduce #'min vals))
+                       ((string= name "max") (reduce #'max vals))
+                       (t (max (first vals) (min (second vals) (third vals)))))))))
+             ;; heterogeneous -> keep symbolic (args in source order)
+             (cval-map (list (cons (list :node name (mapcar #'cval-alist args)) 1))))))))
 
 (defun calc-eval-tokens (toks)
   "Recursive-descent parse + simplify a token list -> a cval."
@@ -340,23 +365,47 @@
 (defun calc-term-str (coeff unit)
   (concatenate 'string (num->css coeff) (if (string= unit "") "" unit)))
 
+(defun calc-key-node-p (key)
+  "A Sum key that is a symbolic min()/max()/clamp() node, not a unit string."
+  (and (consp key) (eq (car key) :node)))
+
+(defun calc-node-serialize (node)
+  "Serialize a symbolic comparison NODE (:node name arg-alists) as name(a, b, …),
+   each argument serialized as a bare calc body (no wrapper) in source order."
+  (format nil "~a(~{~a~^, ~})"
+          (second node) (mapcar #'calc-serialize-sum (third node))))
+
+(defun calc-abs-term-str (key coeff)
+  "Serialize one Sum term with a NON-NEGATIVE COEFF.  A unit term is <coeff><unit>;
+   a symbolic node with coeff 1 is the bare node, otherwise (<coeff> * node)."
+  (if (calc-key-node-p key)
+      (if (= coeff 1)
+          (calc-node-serialize key)
+          (concatenate 'string "(" (num->css coeff) " * " (calc-node-serialize key) ")"))
+      (calc-term-str coeff key)))
+
 (defun calc-serialize-sum (alist)
   "Serialize a simplified Sum ALIST to the calc() BODY string (CSS Values 4 §10.10):
    number first, then percentage, then dimensions sorted ASCII case-insensitively by
-   unit; terms joined by ' + ' / ' - '."
-  (let* ((num (assoc "" alist :test #'string=))
-         (pct (assoc "%" alist :test #'string=))
-         (dims (sort (remove-if (lambda (kv) (member (car kv) '("" "%") :test #'string=))
+   unit, then symbolic min/max/clamp nodes sorted by serialization; terms joined by
+   ' + ' / ' - '."
+  (let* ((num (assoc "" alist :test #'equal))
+         (pct (assoc "%" alist :test #'equal))
+         (dims (sort (remove-if (lambda (kv) (or (calc-key-node-p (car kv))
+                                                 (member (car kv) '("" "%") :test #'equal)))
                                 (copy-list alist))
                      #'string< :key #'car))
-         (ordered (append (and num (list num)) (and pct (list pct)) dims)))
+         (nodes (sort (remove-if-not (lambda (kv) (calc-key-node-p (car kv))) (copy-list alist))
+                      #'string< :key (lambda (kv) (calc-node-serialize (car kv)))))
+         (ordered (append (and num (list num)) (and pct (list pct)) dims nodes)))
     (with-output-to-string (o)
       (loop for kv in ordered for first = t then nil
-            for coeff = (cdr kv) for unit = (car kv)
-            do (cond (first (write-string (calc-term-str coeff unit) o))
+            for coeff = (cdr kv) for key = (car kv)
+            do (cond (first (when (minusp coeff) (write-string "-" o))
+                            (write-string (calc-abs-term-str key (abs coeff)) o))
                      ((minusp coeff)
-                      (write-string " - " o) (write-string (calc-term-str (- coeff) unit) o))
-                     (t (write-string " + " o) (write-string (calc-term-str coeff unit) o)))))))
+                      (write-string " - " o) (write-string (calc-abs-term-str key (- coeff)) o))
+                     (t (write-string " + " o) (write-string (calc-abs-term-str key coeff) o)))))))
 
 (defun canon-calc-length (value)
   "Canonicalize a math function VALUE for a <length-percentage> property.  Returns a
@@ -369,9 +418,9 @@
           (cond ((eq cv :invalid) :invalid)
                 ((not (cval-map-p cv)) nil)
                 (t (let* ((alist (cval-alist cv))
-                          (pxcell (assoc "px" alist :test #'string=)))
+                          (pxcell (assoc "px" alist :test #'equal)))
                      (cond ((null alist) nil)
-                           ((assoc "" alist :test #'string=) :invalid)  ; number + length
+                           ((assoc "" alist :test #'equal) :invalid)  ; number + length
                            ;; A non-integer px coefficient (from an absolute-unit
                            ;; conversion like 1cm -> 4800/127 px) does not round-trip
                            ;; through weft's single-float length parser, so a used/
@@ -379,6 +428,15 @@
                            ;; the cascade's direct resolution.  Keep such values
                            ;; verbatim (the cascade already serializes them correctly).
                            ((and pxcell (not (integerp (cdr pxcell)))) nil)
+                           ;; A value that is exactly one symbolic min/max/clamp node
+                           ;; serializes bare when its coeff is 1 (no calc() wrapper),
+                           ;; else as calc(<coeff> * node) with no inner parens (§10.10).
+                           ((and (= (length alist) 1) (calc-key-node-p (caar alist)))
+                            (let ((coeff (cdar alist)) (node (caar alist)))
+                              (if (eql coeff 1)
+                                  (calc-node-serialize node)
+                                  (concatenate 'string "calc(" (num->css coeff) " * "
+                                               (calc-node-serialize node) ")"))))
                            (t (concatenate 'string
                                            "calc(" (calc-serialize-sum alist) ")"))))))))))
 
@@ -391,9 +449,13 @@
           (t (let* ((alist (cval-alist cv))
                     (keys (mapcar #'car alist)))
                (cond ((null alist) nil)
-                     ((some (lambda (k) (not (member k '("" "%") :test #'string=))) keys)
+                     ;; A symbolic min/max/clamp term (e.g. opacity: min(1, 50%)) is a
+                     ;; valid <number>|<percentage> weft resolves elsewhere — keep it
+                     ;; verbatim rather than risk a wrong canonical form.
+                     ((some #'calc-key-node-p keys) nil)
+                     ((some (lambda (k) (not (member k '("" "%") :test #'equal))) keys)
                       :invalid)
-                     ((and (member "" keys :test #'string=) (member "%" keys :test #'string=))
+                     ((and (member "" keys :test #'equal) (member "%" keys :test #'equal))
                       nil)
                      (t (concatenate 'string "calc(" (calc-serialize-sum alist) ")"))))))))
 
@@ -406,9 +468,84 @@
     "min-block-size" "max-block-size"
     "inset-block-start" "inset-block-end" "inset-inline-start" "inset-inline-end"
     "margin-block-start" "margin-block-end" "margin-inline-start" "margin-inline-end"
-    "padding-block-start" "padding-block-end" "padding-inline-start" "padding-inline-end")
+    "padding-block-start" "padding-block-end" "padding-inline-start" "padding-inline-end"
+    "text-indent")
   "Properties whose <length-percentage> calc() write-path we canonicalize; non-math
    values fall through to :BAIL -> stored verbatim, so no other value is affected.")
+
+;;; ---- sizing-property grammar rejection (CSS Sizing 3 §width/height) --------
+;;; width/height/min-*/max-* accept a CLOSED grammar: a size keyword, or a
+;;; NON-NEGATIVE <length-percentage> / fit-content()/ math function.  On the
+;;; element.style WRITE path we reject anything provably outside it so
+;;; test_invalid_value passes (declaration dropped -> getPropertyValue "").  The
+;;; grammar is closed, so a token that is neither a recognised keyword nor a
+;;; non-negative <length-percentage> is a proven error (negatives, unitless
+;;; non-zero, multi-token, `none`/`auto` on the wrong property, stray idents).
+
+(defparameter +sizing-props+
+  '("width" "height" "min-width" "max-width" "min-height" "max-height"
+    "inline-size" "block-size" "min-inline-size" "max-inline-size"
+    "min-block-size" "max-block-size")
+  "Properties taking `auto|none | <length-percentage [0,∞]> | min-content |
+   max-content | fit-content(<length-percentage>)` — the closed sizing grammar.")
+
+(defparameter +sizing-keywords+
+  '("min-content" "max-content" "fit-content" "stretch" "content"
+    "-webkit-fill-available" "-webkit-min-content" "-webkit-max-content"
+    "-webkit-fit-content" "-moz-min-content" "-moz-max-content"
+    "-moz-fit-content" "-moz-available")
+  "Intrinsic-size keywords valid for every sizing property (auto/none are gated
+   per-property: auto on width/height/min-*, none on max-*).")
+
+(defun %numeric-start-p (s)
+  (and (plusp (length s))
+       (let ((c (char s 0))) (or (digit-char-p c) (member c '(#\. #\+ #\-))))))
+
+(defun sizing-length-percentage (lower)
+  "Classify LOWER as a non-negative <length-percentage>: :VALID; :INVALID (parses
+   numerically but is negative, unitless non-zero, or trailing garbage); or
+   :NOT-LP (not numeric at all — a keyword the caller handles/ rejects)."
+  (if (and (plusp (length lower)) (char= (char lower (1- (length lower))) #\%))
+      (let ((n (css:parse-value "number" (subseq lower 0 (1- (length lower))))))
+        (cond ((not (numberp n)) :invalid)
+              ((minusp n) :invalid)
+              (t :valid)))
+      (let ((l (css:parse-value "length" lower)))
+        (cond ((eq l :invalid) (if (%numeric-start-p lower) :invalid :not-lp))
+              ((minusp (first l)) :invalid)
+              (t :valid)))))
+
+(defun sizing-fit-content-arg-valid-p (arg)
+  "The interior of fit-content(<length-percentage>) — a non-negative length/
+   percentage or a math function."
+  (let* ((a (string-trim '(#\Space #\Tab #\Newline #\Return) arg))
+         (lower (string-downcase a)))
+    (if (or (%prefix-p lower "calc(") (%prefix-p lower "min(")
+            (%prefix-p lower "max(") (%prefix-p lower "clamp("))
+        (not (eq (canon-calc-length a) :invalid))
+        (eq (sizing-length-percentage lower) :valid))))
+
+(defun canon-sizing-value (dashed value)
+  "Canonicalize/validate a sizing property VALUE.  Returns a canonical string,
+   :INVALID (drop the declaration), or NIL (store verbatim)."
+  (let* ((v (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+         (lower (string-downcase v))
+         (maxp (%prefix-p dashed "max-")))
+    (cond
+      ((zerop (length v)) :invalid)
+      ((member lower +css-wide-keywords+ :test #'string=) lower)
+      ((or (%prefix-p lower "calc(") (%prefix-p lower "min(")
+           (%prefix-p lower "max(") (%prefix-p lower "clamp("))
+       (canon-calc-length value))
+      ((string= lower "0") "0px")            ; unitless 0 <length> serializes as 0px
+      ((string= lower "auto") (if maxp :invalid lower))
+      ((string= lower "none") (if maxp lower :invalid))
+      ((member lower +sizing-keywords+ :test #'string=) lower)
+      ((and (%prefix-p lower "fit-content(")
+            (char= (char v (1- (length v))) #\)))
+       (if (sizing-fit-content-arg-valid-p (subseq v 12 (1- (length v)))) nil :invalid))
+      ((eq (sizing-length-percentage lower) :valid) nil)   ; valid l-p -> verbatim
+      (t :invalid))))                                       ; provably outside the grammar
 
 (defun canon-opacity-value (value)
   "Canonicalize an <opacity-value> = <number> | <percentage> (CSS Color 4 §opacity).
@@ -437,6 +574,7 @@
   (cond
     ((member dashed +color-props+ :test #'string=) (canon-color-value value))
     ((string= dashed "opacity") (canon-opacity-value value))
+    ((member dashed +sizing-props+ :test #'string=) (canon-sizing-value dashed value))
     ((member dashed +length-calc-props+ :test #'string=) (canon-calc-length value))
     (t nil)))
 

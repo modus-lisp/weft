@@ -112,6 +112,11 @@
   ;; weft's paint does not yet composite by opacity, so this is stored only for
   ;; the CSSOM resolved-value (getComputedStyle) — layout/paint-neutral.
   (opacity 1.0)
+  ;; CSS Containment 3 §container: an element with CONTAINER-TYPE "size" or
+  ;; "inline-size" establishes a query container (size containment on the queried
+  ;; axis) that descendant @container rules resolve against.  CONTAINER-NAME is a
+  ;; list of lowercased idents (NIL = unnamed).  Not inherited.
+  (container-type "normal") (container-name nil)
   (content nil))      ; generated-content string (or (:tmpl seg...) template) for ::before/::after (NIL = no box)
 
 ;;; ---- UA defaults --------------------------------------------------------
@@ -1515,6 +1520,29 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
         ((string= prop "direction")
          (let ((v (string-downcase (string-trim '(#\Space) value))))
            (when (member v '("ltr" "rtl") :test #'string=) (setf (cstyle-direction cs) v))))
+        ;; CSS Containment 3 §container: establish a query container.
+        ((string= prop "container-type")
+         (let ((v (string-downcase (string-trim '(#\Space) value))))
+           (when (member v '("normal" "size" "inline-size") :test #'string=)
+             (setf (cstyle-container-type cs) v))))
+        ((string= prop "container-name")
+         (let ((v (string-downcase (string-trim '(#\Space) value))))
+           (setf (cstyle-container-name cs)
+                 (if (member v '("none" "" "initial") :test #'string=)
+                     nil
+                     (remove "" (split-ws v) :test #'string=)))))
+        ((string= prop "container")
+         ;; shorthand: <container-name> [ / <container-type> ]?
+         (let* ((v (string-downcase (string-trim '(#\Space) value)))
+                (slash (position #\/ v))
+                (names (css-trim (subseq v 0 (or slash (length v)))))
+                (type (and slash (css-trim (subseq v (1+ slash))))))
+           (setf (cstyle-container-name cs)
+                 (if (member names '("none" "") :test #'string=)
+                     nil (remove "" (split-ws names) :test #'string=)))
+           (setf (cstyle-container-type cs)
+                 (if (and type (member type '("size" "inline-size") :test #'string=))
+                     type "normal"))))
         ((string= prop "transform")
          (let ((tl (parse-value "transform" value)))
            (setf (cstyle-transform cs)
@@ -2236,9 +2264,61 @@ content template (:tmpl ...) in STYLES to a final string."
                      (pop-deeper (1+ depth)))))))
       (loop for c across (weft.html:dnode-children document) do (walk c 0)))))
 
-(defun compute-styles (document stylesheet)
+;;; ---- @container query evaluation (CSS Containment 3) --------------------
+;;; A container's measured size is carried as a plist (:pw :ph :iw :bh :fs :wm):
+;;; PW/PH physical content-box width/height px (NIL = axis not available for this
+;;; container-type), IW/BH logical inline/block sizes, FS the container font-size
+;;; (for em), WM the writing-mode.  Evaluation is 3-valued (:true/:false/:unknown).
+
+(defun cq-eval-feature (name op valstr size)
+  "Evaluate one size feature against a container SIZE plist."
+  (let* ((measured (cond ((string= name "width") (getf size :pw))
+                         ((string= name "height") (getf size :ph))
+                         ((string= name "inline-size") (getf size :iw))
+                         ((string= name "block-size") (getf size :bh))
+                         (t nil)))
+         (want (and measured (resolve-len valstr (or (getf size :fs) 16.0)))))
+    (if (and (numberp measured) (numberp want))
+        (if (ecase op
+              (:<  (< measured want))  (:<= (<= measured want))
+              (:>  (> measured want))  (:>= (>= measured want))
+              (:=  (= measured want)))
+            :true :false)
+        :unknown)))
+
+(defun cq-eval (ast size)
+  "3-valued evaluation of a container-condition AST against a container SIZE plist."
+  (if (atom ast) :unknown
+      (case (car ast)
+        (:feature (cq-eval-feature (second ast) (third ast) (fourth ast) size))
+        (:not (case (cq-eval (second ast) size) (:true :false) (:false :true) (t :unknown)))
+        (:and (let ((r :true))
+                (dolist (c (rest ast) r)
+                  (case (cq-eval c size) (:false (return :false)) (:unknown (setf r :unknown))))))
+        (:or  (let ((r :false))
+                (dolist (c (rest ast) r)
+                  (case (cq-eval c size) (:true (return :true)) (:unknown (setf r :unknown))))))
+        (t :unknown))))
+
+(defun cq-find-container (name ancestors)
+  "Nearest query-container descriptor in ANCESTORS (innermost first) matching
+NAME (or any container when NAME is NIL)."
+  (find-if (lambda (d) (or (null name) (member name (second d) :test #'string=))) ancestors))
+
+(defun cq-rule-matches-p (cq ancestors)
+  "True when every @container query in CQ (list of (NAME . COND-AST)) evaluates
+true against its nearest matching ancestor query container."
+  (every (lambda (q)
+           (let ((anc (cq-find-container (car q) ancestors)))
+             ;; descriptor is (node names type . size-plist); the plist is CDDDR.
+             (and anc (eq :true (cq-eval (cdr q) (cdddr anc))))))
+         cq))
+
+(defun compute-styles (document stylesheet &optional container-sizes)
   "Compute a CSTYLE for every element under DOCUMENT, applying STYLESHEET (a list
-of CSS-RULEs).  Returns a hash-table element->CSTYLE."
+of CSS-RULEs).  Returns a hash-table element->CSTYLE.  When CONTAINER-SIZES (a
+hash element->size-plist) is supplied, @container rules are evaluated against the
+measured containers; otherwise their declarations are held back (not-yet-resolved)."
   (let ((styles (make-hash-table :test 'equal))
         (*el-classes-cache* (make-hash-table :test 'eq))   ; split each element's classes once this pass
         (*ancestor-bloom* (make-hash-table :test 'eq))     ; ancestor identifiers per element, for descendant/child skipping
@@ -2254,7 +2334,8 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE."
                                   (not (selector-list-valid-p (css-rule-selector r))))
                        append (loop for cx in (parse-selector-list (css-rule-selector r))
                                     collect (multiple-value-bind (pe mcx) (cx-pseudo-element cx)
-                                              (list mcx pe (specificity cx) order (css-rule-decls r))))))))
+                                              (list mcx pe (specificity cx) order (css-rule-decls r)
+                                                    (css-rule-container r))))))))
     (labels ((sort-matched (matched)
                (stable-sort (nreverse matched)
                             (lambda (x y) (or (spec< (first x) (first y))
@@ -2299,7 +2380,7 @@ content gate — the fragment styles a slice of the element's own text."
                        (unless (custom-prop-p (css-decl-prop d))
                          (apply-decl cs (css-decl-prop d) (resolve-vars (css-decl-value d) vars) parent-cs))))
                    cs)))
-             (walk (n parent-cs parent-vars anc-bloom)
+             (walk (n parent-cs parent-vars anc-bloom cq-anc)
                (when (eq (weft.html:dnode-kind n) :element)
                  (setf (gethash n *ancestor-bloom*) anc-bloom)
                  (let* ((tag (string-downcase (weft.html:dnode-name n)))
@@ -2317,15 +2398,30 @@ content gate — the fragment styles a slice of the element's own text."
                    (let ((matched '()) (m-before '()) (m-after '()) (m-first-letter '()) (m-first-line '()))
                      (map-candidate-rules
                       (lambda (ru)
-                        (destructuring-bind (cx pe spec order decls) ru
+                        (destructuring-bind (cx pe spec order decls cq) ru
                           (when (match-cx cx n)
                             (case pe
-                              (:before (push (list spec order decls) m-before))
-                              (:after  (push (list spec order decls) m-after))
-                              (:first-letter (push (list spec order decls) m-first-letter))
-                              (:first-line   (push (list spec order decls) m-first-line))
-                              (t       (push (list spec order decls) matched))))))
+                              (:before (push (list spec order decls cq) m-before))
+                              (:after  (push (list spec order decls cq) m-after))
+                              (:first-letter (push (list spec order decls cq) m-first-letter))
+                              (:first-line   (push (list spec order decls cq) m-first-line))
+                              (t       (push (list spec order decls cq) matched))))))
                       rindex n tag)
+                     ;; @container gating (CSS Containment 3): a rule stamped with a
+                     ;; container query applies only when CONTAINER-SIZES is known and
+                     ;; every enclosing query matches N's ancestor container.  With no
+                     ;; sizes yet (initial pass), container rules are held back; an
+                     ;; unconditional rule (CQ NIL) is always kept — a no-op on pages
+                     ;; without @container, so the cascade is byte-identical there.
+                     (flet ((cq-keep (m)
+                              (let ((cq (fourth m)))
+                                (or (null cq)
+                                    (and container-sizes (cq-rule-matches-p cq cq-anc))))))
+                       (setf matched (remove-if-not #'cq-keep matched)
+                             m-before (remove-if-not #'cq-keep m-before)
+                             m-after (remove-if-not #'cq-keep m-after)
+                             m-first-letter (remove-if-not #'cq-keep m-first-letter)
+                             m-first-line (remove-if-not #'cq-keep m-first-line)))
                      (let* ((sorted (sort-matched matched))
                             (inline (el-attr n "style"))
                             (inline-pvs (and inline (parse-inline inline)))
@@ -2419,9 +2515,21 @@ content gate — the fragment styles a slice of the element's own text."
                          (when as (setf (gethash (cons n :after) styles) as))
                          (when fl (setf (gethash (cons n :first-letter) styles) fl))
                          (when fli (setf (gethash (cons n :first-line) styles) fli)))
-                       (let ((child-bloom (logior anc-bloom (el-own-bloom n))))
-                         (loop for c across (weft.html:dnode-children n) do (walk c cs vars child-bloom)))))))))
-      (loop for c across (weft.html:dnode-children document) do (walk c nil nil 0)))
+                       (let ((child-bloom (logior anc-bloom (el-own-bloom n)))
+                             ;; extend the query-container ancestor chain if N is a
+                             ;; container (CSS Containment 3): descriptor is
+                             ;; (node names type . size-plist) with the measured size
+                             ;; from CONTAINER-SIZES (NIL until the post-layout pass).
+                             (child-cq-anc
+                               (if (member (cstyle-container-type cs) '("size" "inline-size")
+                                           :test #'string=)
+                                   (cons (list* n (cstyle-container-name cs) (cstyle-container-type cs)
+                                                (and container-sizes (gethash n container-sizes)))
+                                         cq-anc)
+                                   cq-anc)))
+                         (loop for c across (weft.html:dnode-children n)
+                               do (walk c cs vars child-bloom child-cq-anc)))))))))
+      (loop for c across (weft.html:dnode-children document) do (walk c nil nil 0 nil)))
     ;; second pass: assign counter values in document order and resolve every
     ;; content template that references counter()/counters() (CSS 2.1 §12.4).
     (resolve-counters document styles)

@@ -485,6 +485,193 @@ feature.  A non-paren token is :unknown."
           (cons name (parse-container-condition rest)))
         (cons nil (parse-container-condition s)))))
 
+;;; ---- @supports condition evaluation (CSS Conditional Rules 3 §3) ----------
+;;; A `(<property>: <value>)` supports-feature holds iff weft actually supports that
+;;; declaration, so `not (unknownprop: x)` is TRUE and `(unknownprop: x)` is FALSE
+;;; (WPT css-conditional).  The recognised set mirrors the property names APPLY-DECL
+;;; handles (src/css/style.lisp); keep the two in step when adding properties.
+(defparameter *supported-properties*
+  (let ((h (make-hash-table :test 'equal)))
+    (dolist (p '("accent-color" "align-content" "align-items" "align-self" "all"
+                 "aspect-ratio" "background" "background-attachment" "background-clip"
+                 "background-color" "background-image" "background-origin"
+                 "background-position" "background-repeat" "background-size"
+                 "block-size" "border" "border-block" "border-block-end"
+                 "border-block-start" "border-bottom" "border-bottom-color"
+                 "border-bottom-left-radius" "border-bottom-right-radius"
+                 "border-bottom-style" "border-bottom-width" "border-collapse"
+                 "border-color" "border-inline" "border-inline-end"
+                 "border-inline-start" "border-left" "border-left-color"
+                 "border-left-style" "border-left-width" "border-radius"
+                 "border-right" "border-right-color" "border-right-style"
+                 "border-right-width" "border-spacing" "border-style" "border-top"
+                 "border-top-color" "border-top-left-radius" "border-top-right-radius"
+                 "border-top-style" "border-top-width" "border-width" "bottom"
+                 "box-shadow" "box-sizing" "caption-side" "clear" "color"
+                 "column-count" "column-fill" "column-gap" "column-span"
+                 "column-width" "columns" "container" "container-name"
+                 "container-type" "content" "counter-increment" "counter-reset"
+                 "cursor" "direction" "display" "flex" "flex-basis" "flex-direction"
+                 "flex-flow" "flex-grow" "flex-shrink" "flex-wrap" "float" "font"
+                 "font-family" "font-size" "font-style" "font-variant" "font-weight"
+                 "gap" "grid" "grid-area" "grid-auto-columns" "grid-auto-flow"
+                 "grid-auto-rows" "grid-column" "grid-column-end" "grid-column-start"
+                 "grid-gap" "grid-row" "grid-row-end" "grid-row-start" "grid-template"
+                 "grid-template-areas" "grid-template-columns" "grid-template-rows"
+                 "height" "hyphens" "inline-size" "inset" "inset-block"
+                 "inset-block-end" "inset-block-start" "inset-inline" "inset-inline-end"
+                 "inset-inline-start" "justify-content" "justify-items" "justify-self"
+                 "left" "letter-spacing" "line-height" "list-style" "list-style-image"
+                 "list-style-position" "list-style-type" "margin" "margin-block"
+                 "margin-block-end" "margin-block-start" "margin-bottom"
+                 "margin-inline" "margin-inline-end" "margin-inline-start"
+                 "margin-left" "margin-right" "margin-top" "max-block-size"
+                 "max-height" "max-inline-size" "max-width" "min-block-size"
+                 "min-height" "min-inline-size" "min-width" "object-fit" "opacity"
+                 "order" "outline" "outline-color" "outline-offset" "outline-style"
+                 "outline-width" "overflow" "overflow-wrap" "overflow-x" "overflow-y"
+                 "padding" "padding-block" "padding-block-end" "padding-block-start"
+                 "padding-bottom" "padding-inline" "padding-inline-end"
+                 "padding-inline-start" "padding-left" "padding-right" "padding-top"
+                 "position" "quotes" "right" "row-gap" "tab-size" "text-align"
+                 "text-decoration" "text-decoration-color" "text-decoration-line"
+                 "text-decoration-style" "text-indent" "text-overflow"
+                 "text-transform" "top" "transform" "transform-origin" "transition"
+                 "vertical-align" "visibility" "white-space" "width" "word-break"
+                 "word-spacing" "word-wrap" "writing-mode" "z-index"))
+      (setf (gethash p h) t))
+    h)
+  "Property names weft supports, for @supports (<decl>) feature-query evaluation.")
+
+(defun property-supported-p (prop)
+  "True when PROP is a CSS property weft supports (or any custom property `--*`)."
+  (or (and (>= (length prop) 2) (char= (char prop 0) #\-) (char= (char prop 1) #\-))
+      (gethash (string-downcase prop) *supported-properties*)))
+
+(defun %supports-decl-supported-p (tv start end)
+  "TV[START,END) is the interior of a ( ) group.  True iff it is a well-formed
+supports feature declaration `<ident> : <value>` for a property weft supports: a
+non-empty, bracket-balanced value with no stray top-level colon (so a run like
+`margin: 0 or padding: 0` is not a single declaration and is rejected)."
+  (let ((i start))
+    (loop while (and (< i end) (eq (ctok-type (aref tv i)) :ws)) do (incf i))
+    (when (and (< i end) (eq (ctok-type (aref tv i)) :ident))
+      (let ((prop (ctok-value (aref tv i))))
+        (incf i)
+        (loop while (and (< i end) (eq (ctok-type (aref tv i)) :ws)) do (incf i))
+        (when (and (< i end) (eq (ctok-type (aref tv i)) :colon))
+          (incf i)
+          (let ((depth 0) (seen nil) (ok t))
+            (loop for k from i below end for ty = (ctok-type (aref tv k)) do
+              (case ty
+                ((:lparen :lbracket :lbrace :function) (incf depth) (setf seen t))
+                ((:rparen :rbracket :rbrace)
+                 (if (plusp depth) (decf depth) (setf ok nil)) (setf seen t))
+                (:colon (when (zerop depth) (setf ok nil)) (setf seen t))
+                (:ws nil)
+                (t (setf seen t))))
+            (and ok seen (zerop depth) (property-supported-p prop))))))))
+
+(defun supports-condition-matches-p (prelude)
+  "Evaluate an @supports PRELUDE per CSS Conditional Rules 3 §3.  Returns T when the
+condition is well-formed and holds; NIL when it is well-formed but does not hold, or
+is syntactically invalid — in either NIL case the guarded block is dropped."
+  (let* ((tv (css-tokenize prelude)) (n (length tv)) (pos 0))
+    (labels ((ty () (and (< pos n) (ctok-type (aref tv pos))))
+             (val () (and (< pos n) (ctok-value (aref tv pos))))
+             (skip-ws () (loop while (eq (ty) :ws) do (incf pos)))
+             (kw-p (s) (and (eq (ty) :ident) (string-equal (val) s)))
+             (match-close (open)
+               ;; OPEN is at a :lparen; return the index of the matching :rparen, or
+               ;; NIL when unbalanced.  A :function token carries an implicit `(`, and
+               ;; {}/[] nest too, so a general-enclosed any-value (e.g. `calc(2/3)` or
+               ;; `unknown(!@#% { } more())`) is spanned as one balanced unit.
+               (let ((d 0) (k open))
+                 (loop while (< k n) do
+                   (case (ctok-type (aref tv k))
+                     ((:lparen :lbracket :lbrace :function) (incf d))
+                     ((:rparen :rbracket :rbrace)
+                      (decf d) (when (zerop d) (return-from match-close k))))
+                   (incf k))
+                 nil))
+             (match-close-fn ()
+               ;; POS at a :function token (its `(` is implicit); index of closing `)`.
+               (let ((d 1) (k (1+ pos)))
+                 (loop while (< k n) do
+                   (case (ctok-type (aref tv k))
+                     ((:lparen :lbracket :lbrace :function) (incf d))
+                     ((:rparen :rbracket :rbrace)
+                      (decf d) (when (zerop d) (return-from match-close-fn k))))
+                   (incf k))
+                 nil))
+             (in-parens ()
+               (skip-ws)
+               (cond
+                 ((eq (ty) :function)
+                  (let ((name (val)) (close (match-close-fn)))
+                    (cond
+                      ((null close) :invalid)
+                      ;; selector(<complex-selector>): true iff weft supports it.
+                      ((string-equal name "selector")
+                       (let ((sel (toks-text tv (1+ pos) close)))
+                         (setf pos (1+ close))
+                         (if (selector-list-valid-p sel) :true :false)))
+                      ;; any other functional notation is general-enclosed => false.
+                      (t (setf pos (1+ close)) :false))))
+                 ((eq (ty) :lparen)
+                  (let* ((open pos) (close (match-close open)))
+                    (if (null close) :invalid
+                        (let ((istart (1+ open)) (iend close))   ; interior [istart,iend)
+                          ;; 1) try a nested <supports-condition> spanning the interior
+                          (setf pos istart)
+                          (let ((sub (condition iend)))
+                            (skip-ws)
+                            (cond
+                              ((and (not (eq sub :invalid)) (= pos iend))
+                               (setf pos (1+ close)) sub)
+                              ;; 2) <supports-decl>, else 3) <general-enclosed> (false)
+                              (t (setf pos (1+ close))
+                                 (if (%supports-decl-supported-p tv istart iend)
+                                     :true :false))))))))
+                 (t :invalid)))
+             (combine (op a b)
+               (if (string-equal op "and")
+                   (if (or (eq a :false) (eq b :false)) :false :true)
+                   (if (or (eq a :true) (eq b :true)) :true :false)))
+             (condition (end)
+               (skip-ws)
+               (cond
+                 ((kw-p "not")
+                  (incf pos)
+                  (let ((v (in-parens)))
+                    (cond ((eq v :invalid) :invalid) ((eq v :true) :false) (t :true))))
+                 (t
+                  (let ((first (in-parens)))
+                    (if (eq first :invalid) :invalid
+                        (progn
+                          (skip-ws)
+                          (cond
+                            ((kw-p "and") (chain first "and" end))
+                            ((kw-p "or")  (chain first "or"  end))
+                            (t first))))))))
+             (chain (acc op end)
+               (declare (ignore end))
+               (loop
+                 (skip-ws)
+                 (cond ((kw-p op)
+                        (incf pos)
+                        (let ((v (in-parens)))
+                          (when (eq v :invalid) (return :invalid))
+                          (setf acc (combine op acc v))))
+                       ;; the other combinator at the same level requires grouping
+                       ((or (kw-p "and") (kw-p "or")) (return :invalid))
+                       (t (return acc))))))
+      (skip-ws)
+      (when (>= pos n) (return-from supports-condition-matches-p nil))
+      (let ((r (condition n)))
+        (skip-ws)
+        (and (eq r :true) (= pos n))))))
+
 (defun parse-stylesheet (css)
   "Parse a CSS string into a list of CSS-RULEs."
   (let* ((toks (css-tokenize css)) (n (length toks)) (i 0) (rules '()))
@@ -512,8 +699,14 @@ feature.  A non-paren token is :unknown."
                                  ((string= kw "media")
                                   (when (media-matches-p (toks-text toks (1+ k) j))
                                     (push (list sel (1+ j) close) nested)))
-                                 ((member kw '("layer" "supports") :test #'string=)
+                                 ((string= kw "layer")
                                   (push (list sel (1+ j) close nil) nested))
+                                 ;; @supports: flatten only when the condition holds
+                                 ;; (CSS Conditional Rules 3 §3); an unmet or invalid
+                                 ;; condition drops the block.
+                                 ((string= kw "supports")
+                                  (when (supports-condition-matches-p (toks-text toks (1+ k) j))
+                                    (push (list sel (1+ j) close nil) nested)))
                                  ;; nested @container: defer with the query recorded so
                                  ;; inner rules are stamped when emitted (source order).
                                  ((string= kw "container")
@@ -574,13 +767,18 @@ feature.  A non-paren token is :unknown."
                                  ((string= kw "media")
                                   (when (media-matches-p (toks-text toks (1+ i) j))
                                     (collect-rules (1+ j) close)))
-                                 ;; @layer / @supports wrap ordinary rules — flatten them in.
+                                 ;; @layer wraps ordinary rules — flatten them in.
                                  ;; Tailwind v4 puts EVERY utility inside `@layer utilities`
                                  ;; (with the responsive variants in a nested @media), so
-                                 ;; skipping @layer dropped the whole framework.  @supports
-                                 ;; conditions are assumed met (progressive enhancement).
-                                 ((member kw '("layer" "supports") :test #'string=)
+                                 ;; skipping @layer dropped the whole framework.
+                                 ((string= kw "layer")
                                   (collect-rules (1+ j) close))
+                                 ;; @supports: flatten only when the condition holds
+                                 ;; (CSS Conditional Rules 3 §3); an unmet or invalid
+                                 ;; condition drops the guarded block.
+                                 ((string= kw "supports")
+                                  (when (supports-condition-matches-p (toks-text toks (1+ i) j))
+                                    (collect-rules (1+ j) close)))
                                  ;; @container: capture inner rules, stamping each with
                                  ;; the (name . condition) query so the cascade applies
                                  ;; them only when the queried container matches

@@ -27,7 +27,10 @@
    (Chrome/CSSOM), unlike CL ROUND's ties-to-even (which yields 76 for 76.5
    where CSS Color serialization wants 77)."
   (let ((x (max 0 (min 255 x))))
-    (if (minusp x) (- (floor (+ (- x) 1/2))) (floor (+ x 1/2)))))
+    ;; 1e-6 absorbs double round-off so an exact half (e.g. 127.5 that computes as
+    ;; 127.4999999) still rounds up as Chrome does; far below the 1.0 gap between
+    ;; adjacent 8-bit boundaries, so it never mis-rounds a genuine value.
+    (if (minusp x) (- (floor (+ (- x) 1/2 1d-6))) (floor (+ x 1/2 1d-6)))))
 
 (defun serialize-alpha (a)
   "Serialize an <alpha-value> per CSSOM sRGB serialization: the shortest decimal
@@ -51,6 +54,225 @@
                     (round-channel b) (serialize-alpha a))
             (format nil "rgb(~a, ~a, ~a)" (round-channel r) (round-channel g) (round-channel b))))
       ""))
+
+;;; ---- modern <color> computed-value serialization (CSS Color 4 §12/§15) ------
+;;; getComputedStyle serializes a color in the space it was authored in when that
+;;; space is not plain sRGB legacy: lab/lch/oklab/oklch keep their function form
+;;; with resolved components; hwb/hsl keep their function form ONLY when a channel
+;;; is `none` (else they resolve to sRGB rgb()/rgba()).  weft's cascade flattens
+;;; every color to an sRGB rgba list, losing the authored space, so this path
+;;; re-derives the computed serialization from the element's SPECIFIED value
+;;; string.  Read-only: it never touches the cascade or paint (pixel-neutral).
+
+(defun %css-nan-p (x) (and (floatp x) (sb-ext:float-nan-p x)))
+(defun %nan0 (x) (if (%css-nan-p x) 0d0 (float x 1d0)))
+(defun %clampf (x lo hi) (max lo (min hi (%nan0 x))))
+
+(defun fmt-color-num (x)
+  "Serialize a resolved lab/lch/hwb component to at most 4 decimal places,
+   integral when whole (CSS Color component serialization)."
+  (let ((r (/ (fround (* (%nan0 x) 10000d0)) 10000d0)))
+    (num->css (if (zerop r) 0 r))))
+
+(defun %ncalc-tokens (s pctref)
+  "Tokenize a numeric calc-body / bare component S: numbers with optional
+   %/angle unit (resolved to a double against PCTREF / degrees), the operators
+   + - * / and parens, and the idents nan/infinity/pi/e.  Signals on a bad unit
+   or ident (caller catches -> defer)."
+  (let ((toks '()) (i 0) (n (length s)))
+    (loop while (< i n) do
+      (let ((c (char s i)))
+        (cond
+          ((member c '(#\Space #\Tab #\Newline #\Return)) (incf i))
+          ((char= c #\() (push :lp toks) (incf i))
+          ((char= c #\)) (push :rp toks) (incf i))
+          ((char= c #\+) (push :add toks) (incf i))
+          ((char= c #\-) (push :sub toks) (incf i))
+          ((char= c #\*) (push :mul toks) (incf i))
+          ((char= c #\/) (push :div toks) (incf i))
+          ((char= c #\,) (push :comma toks) (incf i))
+          ((or (digit-char-p c) (char= c #\.))
+           (let ((start i))
+             (loop while (and (< i n) (let ((d (char s i)))
+                                        (or (digit-char-p d) (char= d #\.)))) do (incf i))
+             (let ((num (let ((*read-default-float-format* 'double-float))
+                          (float (read-from-string (subseq s start i)) 1d0)))
+                   (ustart i))
+               (loop while (and (< i n) (or (alpha-char-p (char s i)) (char= (char s i) #\%)))
+                     do (incf i))
+               (let ((unit (subseq s ustart i)))
+                 (push (cond ((zerop (length unit)) num)
+                             ((string= unit "%") (* (/ num 100d0) pctref))
+                             ((string= unit "deg") num)
+                             ((string= unit "grad") (* num 0.9d0))
+                             ((string= unit "rad") (* num (/ 180d0 pi)))
+                             ((string= unit "turn") (* num 360d0))
+                             (t (error "unit")))
+                       toks)))))
+          ((alpha-char-p c)
+           (let ((start i))
+             (loop while (and (< i n) (alpha-char-p (char s i))) do (incf i))
+             (let ((id (string-downcase (subseq s start i))))
+               (push (cond ((string= id "nan") (- sb-ext:double-float-positive-infinity
+                                                   sb-ext:double-float-positive-infinity))
+                           ((string= id "infinity") sb-ext:double-float-positive-infinity)
+                           ((string= id "pi") pi)
+                           ((string= id "e") (exp 1d0))
+                           (t (error "ident")))
+                     toks))))
+          (t (error "tok")))))
+    (coerce (nreverse toks) 'vector)))
+
+(defun %eval-num-calc (str pctref)
+  "Evaluate a numeric calc-body / bare component STR to a double (possibly
+   NaN/Inf), resolving % against PCTREF and angles to degrees; NIL on failure."
+  (ignore-errors
+   (sb-int:with-float-traps-masked (:invalid :divide-by-zero :overflow)
+     (let ((tv (%ncalc-tokens str pctref)) (pos 0))
+       (labels ((peek () (when (< pos (length tv)) (aref tv pos)))
+                (next () (prog1 (aref tv pos) (incf pos)))
+                (factor ()
+                  (let ((tk (peek)))
+                    (cond ((eq tk :sub) (next) (- (factor)))
+                          ((eq tk :add) (next) (factor))
+                          ((eq tk :lp) (next)
+                           (prog1 (expr) (unless (eq (peek) :rp) (error "paren")) (next)))
+                          ((numberp tk) (next) tk)
+                          (t (error "factor")))))
+                (term ()
+                  (let ((v (factor)))
+                    (loop for tk = (peek)
+                          while (member tk '(:mul :div)) do (next)
+                          (setf v (if (eq tk :mul) (* v (factor)) (/ v (factor)))))
+                    v))
+                (expr ()
+                  (let ((v (term)))
+                    (loop for tk = (peek)
+                          while (member tk '(:add :sub)) do (next)
+                          (setf v (if (eq tk :add) (+ v (term)) (- v (term)))))
+                    v)))
+         (let ((v (expr))) (when (= pos (length tv)) v)))))))
+
+(defun %resolve-color-comp (str pctref)
+  "Resolve a modern-color component STR to :none, a double, or NIL (parse fail)."
+  (let ((s (string-trim '(#\Space #\Tab #\Newline #\Return) str)))
+    (cond ((zerop (length s)) nil)
+          ((string-equal s "none") :none)
+          ((and (> (length s) 5) (string-equal (subseq s 0 5) "calc("))
+           (%eval-num-calc (subseq s 5 (1- (length s))) pctref))
+          (t (%eval-num-calc s pctref)))))
+
+(defun %resolve-alpha (str)
+  "Resolve an alpha component STR (NIL -> 1) to :none, a double, or NIL."
+  (cond ((null str) 1d0)
+        (t (let ((s (string-trim '(#\Space #\Tab #\Newline #\Return) str)))
+             (cond ((zerop (length s)) 1d0)
+                   ((string-equal s "none") :none)
+                   ((char= (char s (1- (length s))) #\%)
+                    (let ((v (%resolve-color-comp (subseq s 0 (1- (length s))) 1d0)))
+                      (and (numberp v) (/ v 100d0))))
+                   (t (%resolve-color-comp s 1d0)))))))
+
+(defun %fin (v) (if (eq v :none) "none" (fmt-color-num v)))
+
+(defun %alpha-tail (a)
+  "The ` / alpha` serialization tail for a resolved alpha A (:none | double);
+   empty string when A is exactly 1 (CSSOM omits a fully-opaque alpha)."
+  (cond ((eq a :none) " / none")
+        ((= a 1d0) "")
+        (t (concatenate 'string " / " (serialize-alpha a)))))
+
+(defun %serialize-modern-lab (kind comps alpha)
+  (when (= (length comps) 3)
+    (let* ((oklab (member kind '(:oklab :oklch)))
+           (chromatic (member kind '(:lch :oklch)))
+           (lmax (if oklab 1d0 100d0))
+           (abref (if oklab 0.4d0 125d0))
+           (cref (if oklab 0.4d0 150d0))
+           (l (%resolve-color-comp (first comps) (if oklab 1d0 100d0)))
+           (m (%resolve-color-comp (second comps) (if chromatic cref abref)))
+           (h (%resolve-color-comp (third comps) (if chromatic 1d0 abref)))
+           (a (%resolve-alpha alpha)))
+      (when (and l m h a)
+        (let ((ls (if (eq l :none) :none (%clampf l 0d0 lmax)))
+              (ms (cond ((eq m :none) :none) (chromatic (max 0d0 (%nan0 m))) (t (%nan0 m))))
+              (hs (cond ((eq h :none) :none) (chromatic (mod (%nan0 h) 360d0)) (t (%nan0 h))))
+              (as (if (eq a :none) :none (%clampf a 0d0 1d0))))
+          (format nil "~a(~a ~a ~a~a)" (string-downcase (symbol-name kind))
+                  (%fin ls) (%fin ms) (%fin hs) (%alpha-tail as)))))))
+
+(defun %pure-hue-rgb (h)
+  "Fully-saturated sRGB (values r g b) in [0,1] for hue H (deg) — hsl(H 100% 50%)."
+  (let* ((hp (/ (mod h 360d0) 60d0))
+         (x (- 1d0 (abs (- (mod hp 2d0) 1d0)))))
+    (cond ((< hp 1d0) (values 1d0 x 0d0))
+          ((< hp 2d0) (values x 1d0 0d0))
+          ((< hp 3d0) (values 0d0 1d0 x))
+          ((< hp 4d0) (values 0d0 x 1d0))
+          ((< hp 5d0) (values x 0d0 1d0))
+          (t (values 1d0 0d0 x)))))
+
+(defun %hwb->srgb (h w b)
+  "hwb H(deg) W B(fractions [0,1]) -> sRGB (values r g b) in [0,1]."
+  (if (>= (+ w b) 1d0)
+      (let ((g (/ w (+ w b)))) (values g g g))
+      (multiple-value-bind (r g bl) (%pure-hue-rgb h)
+        (let ((f (- 1d0 w b)))
+          (values (+ (* r f) w) (+ (* g f) w) (+ (* bl f) w))))))
+
+(defun %serialize-modern-hwb (comps alpha)
+  (when (= (length comps) 3)
+    (let ((h (%resolve-color-comp (first comps) 1d0))
+          (w (%resolve-color-comp (second comps) 1d0))
+          (b (%resolve-color-comp (third comps) 1d0))
+          (a (%resolve-alpha alpha)))
+      (when (and h w b a)
+        (if (or (eq h :none) (eq w :none) (eq b :none) (eq a :none))
+            (format nil "hwb(~a ~a ~a~a)"
+                    (if (eq h :none) "none" (fmt-color-num (mod (%nan0 h) 360d0)))
+                    (if (eq w :none) "none" (format nil "~a%" (fmt-color-num (* 100 (%clampf w 0d0 1d0)))))
+                    (if (eq b :none) "none" (format nil "~a%" (fmt-color-num (* 100 (%clampf b 0d0 1d0)))))
+                    (%alpha-tail (if (eq a :none) :none (%clampf a 0d0 1d0))))
+            (multiple-value-bind (r g bl)
+                (%hwb->srgb (mod (%nan0 h) 360d0) (%clampf w 0d0 1d0) (%clampf b 0d0 1d0))
+              (rgb-str (list (* 255 r) (* 255 g) (* 255 bl) (%clampf a 0d0 1d0)))))))))
+
+(defun %serialize-modern-hsl-none (comps alpha)
+  "hsl/hsla with a `none` channel keeps hsl() form; else NIL (defer to rgba)."
+  (when (= (length comps) 3)
+    (let ((h (%resolve-color-comp (first comps) 1d0))
+          (sv (%resolve-color-comp (second comps) 1d0))
+          (lv (%resolve-color-comp (third comps) 1d0))
+          (a (%resolve-alpha alpha)))
+      (when (and h sv lv a
+                 (or (eq h :none) (eq sv :none) (eq lv :none) (eq a :none)))
+        (format nil "hsl(~a ~a ~a~a)"
+                (if (eq h :none) "none" (fmt-color-num (mod (%nan0 h) 360d0)))
+                (if (eq sv :none) "none" (format nil "~a%" (fmt-color-num (* 100 (%clampf sv 0d0 1d0)))))
+                (if (eq lv :none) "none" (format nil "~a%" (fmt-color-num (* 100 (%clampf lv 0d0 1d0)))))
+                (%alpha-tail (if (eq a :none) :none (%clampf a 0d0 1d0))))))))
+
+(defun %computed-modern-color (spec)
+  "Computed-value serialization of a modern <color> SPEC, or NIL to defer to the
+   sRGB rgba path (keyword/hex/named/legacy rgb/hsl-or-hwb without none)."
+  (ignore-errors
+   (let* ((v (string-trim '(#\Space #\Tab #\Newline #\Return) spec))
+          (lower (string-downcase v))
+          (paren (position #\( lower)))
+     (when paren
+       (let* ((fname (subseq lower 0 paren))
+              (interior (css::%color-fn-interior v fname)))
+         (when interior
+           (multiple-value-bind (comps alpha) (css::%split-color-components interior)
+             (cond
+               ((string= fname "lab") (%serialize-modern-lab :lab comps alpha))
+               ((string= fname "lch") (%serialize-modern-lab :lch comps alpha))
+               ((string= fname "oklab") (%serialize-modern-lab :oklab comps alpha))
+               ((string= fname "oklch") (%serialize-modern-lab :oklch comps alpha))
+               ((string= fname "hwb") (%serialize-modern-hwb comps alpha))
+               ((member fname '("hsl" "hsla") :test #'string=)
+                (%serialize-modern-hsl-none comps alpha))
+               (t nil)))))))))
 
 (defun box-shorthand (top right bottom left)
   "Serialize a 4-edge box shorthand (border-color/-style) to the fewest values per
@@ -904,6 +1126,20 @@
       ((string= dashed "bottom") (px (s css:cstyle-bottom)))
       (t ""))))
 
+(defun %inline-specified (node dashed)
+  "The element's SPECIFIED inline value for property DASHED, or NIL."
+  (and (eq (h:dnode-kind node) :element)
+       (cdr (assoc dashed (parse-inline-style (get-attr node "style")) :test #'string=))))
+
+(defun computed-prop* (node cs dashed)
+  "Computed value for DASHED, re-deriving modern-<color> serialization from the
+   element's specified value when the authored color space is not sRGB-legacy."
+  (if (member dashed +color-props+ :test #'string=)
+      (or (let ((spec (%inline-specified node dashed)))
+            (and spec (%computed-modern-color spec)))
+          (computed-prop cs dashed))
+      (computed-prop cs dashed)))
+
 (defun prop->dashed (key)
   (cond ((string= key "cssFloat") "float")
         ((string= key "float") "float")
@@ -961,7 +1197,7 @@
          (getprop (js:native-function realm "getPropertyValue"
                     (lambda (this a) (declare (ignore this))
                       (let* ((doc (owner-document node)) (cs (and doc (gethash node (document-styles ctx doc)))))
-                        (if cs (computed-prop cs (string-downcase (jstr (arg a 0)))) "")))
+                        (if cs (computed-prop* node cs (string-downcase (jstr (arg a 0)))) "")))
                     1)))
     (js:make-host-object realm
       :has (lambda (o key)
@@ -978,7 +1214,7 @@
                ((string= key "getPropertyValue") getprop)
                (t (let* ((doc (owner-document node))
                          (cs (and doc (gethash node (document-styles ctx doc)))))
-                    (if cs (computed-prop cs (prop->dashed key))
+                    (if cs (computed-prop* node cs (prop->dashed key))
                         (js:js-get (js:js-object-proto o) key o)))))))))
 
 ;;; ---- element.style (inline declarations) ----------------------------------

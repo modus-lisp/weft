@@ -2354,9 +2354,14 @@ the context node when it is an element, else NIL (a document/fragment root makes
               (new-node ctx this el)))))
     (defmethod* ctx dp "createElementNS" 2 (this a)
       (let* ((ns (ns-arg (arg a 0))) (name (jstr (arg a 1)))
-             (colon (position #\: name)))
+             (colon (position #\: name))
+             ;; index of the local part's first char; a trailing colon (empty
+             ;; local part) puts this at (length name) — guard the AREF and treat
+             ;; it as an invalid name (DOM validate: empty local -> InvalidCharacterError).
+             (start (if colon (1+ colon) 0)))
         (unless (and (plusp (length name))
-                     (name-start-char-p (char name (if colon (1+ colon) 0)))
+                     (< start (length name))
+                     (name-start-char-p (char name start))
                      (every (lambda (c) (and (>= (char-code c) #x21)
                                              (not (member c '(#\< #\> #\& #\" #\' #\/ #\=)))))
                             name))

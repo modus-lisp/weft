@@ -57,6 +57,12 @@
     "border-inline-start-color" "border-inline-end-color"
     "text-emphasis-color" "-webkit-text-fill-color" "-webkit-text-stroke-color"))
 
+(defparameter +known-color-functions+
+  '("rgb" "rgba" "hsl" "hsla" "hwb" "lab" "lch" "oklab" "oklch"
+    "color" "color-mix" "color-contrast" "light-dark" "device-cmyk")
+  "The CSS Color 4/5 <color> function names.  A color-typed value whose function
+   name is outside this set (alpha(), hwba(), …) is not a <color> and is rejected.")
+
 (defun %prefix-p (s prefix)
   (and (>= (length s) (length prefix)) (string= s prefix :end1 (length prefix))))
 
@@ -86,19 +92,30 @@
       ((string= lower "transparent") "transparent")
       ((member lower +system-colors+ :test #'string=) lower)
       ((gethash lower css::*named-colors*) lower)
-      ((%risky-color-tokens-p lower) nil)
       ((char= (char v 0) #\#)
-       (let ((c (css:parse-value "color" v))) (if (consp c) (rgb-str c) :invalid)))
-      ((or (%prefix-p lower "rgb(") (%prefix-p lower "rgba(")
-           (%prefix-p lower "hsl(") (%prefix-p lower "hsla("))
        (let ((c (css:parse-value "color" v))) (if (consp c) (rgb-str c) :invalid)))
       ;; Any remaining value with no function parens is not a valid <color>: every
       ;; paren-free color (keyword, named/system color, hex) was handled above, so a
       ;; bare identifier, number, or multi-token run (`black white`) -> reject.
       ((not (find #\( v)) :invalid)
-      ;; Unknown function forms weft doesn't model (lab/oklch/hwb/color()/color-mix/
-      ;; light-dark/relative) -> leave verbatim so they are never wrongly dropped.
-      (t nil))))
+      (t
+       ;; A function <color>.  Its name must be one of the CSS Color 4/5 color
+       ;; functions — anything else (alpha(), hwba(), a stray ident) is a proven
+       ;; error (CSS Color 4 §4).  sRGB legacy/modern functions are parsed and
+       ;; serialized (a parser failure rejects), except none/from(relative)/calc
+       ;; forms which weft keeps verbatim.  Modern space-syntax-only functions
+       ;; (hwb/lab/lch/oklab/oklch) must not contain a comma; other known
+       ;; functions weft doesn't fully serialize are stored verbatim.
+       (let ((fname (subseq lower 0 (position #\( lower))))
+         (cond
+           ((not (member fname +known-color-functions+ :test #'string=)) :invalid)
+           ((member fname '("rgb" "rgba" "hsl" "hsla") :test #'string=)
+            (if (%risky-color-tokens-p lower) nil
+                (let ((c (css:parse-value "color" v))) (if (consp c) (rgb-str c) :invalid))))
+           ((and (member fname '("hwb" "lab" "lch" "oklab" "oklch") :test #'string=)
+                 (find #\, v))
+            :invalid)
+           (t nil)))))))
 
 ;;; ---- calc() simplification + serialization (CSS Values 4 §10.9/§10.10) -----
 ;;; A dedicated write-path simplifier that keeps units SYMBOLIC (the cascade's

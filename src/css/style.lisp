@@ -108,6 +108,10 @@
   ;; CSS 2.1 §17.4.1 caption-side: top | bottom (inherited); applies to
   ;; table-caption boxes, positioning the caption above or below the table box.
   (caption-side "top")
+  ;; CSS Color 4 §opacity: the clamped [0,1] alpha multiplier for the whole box.
+  ;; weft's paint does not yet composite by opacity, so this is stored only for
+  ;; the CSSOM resolved-value (getComputedStyle) — layout/paint-neutral.
+  (opacity 1.0)
   (content nil))      ; generated-content string (or (:tmpl seg...) template) for ::before/::after (NIL = no box)
 
 ;;; ---- UA defaults --------------------------------------------------------
@@ -395,6 +399,56 @@ AVAIL is indefinite."
         (:mmin (reduce #'min (mapcar #'lin (cdr spec))))
         (:mmax (reduce #'max (mapcar #'lin (cdr spec))))
         (:mclamp (let ((vs (mapcar #'lin (cdr spec)))) (max (first vs) (min (second vs) (third vs)))))))))
+
+(defun compute-opacity (value font-size)
+  "Resolve an opacity/alpha VALUE to a clamped [0,1] number, or NIL when it is not
+a valid <number>|<percentage>|calc()|min()|max()|clamp() (CSS Color 4 §opacity).
+opacity carries no lengths, so a percentage resolves against a basis of 1
+(100% -> 1)."
+  (let* ((tt (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value)))
+         (len (length tt)))
+    (labels (;; Serialize in DOUBLE: single-float rounding of e.g. 0.7 would print
+             ;; as 0.6999999881 (CSSOM wants "0.7"), so keep the value double.
+             (clamp01 (x) (max 0d0 (min 1d0 (float x 1d0))))
+             (num (s) (ignore-errors
+                        (let ((*read-eval* nil) (*read-default-float-format* 'double-float))
+                          (multiple-value-bind (v pos) (read-from-string s)
+                            (and (realp v) (= pos (length s)) v)))))
+             ;; A single opacity operand -> unclamped double, or NIL (percentage
+             ;; basis 1: 50% -> 0.5); used to fold min/max/clamp of constants.
+             (arg (s) (let* ((s (string-trim '(#\Space #\Tab #\Newline) s)) (l (length s)))
+                        (if (and (plusp l) (char= (char s (1- l)) #\%))
+                            (let ((n (num (subseq s 0 (1- l))))) (and n (/ (float n 1d0) 100)))
+                            (let ((n (num s))) (and n (float n 1d0))))))
+             (fold (kind tt prefix)
+               (let ((vs (mapcar #'arg (split-top-commas (subseq tt prefix (1- len))))))
+                 (cond ((or (null vs) (some #'null vs)
+                            (and (eq kind :mclamp) (/= 3 (length vs))))
+                        ;; fall back to the shared (single-float) length machinery
+                        (let ((r (parse-math-fn kind tt prefix font-size)))
+                          (cond ((numberp r) (clamp01 r))
+                                ((consp r) (let ((v (resolve-deferred r 1.0))) (and v (clamp01 v))))
+                                (t nil))))
+                       (t (clamp01 (ecase kind
+                                     (:mmin (reduce #'min vs)) (:mmax (reduce #'max vs))
+                                     (:mclamp (max (first vs) (min (second vs) (third vs)))))))))))
+      (cond
+        ((zerop len) nil)
+        ((and (> len 5) (string= (subseq tt 0 5) "calc("))
+         (let* ((inner (string-trim '(#\Space) (subseq tt 5 (1- len))))
+                (const (arg inner)))
+           ;; A folded/constant calc (the common case after write-path canon,
+           ;; e.g. calc(0.7)) parses in double for an exact CSSOM serialization;
+           ;; a still-symbolic calc falls back to the shared length evaluator.
+           (if const (clamp01 const)
+               (multiple-value-bind (px pct) (eval-calc inner font-size)
+                 (and px (clamp01 (+ px (/ pct 100.0))))))))
+        ((and (> len 4) (string= (subseq tt 0 4) "min(")) (fold :mmin tt 4))
+        ((and (> len 4) (string= (subseq tt 0 4) "max(")) (fold :mmax tt 4))
+        ((and (> len 6) (string= (subseq tt 0 6) "clamp(")) (fold :mclamp tt 6))
+        ((char= (char tt (1- len)) #\%)
+         (let ((n (num (subseq tt 0 (1- len))))) (and n (clamp01 (/ n 100.0)))))
+        (t (let ((n (num tt))) (and n (clamp01 n))))))))
 
 (defun line-height-multiplier (value font-size)
   "Parse a line-height VALUE into a multiplier of FONT-SIZE (weft stores
@@ -1151,6 +1205,11 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
                (if (and parent-cs (string-equal (string-trim '(#\Space #\Tab #\Newline #\Return) value) "inherit"))
                    (cstyle-display parent-cs)
                    (normalize-display value))))
+        ((string= prop "opacity")
+         (let ((v (string-trim '(#\Space #\Tab #\Newline #\Return) value)))
+           (cond ((and parent-cs (string-equal v "inherit")) (setf (cstyle-opacity cs) (cstyle-opacity parent-cs)))
+                 ((member v '("initial" "unset" "revert") :test #'string-equal) (setf (cstyle-opacity cs) 1.0))
+                 (t (let ((o (compute-opacity v fs))) (when o (setf (cstyle-opacity cs) o)))))))
         ((string= prop "content") (setf (cstyle-content cs) (parse-content value)))
         ((string= prop "quotes") (setf (cstyle-quotes cs) (parse-quotes value parent-cs)))
         ((string= prop "counter-reset")

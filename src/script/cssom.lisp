@@ -30,6 +30,16 @@
             (format nil "rgb(~a, ~a, ~a)" (round r) (round g) (round b))))
       ""))
 
+(defun box-shorthand (top right bottom left)
+  "Serialize a 4-edge box shorthand (border-color/-style) to the fewest values per
+   CSSOM: drop LEFT when it equals RIGHT, then BOTTOM when it equals TOP, then
+   RIGHT when it equals TOP (top / top-right / top-right-bottom / all four)."
+  (let ((vs (list top right bottom left)))
+    (when (string= left right) (setf vs (subseq vs 0 3))
+      (when (string= bottom top) (setf vs (subseq vs 0 2))
+        (when (string= right top) (setf vs (subseq vs 0 1)))))
+    (format nil "~{~a~^ ~}" vs)))
+
 ;;; ---- specified-value canonicalization (CSSOM setProperty) -----------------
 ;;; test_valid_value / test_invalid_value require element.style to canonicalize a
 ;;; property's SPECIFIED value and DROP invalid declarations.  We route only the
@@ -655,6 +665,20 @@
     "border-block-start-style" "border-block-end-style"
     "border-inline-start-style" "border-inline-end-style"))
 
+(defun parse-num-double (s)
+  "Read an already-validated CSS <number> string S as a DOUBLE (so 0.7 serializes
+   canonically as \"0.7\", not the single-float 0.699999988), or NIL if it does not
+   read cleanly.  A leading '.'/'+' is normalized for the Lisp reader."
+  (let* ((s (string-trim '(#\Space #\Tab #\Newline #\Return) s))
+         (s (cond ((and (plusp (length s)) (char= (char s 0) #\.)) (concatenate 'string "0" s))
+                  ((and (>= (length s) 2) (char= (char s 0) #\+) (char= (char s 1) #\.))
+                   (concatenate 'string "+0" (subseq s 1)))
+                  (t s))))
+    (ignore-errors
+      (let ((*read-eval* nil) (*read-default-float-format* 'double-float))
+        (multiple-value-bind (v pos) (read-from-string s)
+          (and (realp v) (= pos (length s)) (float v 1d0)))))))
+
 (defun canon-opacity-value (value)
   "Canonicalize an <opacity-value> = <number> | <percentage> (CSS Color 4 §opacity).
    The specified value keeps a number as-is and folds a percentage to its number
@@ -671,10 +695,11 @@
       ((or (search "calc" lower) (search "min(" lower) (search "max(" lower)
            (search "clamp(" lower) (search "var(" lower)) nil)
       ((char= (char v (1- (length v))) #\%)
-       (let ((n (css:parse-value "number" (subseq v 0 (1- (length v))))))
-         (if (numberp n) (num->css (/ n 100.0)) :invalid)))
+       (let* ((ns (subseq v 0 (1- (length v))))
+              (n (css:parse-value "number" ns)))
+         (if (numberp n) (num->css (/ (or (parse-num-double ns) (float n 1d0)) 100)) :invalid)))
       (t (let ((n (css:parse-value "number" v)))
-           (if (numberp n) (num->css n) :invalid))))))
+           (if (numberp n) (num->css (or (parse-num-double v) (float n 1d0))) :invalid))))))
 
 (defun canon-declaration (dashed value)
   "Canonical specified-value serialization for property DASHED given raw VALUE.
@@ -694,7 +719,10 @@
     "font-size" "line-height" "color" "width" "height" "min-width" "max-width"
     "min-height" "max-height" "margin-top" "margin-right" "margin-bottom"
     "margin-left" "padding-top" "padding-right" "padding-bottom" "padding-left"
-    "top" "left" "right" "bottom" "visibility" "background-color")
+    "top" "left" "right" "bottom" "visibility" "background-color" "opacity"
+    "border-top-color" "border-right-color" "border-bottom-color" "border-left-color"
+    "border-color" "border-top-style" "border-right-style" "border-bottom-style"
+    "border-left-style" "border-style")
   "Dashed property names getComputedStyle resolves; `property in getComputedStyle(el)`
    must report true for these (test_computed_value's support guard, CSSOM).")
 
@@ -725,6 +753,31 @@
       ((string= dashed "visibility") (s css:cstyle-visibility))
       ((string= dashed "background-color")
        (rgb-str (or (s css:cstyle-background) '(0 0 0 0))))
+      ((string= dashed "opacity") (num->css (s css:cstyle-opacity)))
+      ;; Resolved border colors: an unset edge falls back to BORDER-COLOR (CSS
+      ;; Backgrounds 3); currentcolor was resolved to the used <color> at cascade.
+      ((string= dashed "border-top-color")
+       (rgb-str (or (s css:cstyle-border-top-color) (s css:cstyle-border-color))))
+      ((string= dashed "border-right-color")
+       (rgb-str (or (s css:cstyle-border-right-color) (s css:cstyle-border-color))))
+      ((string= dashed "border-bottom-color")
+       (rgb-str (or (s css:cstyle-border-bottom-color) (s css:cstyle-border-color))))
+      ((string= dashed "border-left-color")
+       (rgb-str (or (s css:cstyle-border-left-color) (s css:cstyle-border-color))))
+      ((string= dashed "border-color")
+       (box-shorthand (rgb-str (or (s css:cstyle-border-top-color) (s css:cstyle-border-color)))
+                      (rgb-str (or (s css:cstyle-border-right-color) (s css:cstyle-border-color)))
+                      (rgb-str (or (s css:cstyle-border-bottom-color) (s css:cstyle-border-color)))
+                      (rgb-str (or (s css:cstyle-border-left-color) (s css:cstyle-border-color)))))
+      ((string= dashed "border-top-style") (or (s css:cstyle-border-top-style) "none"))
+      ((string= dashed "border-right-style") (or (s css:cstyle-border-right-style) "none"))
+      ((string= dashed "border-bottom-style") (or (s css:cstyle-border-bottom-style) "none"))
+      ((string= dashed "border-left-style") (or (s css:cstyle-border-left-style) "none"))
+      ((string= dashed "border-style")
+       (box-shorthand (or (s css:cstyle-border-top-style) "none")
+                      (or (s css:cstyle-border-right-style) "none")
+                      (or (s css:cstyle-border-bottom-style) "none")
+                      (or (s css:cstyle-border-left-style) "none")))
       ((string= dashed "width") (px (s css:cstyle-width)))
       ((string= dashed "height") (px (s css:cstyle-height)))
       ((string= dashed "min-width") (px (s css:cstyle-min-width)))

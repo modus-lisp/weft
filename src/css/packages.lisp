@@ -53,4 +53,4 @@
            #:cstyle-bg-origin #:cstyle-bg-clip #:cstyle-bg-clip-list #:cstyle-bg-layers
            #:cstyle-object-fit #:cstyle-aspect-ratio
            #:cstyle-outline-width #:cstyle-outline-style #:cstyle-outline-color #:cstyle-outline-offset
-           #:cstyle-accent-color #:cstyle-box-shadow))
+           #:cstyle-accent-color #:cstyle-box-shadow #:cstyle-opacity))

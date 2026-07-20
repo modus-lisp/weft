@@ -7,9 +7,19 @@
 (in-package #:weft.script)
 
 ;;; ---- value formatting -----------------------------------------------------
+(defun num->css (v)
+  "Serialize a CSS number per CSSOM: an integral value as an integer, otherwise
+   the shortest round-tripping decimal.  Never leak Lisp float syntax (the `d0`
+   exponent marker) into the JS/CSS string — binding *read-default-float-format*
+   to double-float suppresses it."
+  (if (and (realp v) (< (abs v) 1d15) (= v (truncate v)))
+      (princ-to-string (truncate v))
+      (let ((*read-default-float-format* 'double-float))
+        (princ-to-string (float v 1d0)))))
+
 (defun px (v)
   (cond ((eq v :auto) "auto") ((eq v :none) "none") ((eq v :normal) "normal")
-        ((numberp v) (format nil "~apx" (if (= v (truncate v)) (truncate v) v)))
+        ((numberp v) (concatenate 'string (num->css v) "px"))
         ((stringp v) v) ((null v) "") (t (princ-to-string v))))
 
 (defun rgb-str (c)
@@ -149,30 +159,70 @@
              (format o "~a: ~a;" k v))))
 
 (defun element-style-object (ctx element)
+  "The live CSSStyleDeclaration for ELEMENT's inline style.  Property access
+   (camelCase or bracketed dashed name) and the CSSOM methods getPropertyValue/
+   setProperty/removeProperty/item all read and write through the `style`
+   attribute so mutations re-cascade (CSSOM §CSSStyleDeclaration)."
   (let ((realm (context-realm ctx)))
-    (flet ((decls () (parse-inline-style (get-attr element "style")))
-           (store (alist)
-             (set-attr element "style" (serialize-inline-style alist))
-             (setf (context-dirty ctx) t)))
-      (js:make-host-object realm
-        :get (lambda (o key rcv) (declare (ignore rcv))
-               (setf key (js:to-property-key key))
-               (cond
-                 ((not (stringp key)) (js:js-get (js:js-object-proto o) key o))
-                 ((string= key "cssText") (or (get-attr element "style") ""))
-                 (t (let ((cell (assoc (prop->dashed key) (decls) :test #'string=)))
-                      (if cell (cdr cell) "")))))
-        :set (lambda (o key v rcv) (declare (ignore o rcv))
-               (cond
-                 ((string= key "cssText") (set-attr element "style" (jstr v))
-                  (setf (context-dirty ctx) t))
-                 ((stringp key)
-                  (let* ((d (prop->dashed key)) (alist (decls))
-                         (cell (assoc d alist :test #'string=)) (val (jstr v)))
-                    (if cell (setf (cdr cell) val)
-                        (setf alist (append alist (list (cons d val)))))
-                    (store alist))))
-               js:*true*)))))
+    (labels ((decls () (parse-inline-style (get-attr element "style")))
+             (store (alist)
+               (set-attr element "style" (serialize-inline-style alist))
+               (setf (context-dirty ctx) t))
+             (get-prop (name)
+               (let ((cell (assoc (string-downcase name) (decls) :test #'string=)))
+                 (if cell (cdr cell) "")))
+             (set-prop (name val)
+               ;; Setting the empty string removes the declaration (CSSOM §setProperty).
+               (let* ((d (string-downcase name)) (alist (decls))
+                      (cell (assoc d alist :test #'string=)))
+                 (cond ((zerop (length (string-trim '(#\Space #\Tab #\Newline #\Return) (or val ""))))
+                        (when cell (store (remove cell alist))))
+                       (cell (setf (cdr cell) val) (store alist))
+                       (t (store (append alist (list (cons d val))))))))
+             (remove-prop (name)
+               (let* ((d (string-downcase name)) (alist (decls))
+                      (cell (assoc d alist :test #'string=)))
+                 (when cell (store (remove cell alist))))))
+      (let ((f-get (js:native-function realm "getPropertyValue"
+                     (lambda (this a) (declare (ignore this))
+                       (get-prop (jstr (arg a 0)))) 1))
+            (f-set (js:native-function realm "setProperty"
+                     (lambda (this a) (declare (ignore this))
+                       (set-prop (jstr (arg a 0)) (jstr (arg a 1))) js:*undefined*) 2))
+            (f-rem (js:native-function realm "removeProperty"
+                     (lambda (this a) (declare (ignore this))
+                       (let ((old (get-prop (jstr (arg a 0)))))
+                         (remove-prop (jstr (arg a 0))) old)) 1))
+            (f-pri (js:native-function realm "getPropertyPriority"
+                     (lambda (this a) (declare (ignore this a)) "") 1))
+            (f-item (js:native-function realm "item"
+                      (lambda (this a) (declare (ignore this))
+                        (let ((al (decls)) (i (int-arg a 0)))
+                          (if (and (>= i 0) (< i (length al))) (car (nth i al)) ""))) 1)))
+        (js:make-host-object realm
+          :get (lambda (o key rcv) (declare (ignore rcv))
+                 (setf key (js:to-property-key key))
+                 (cond
+                   ((not (stringp key)) (js:js-get (js:js-object-proto o) key o))
+                   ((string= key "cssText") (or (get-attr element "style") ""))
+                   ((string= key "length") (num (length (decls))))
+                   ((string= key "getPropertyValue") f-get)
+                   ((string= key "setProperty") f-set)
+                   ((string= key "removeProperty") f-rem)
+                   ((string= key "getPropertyPriority") f-pri)
+                   ((string= key "item") f-item)
+                   ((index-string-p key)          ; numeric index -> property name
+                    (let ((al (decls)) (i (parse-integer key)))
+                      (if (< i (length al)) (car (nth i al)) "")))
+                   (t (let ((cell (assoc (prop->dashed key) (decls) :test #'string=)))
+                        (if cell (cdr cell) "")))))
+          :set (lambda (o key v rcv) (declare (ignore o rcv))
+                 (cond
+                   ((string= key "cssText") (set-attr element "style" (jstr v))
+                    (setf (context-dirty ctx) t))
+                   ((stringp key)
+                    (set-prop (prop->dashed key) (jstr v))))
+                 js:*true*))))))
 
 ;;; ---- CSSOM: document.styleSheets / CSSStyleSheet / CSSRuleList ------------
 (defun stylesheet-owner-p (el)

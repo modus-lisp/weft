@@ -109,8 +109,9 @@
   ;; table-caption boxes, positioning the caption above or below the table box.
   (caption-side "top")
   ;; CSS Color 4 §opacity: the clamped [0,1] alpha multiplier for the whole box.
-  ;; weft's paint does not yet composite by opacity, so this is stored only for
-  ;; the CSSOM resolved-value (getComputedStyle) — layout/paint-neutral.
+  ;; opacity < 1 is composited as group opacity in paint (see PAINT-OPACITY): the
+  ;; subtree is rendered to offscreen buffers and blended over the backdrop at this
+  ;; alpha, so it is layout-neutral but affects paint.
   (opacity 1.0)
   ;; CSS Containment 3 §container: an element with CONTAINER-TYPE "size" or
   ;; "inline-size" establishes a query container (size containment on the queried

@@ -1628,6 +1628,12 @@ Returns (values lbox advance-height)."
         (flex-ch *flex-item-height*) (*flex-item-height* nil))
    (let ((cs (st styles node)))
     (when (or (null cs) (string= (cdisplay cs) "none")) (return-from %layout-core (values nil 0 0 0)))
+    ;; Resolve deferred percentage margins against the containing block's inline
+    ;; size AVAIL-W (CSS 2.1 §8.3 — all four edges resolve against width) before any
+    ;; margin slot is read, so `margin-left:25%` positions the box instead of
+    ;; collapsing to 0.  Idempotent (the -pct forms are kept), so a grid/flex parent
+    ;; that already resolved them re-resolves to the same value.
+    (css::resolve-pct-margins cs avail-w)
     ;; replaced elements (img/svg/canvas/object-image) reaching block layout — as a
     ;; block-level or out-of-flow box — are their own content; render and return.
     (let ((rb (replaced-box node cs avail-w avail-h)))

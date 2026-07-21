@@ -148,6 +148,14 @@
   ;; length is px (float) or (:pct . N) resolved against the border box at paint.
   ;; NIL = none.  Not inherited; layout-neutral, paint-only.
   (clip-path nil)
+  ;; CSS Backgrounds & Borders 3 §6 border-image: when BORDER-IMAGE-SOURCE is set
+  ;; (a parsed gradient list or a url string), the 9-sliced image replaces the normal
+  ;; border paint.  SLICE = (top right bottom left fill-p), each offset (VAL . :px|:pct);
+  ;; WIDTH = (t r b l), each (VAL . :num|:px|:pct) or :auto, NIL = default 1×border-width;
+  ;; REPEAT = (horiz . vert) each :stretch|:repeat|:round|:space; OUTSET = (t r b l) px.
+  ;; NIL slots take their initial value.  Not inherited; paint-only.
+  (border-image-source nil) (border-image-slice nil)
+  (border-image-width nil) (border-image-repeat nil) (border-image-outset nil)
   ;; CSS Containment 3 §container: an element with CONTAINER-TYPE "size" or
   ;; "inline-size" establishes a query container (size containment on the queried
   ;; axis) that descendant @container rules resolve against.  CONTAINER-NAME is a
@@ -909,6 +917,138 @@ position/color-interpolation) rather than the first color stop."
                   (:conic (destructuring-bind (from pos)
                               (if cfg (parse-conic-cfg cfg fs) (list 0.0 *default-gpos*))
                             (list :conic from pos stops repeating))))))))))))
+
+;;; ---- border-image (CSS Backgrounds & Borders 3 §6) ----------------------
+
+(defun %bi-ws-split (s)
+  "Split S on ASCII whitespace into non-empty tokens."
+  (let ((out '()) (start nil) (n (length s)))
+    (dotimes (i n)
+      (let ((ws (member (char s i) '(#\Space #\Tab #\Newline #\Return))))
+        (cond ((and (not ws) (null start)) (setf start i))
+              ((and ws start) (push (subseq s start i) out) (setf start nil)))))
+    (when start (push (subseq s start n) out))
+    (nreverse out)))
+
+(defun %bi-expand-1-4 (vs)
+  "Expand a 1-4 element list VS to (top right bottom left) by CSS edge-shorthand rules."
+  (destructuring-bind (top &optional right bottom left) vs
+    (let ((r (or right top)))
+      (list top r (or bottom top) (or left r)))))
+
+(defun %bi-number (s)
+  "Read S as a plain non-negative number, or NIL."
+  (when (plusp (length s))
+    (handler-case (let ((*read-eval* nil))
+                    (multiple-value-bind (v pos) (read-from-string s)
+                      (and (realp v) (= pos (length s)) (float v 1.0))))
+      (error () nil))))
+
+(defun %bi-slice1 (tok)
+  "One border-image-slice offset -> (VAL . :px) for a number or (VAL . :pct) for %."
+  (let ((tok (string-trim '(#\Space) tok)))
+    (when (plusp (length tok))
+      (if (char= (char tok (1- (length tok))) #\%)
+          (let ((v (%bi-number (subseq tok 0 (1- (length tok)))))) (when v (cons v :pct)))
+          (let ((v (%bi-number tok))) (when v (cons v :px)))))))
+
+(defun parse-border-image-slice (value)
+  "border-image-slice: <number-percentage>{1,4} && fill? -> (top right bottom left fill-p)."
+  (let* ((low (string-downcase (string-trim '(#\Space) value)))
+         (toks (%bi-ws-split low))
+         (fill (and (member "fill" toks :test #'string=) t))
+         (nums (remove "fill" toks :test #'string=))
+         (vs (mapcar #'%bi-slice1 nums)))
+    (when (and vs (every #'identity vs))
+      (append (%bi-expand-1-4 vs) (list fill)))))
+
+(defun %bi-width1 (tok fs)
+  "One border-image-width component -> (VAL . :num) | (VAL . :px) | (VAL . :pct) | :auto."
+  (let ((tok (string-downcase (string-trim '(#\Space) tok))))
+    (cond ((string= tok "auto") :auto)
+          ((and (plusp (length tok)) (char= (char tok (1- (length tok))) #\%))
+           (let ((v (%bi-number (subseq tok 0 (1- (length tok)))))) (when v (cons v :pct))))
+          ((%bi-number tok) (cons (%bi-number tok) :num))   ; bare number = ×border-width
+          (t (let ((px (resolve-len tok fs))) (when (numberp px) (cons (float px 1.0) :px)))))))
+
+(defun parse-border-image-width (value fs)
+  "border-image-width: [ <length-percentage> | <number> | auto ]{1,4} -> (t r b l)."
+  (let* ((toks (%bi-ws-split (string-trim '(#\Space) value)))
+         (vs (mapcar (lambda (tk) (%bi-width1 tk fs)) toks)))
+    (when (and vs (every #'identity vs)) (%bi-expand-1-4 vs))))
+
+(defun parse-border-image-outset (value fs)
+  "border-image-outset: [ <length> | <number> ]{1,4} px -> (t r b l)."
+  (let* ((toks (%bi-ws-split (string-trim '(#\Space) value)))
+         (vs (mapcar (lambda (tk)
+                       (let ((n (%bi-number tk)))
+                         (if n n (let ((px (resolve-len tk fs))) (and (numberp px) (float px 1.0))))))
+                     toks)))
+    (when (and vs (every #'realp vs)) (%bi-expand-1-4 vs))))
+
+(defun %bi-repeat-kw (s)
+  (cond ((string= s "stretch") :stretch) ((string= s "repeat") :repeat)
+        ((string= s "round") :round) ((string= s "space") :space) (t nil)))
+
+(defun parse-border-image-repeat (value)
+  "border-image-repeat: [stretch|repeat|round|space]{1,2} -> (horiz . vert)."
+  (let* ((toks (%bi-ws-split (string-downcase (string-trim '(#\Space) value))))
+         (h (and toks (%bi-repeat-kw (first toks))))
+         (v (if (second toks) (%bi-repeat-kw (second toks)) h)))
+    (when (and h v) (cons h v))))
+
+(defun parse-border-image-source (value fs)
+  "border-image-source: none | <url> | <gradient> -> a url string, a parsed gradient, or NIL."
+  (let ((low (string-downcase (string-trim '(#\Space) value))))
+    (cond ((or (zerop (length low)) (string= low "none")) nil)
+          ((search "url(" low :test #'char-equal) (extract-css-url value))
+          (t (parse-gradient value fs)))))
+
+(defun apply-border-image (cs value fs)
+  "border-image shorthand: <source> || <slice> [ / <width> [ / <outset> ]? ]? || <repeat>."
+  (let* ((s (string-trim '(#\Space) value))
+         (low (string-downcase s)))
+    (when (member low '("none" "initial" "unset") :test #'string=)
+      (setf (cstyle-border-image-source cs) nil (cstyle-border-image-slice cs) nil
+            (cstyle-border-image-width cs) nil (cstyle-border-image-repeat cs) nil
+            (cstyle-border-image-outset cs) nil)
+      (return-from apply-border-image))
+    ;; peel off a leading url()/gradient source (it may contain spaces/commas/slashes)
+    (let ((src nil) (rest s))
+      (let ((fp (or (search "url(" low :test #'char-equal)
+                    (search "linear-gradient(" low) (search "radial-gradient(" low)
+                    (search "conic-gradient(" low) (search "repeating-linear-gradient(" low)
+                    (search "repeating-radial-gradient(" low) (search "repeating-conic-gradient(" low))))
+        (when fp
+          (let ((close (matching-paren s (position #\( s :start fp))))
+            (when close
+              (setf src (parse-border-image-source (subseq s fp (1+ close)) fs)
+                    rest (concatenate 'string (subseq s 0 fp) " " (subseq s (1+ close))))))))
+      (when src (setf (cstyle-border-image-source cs) src))
+      ;; the remainder holds slice [ / width [ / outset ]] and repeat keywords, space-
+      ;; separated; split on top-level slashes for the slice/width/outset groups.
+      (let* ((slash1 (position #\/ rest))
+             (slice-part (if slash1 (subseq rest 0 slash1) rest))
+             (after (and slash1 (subseq rest (1+ slash1))))
+             (slash2 (and after (position #\/ after)))
+             (width-part (if slash2 (subseq after 0 slash2) after))
+             (outset-part (and slash2 (subseq after (1+ slash2))))
+             ;; repeat keywords may trail the slice group (no slash before them)
+             (slice-toks (%bi-ws-split (string-downcase slice-part)))
+             (rep-toks (remove-if-not #'%bi-repeat-kw slice-toks))
+             (num-toks (remove-if #'%bi-repeat-kw (remove "fill" slice-toks :test #'string=)))
+             (fillp (and (member "fill" slice-toks :test #'string=) t)))
+        (when num-toks
+          (let ((vs (mapcar #'%bi-slice1 num-toks)))
+            (when (and vs (every #'identity vs))
+              (setf (cstyle-border-image-slice cs) (append (%bi-expand-1-4 vs) (list fillp))))))
+        (when width-part
+          (let ((w (parse-border-image-width width-part fs))) (when w (setf (cstyle-border-image-width cs) w))))
+        (when outset-part
+          (let ((o (parse-border-image-outset outset-part fs))) (when o (setf (cstyle-border-image-outset cs) o))))
+        (when rep-toks
+          (let ((r (parse-border-image-repeat (format nil "~{~A~^ ~}" rep-toks))))
+            (when r (setf (cstyle-border-image-repeat cs) r))))))))
 
 (defun gradient-stops (grad)
   "The color-stop list of a parsed gradient GRAD, by type."
@@ -1908,6 +2048,17 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
         ((string= prop "border-left-style") (when (border-style-token-p value) (setf (cstyle-border-left-style cs) (string-downcase (string-trim '(#\Space) value)))))
         ((member prop '("border" "border-top" "border-bottom" "border-left" "border-right") :test #'string=)
          (apply-border cs prop value fs))
+        ((string= prop "border-image") (apply-border-image cs value fs))
+        ((string= prop "border-image-source")
+         (setf (cstyle-border-image-source cs) (parse-border-image-source value fs)))
+        ((string= prop "border-image-slice")
+         (setf (cstyle-border-image-slice cs) (parse-border-image-slice value)))
+        ((string= prop "border-image-width")
+         (setf (cstyle-border-image-width cs) (parse-border-image-width value fs)))
+        ((string= prop "border-image-repeat")
+         (setf (cstyle-border-image-repeat cs) (parse-border-image-repeat value)))
+        ((string= prop "border-image-outset")
+         (setf (cstyle-border-image-outset cs) (parse-border-image-outset value fs)))
         ((string= prop "outline")
          (if (and parent-cs (string-equal (string-trim '(#\Space) value) "inherit"))
              (setf (cstyle-outline-width cs) (cstyle-outline-width parent-cs)

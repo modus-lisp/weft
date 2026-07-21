@@ -4790,6 +4790,112 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
           (when (plusp bl) (fill-poly cv (list (cons x0 y0) (cons ix0 iy0) (cons ix0 iy1) (cons x0 y1)) cl))
           (when (plusp br) (fill-poly cv (list (cons x1 y0) (cons x1 y1) (cons ix1 iy1) (cons ix1 iy0)) crr))))))))
 
+;;; ---- border-image (CSS Backgrounds & Borders 3 §6) ----------------------
+
+(defun bi-source-img (src nw nh curcolor)
+  "An IMG (rgba) for a border-image-source SRC over an NW×NH natural area: a url/data
+string is decoded at its intrinsic size; a parsed gradient is rendered into a fresh
+NW×NH opaque RGBA buffer (its natural size = the border-image area)."
+  (cond
+    ((stringp src)
+     (let* ((duri (if (find #\% src) (percent-decode src) src))
+            (img (if (and (>= (length duri) 5) (string-equal (subseq duri 0 5) "data:"))
+                     (ignore-errors (decode-image duri))
+                     (ignore-errors (fetch-image src)))))
+       (and img (plusp (img-w img)) (plusp (img-h img)) (img-rgba img) img)))
+    ((consp src)                        ; a parsed gradient
+     (let* ((tw (max 1 (round nw))) (th (max 1 (round nh)))
+            (tmp (make-canvas tw th '(0 0 0)))
+            (rgba (make-array (* 4 tw th) :element-type '(unsigned-byte 8))))
+       (let ((*clip* nil) (*round-clip* nil))
+         (fill-css-gradient tmp 0 0 tw th src curcolor))
+       (let ((px (canvas-pixels tmp)))
+         (dotimes (i (* tw th))
+           (setf (aref rgba (* 4 i))       (aref px (* 3 i))
+                 (aref rgba (+ 1 (* 4 i))) (aref px (+ 1 (* 3 i)))
+                 (aref rgba (+ 2 (* 4 i))) (aref px (+ 2 (* 3 i)))
+                 (aref rgba (+ 3 (* 4 i))) 255)))
+       (make-img :w tw :h th :rgba rgba)))
+    (t nil)))
+
+(defun bi-slice-px (spec dim)
+  "Resolve a border-image-slice offset SPEC ((VAL . :px|:pct)) to source pixels over DIM."
+  (cond ((null spec) 0.0)
+        ((eq (cdr spec) :pct) (* (/ (car spec) 100.0) (float dim 1.0)))
+        (t (min (float (car spec) 1.0) (float dim 1.0)))))
+
+(defun bi-width-px (spec border slice-px area-dim)
+  "Resolve one border-image-width component SPEC (NIL default = 1×BORDER; :auto = the
+slice size; (VAL . :num) = ×border; :px = px; :pct = % of the border-image area dim)."
+  (cond ((null spec) (float border 1.0))
+        ((eq spec :auto) (float slice-px 1.0))
+        ((and (consp spec) (eq (cdr spec) :num)) (* (car spec) (float border 1.0)))
+        ((and (consp spec) (eq (cdr spec) :px)) (float (car spec) 1.0))
+        ((and (consp spec) (eq (cdr spec) :pct)) (* (/ (car spec) 100.0) (float area-dim 1.0)))
+        (t (float border 1.0))))
+
+(defun bi-blit-region (cv img sx sy sw sh dx dy dw dh mode axis)
+  "Paint source rect (SX SY SW SH) of IMG into dest (DX DY DW DH).  AXIS :none is a
+corner (stretch); :h/:v tiles the slice along x/y for :repeat/:round (else stretches)."
+  (when (and (> sw 0) (> sh 0) (> dw 0) (> dh 0))
+    (let ((sx (round sx)) (sy (round sy)) (sw (round sw)) (sh (round sh)))
+      (if (or (member mode '(:stretch :space)) (eq axis :none))
+          (blit-img cv img (round dx) (round dy) (round dw) (round dh) (list sx sy sw sh))
+          (ecase axis
+            (:h (let* ((tw0 (* sw (/ dh sh)))      ; scale slice so its height fills DH
+                       (tw (max 1.0 (if (eq mode :round) (/ dw (max 1 (round (/ dw tw0)))) tw0)))
+                       (*clip* (clip-intersect (round dx) (round dy) (round (+ dx dw)) (round (+ dy dh)))))
+                  (loop for x = dx then (+ x tw) while (< x (+ dx dw))
+                        do (blit-img cv img (round x) (round dy) (round tw) (round dh) (list sx sy sw sh)))))
+            (:v (let* ((th0 (* sh (/ dw sw)))
+                       (th (max 1.0 (if (eq mode :round) (/ dh (max 1 (round (/ dh th0)))) th0)))
+                       (*clip* (clip-intersect (round dx) (round dy) (round (+ dx dw)) (round (+ dy dh)))))
+                  (loop for y = dy then (+ y th) while (< y (+ dy dh))
+                        do (blit-img cv img (round dx) (round y) (round dw) (round th) (list sx sy sw sh))))))))))
+
+(defun paint-border-image (cv lb cs)
+  "Paint CS's border-image over LB's border box, 9-sliced into the 4 corners (stretched)
+and 4 edges (stretched/repeated/rounded), plus the middle when `fill` is set (CSS
+Backgrounds & Borders 3 §6).  Returns T when a decodable source painted, else NIL."
+  (let ((src (css:cstyle-border-image-source cs)))
+    (when src
+      (let* ((x0 (float (lbox-x lb) 1.0)) (y0 (float (lbox-y lb) 1.0))
+             (bw (float (lbox-w lb) 1.0)) (bh (float (lbox-h lb) 1.0))
+             (bt (used-border cs :t)) (br (used-border cs :r))
+             (bb (used-border cs :b)) (bl (used-border cs :l))
+             (img (bi-source-img src bw bh (css:cstyle-color cs))))
+        (when (and img (plusp (img-w img)) (plusp (img-h img)))
+          (let* ((nw (img-w img)) (nh (img-h img))
+                 (slice (or (css:cstyle-border-image-slice cs)
+                            '((100 . :pct) (100 . :pct) (100 . :pct) (100 . :pct) nil)))
+                 (st (bi-slice-px (first slice) nh)) (sr (bi-slice-px (second slice) nw))
+                 (sb (bi-slice-px (third slice) nh)) (sl (bi-slice-px (fourth slice) nw))
+                 (fillp (fifth slice))
+                 (ws (css:cstyle-border-image-width cs))
+                 (wt (bi-width-px (and ws (first ws)) bt st bh))
+                 (wr (bi-width-px (and ws (second ws)) br sr bw))
+                 (wb (bi-width-px (and ws (third ws)) bb sb bh))
+                 (wl (bi-width-px (and ws (fourth ws)) bl sl bw))
+                 (rep (or (css:cstyle-border-image-repeat cs) '(:stretch . :stretch)))
+                 (rh (car rep)) (rv (cdr rep))
+                 (msw (max 0 (- nw sl sr))) (msh (max 0 (- nh st sb)))
+                 (dmw (max 0.0 (- bw wl wr))) (dmh (max 0.0 (- bh wt wb)))
+                 (rx (- (+ x0 bw) wr)) (by (- (+ y0 bh) wb)))
+            ;; corners (always stretched)
+            (when (and (> sl 0) (> st 0)) (bi-blit-region cv img 0 0 sl st x0 y0 wl wt :stretch :none))
+            (when (and (> sr 0) (> st 0)) (bi-blit-region cv img (- nw sr) 0 sr st rx y0 wr wt :stretch :none))
+            (when (and (> sr 0) (> sb 0)) (bi-blit-region cv img (- nw sr) (- nh sb) sr sb rx by wr wb :stretch :none))
+            (when (and (> sl 0) (> sb 0)) (bi-blit-region cv img 0 (- nh sb) sl sb x0 by wl wb :stretch :none))
+            ;; edges
+            (when (and (> msw 0) (> st 0)) (bi-blit-region cv img sl 0 msw st (+ x0 wl) y0 dmw wt rh :h))
+            (when (and (> msw 0) (> sb 0)) (bi-blit-region cv img sl (- nh sb) msw sb (+ x0 wl) by dmw wb rh :h))
+            (when (and (> msh 0) (> sl 0)) (bi-blit-region cv img 0 st sl msh x0 (+ y0 wt) wl dmh rv :v))
+            (when (and (> msh 0) (> sr 0)) (bi-blit-region cv img (- nw sr) st sr msh rx (+ y0 wt) wr dmh rv :v))
+            ;; the middle is painted only with the `fill` keyword
+            (when (and fillp (> msw 0) (> msh 0) (> dmw 0) (> dmh 0))
+              (bi-blit-region cv img sl st msw msh (+ x0 wl) (+ y0 wt) dmw dmh :stretch :none))
+            t))))))
+
 (defun paint-outline (cv lb cs)
   "Paint the CSS-UI outline: a uniform ring just outside the border edge, offset
 outward by outline-offset (may be negative).  Outlines do not affect layout and
@@ -5300,7 +5406,10 @@ mix(backdrop, blend(backdrop, source), coverage*ALPHA)."
            (funcall (lbox-vpaint lb) cv (round (lbox-x lb)) (round (lbox-y lb))
                     (round (lbox-w lb)) (round (lbox-h lb))))
          (when (and cs vis)
-           (paint-borders cv lb cs)
+           ;; border-image (§6): when a decodable source is set, the 9-sliced image
+           ;; replaces the normal border paint; otherwise fall back to the border.
+           (unless (and (css:cstyle-border-image-source cs) (paint-border-image cv lb cs))
+             (paint-borders cv lb cs))
            (when (and (lbox-marker lb) (plusp (length (marker-glyph (lbox-marker lb)))))
              ;; the list marker (•, disc/circle/square) is painted via scribe so the
              ;; real bullet glyph renders (the 7x13 bitmap has none); it sits ~1.3em

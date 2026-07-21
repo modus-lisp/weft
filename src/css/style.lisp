@@ -261,7 +261,9 @@
       ((member tag '("p" "dl") :test #'string=) (setf (cstyle-margin-top cs) 16.0 (cstyle-margin-bottom cs) 16.0))
       ((string= tag "h1") (setf (cstyle-font-size cs) 32.0 (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 21.0 (cstyle-margin-bottom cs) 21.0))
       ((string= tag "h2") (setf (cstyle-font-size cs) 24.0 (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 20.0 (cstyle-margin-bottom cs) 20.0))
-      ((string= tag "h3") (setf (cstyle-font-size cs) 18.0 (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 18.0 (cstyle-margin-bottom cs) 18.0))
+      ;; h3: font-size 1.17em (=18.72 at the 16px root) and margin 1em (=18.72),
+      ;; the exact browser UA computed values (an integer 18 lands ~0.72px short).
+      ((string= tag "h3") (setf (cstyle-font-size cs) 18.72 (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 18.72 (cstyle-margin-bottom cs) 18.72))
       ((string= tag "h4") (setf (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 21.0 (cstyle-margin-bottom cs) 21.0))
       ((string= tag "h5") (setf (cstyle-font-size cs) 13.0 (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 22.0 (cstyle-margin-bottom cs) 22.0))
       ((string= tag "h6") (setf (cstyle-font-size cs) 11.0 (cstyle-font-weight cs) 700 (cstyle-margin-top cs) 25.0 (cstyle-margin-bottom cs) 25.0))

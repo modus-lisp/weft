@@ -430,8 +430,16 @@
    or the alpha uses calc/var, which weft does not reorder)."
   (let ((interior (css::%color-fn-interior v "color")))
     (unless interior (return-from %canon-color-function :invalid))
-    (when (find #\, interior) (return-from %canon-color-function :invalid))
     (multiple-value-bind (comps alpha-str) (css::%split-color-components interior)
+      ;; Relative color — color(from <color> <space> …) — keeps its function form
+      ;; verbatim (weft does not resolve the base color's channels).  Checked before
+      ;; the comma reject so a color-mix()/calc() base (which nests commas) survives.
+      (when (and comps (string-equal (first comps) "from"))
+        (return-from %canon-color-function nil))
+      ;; A TOP-LEVEL comma is invalid in color() (commas nested inside a calc()/
+      ;; color-mix() channel are fine); color() itself is space-separated.
+      (when (> (length (css::%split-top-char interior #\,)) 1)
+        (return-from %canon-color-function :invalid))
       ;; COMPS[0] is the space; exactly three channels must follow.
       (unless (and (= (length comps) 4)
                    (member (string-downcase (first comps)) +color-fn-spaces+ :test #'string=))

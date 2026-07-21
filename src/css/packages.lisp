@@ -55,5 +55,5 @@
            #:cstyle-object-fit #:cstyle-aspect-ratio #:cstyle-aspect-ratio-auto
            #:cstyle-outline-width #:cstyle-outline-style #:cstyle-outline-color #:cstyle-outline-offset
            #:cstyle-accent-color #:cstyle-box-shadow #:cstyle-text-shadow #:cstyle-opacity
-           #:cstyle-filter #:cstyle-object-position
+           #:cstyle-filter #:cstyle-object-position #:cstyle-mix-blend-mode
            #:cstyle-container-type #:cstyle-container-name))

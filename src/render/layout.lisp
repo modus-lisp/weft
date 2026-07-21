@@ -5062,6 +5062,71 @@ ALPHA.  Honours the ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
                               (blend-put cv dx dy (aref cr i) (aref cg i) (aref cb i)
                                          (min 255 (max 0 (round (* a alpha))))))))))))))))))))
 
+;;; ---- mix-blend-mode (CSS Compositing 1 §mix-blend-mode) ------------------
+
+(declaim (inline blend-channel))
+(defun blend-channel (mode cb cs)
+  "Separable blend of one backdrop channel CB with source channel CS (0-255)."
+  (declare (type (unsigned-byte 8) cb cs))
+  (ecase mode
+    (:multiply   (truncate (* cb cs) 255))
+    (:screen     (- 255 (truncate (* (- 255 cb) (- 255 cs)) 255)))
+    (:overlay    (if (< cb 128) (truncate (* 2 cb cs) 255)
+                     (- 255 (truncate (* 2 (- 255 cb) (- 255 cs)) 255))))
+    (:hard-light (if (< cs 128) (truncate (* 2 cs cb) 255)
+                     (- 255 (truncate (* 2 (- 255 cs) (- 255 cb)) 255))))
+    (:darken     (min cb cs))
+    (:lighten    (max cb cs))
+    (:difference (abs (- cb cs)))
+    (:exclusion  (- (+ cb cs) (truncate (* 2 cb cs) 255)))
+    (:soft-light                        ; W3C soft-light, integer approximation
+     (let ((b (/ cb 255.0)) (s (/ cs 255.0)))
+       (let ((res (if (<= s 0.5)
+                      (- b (* (- 1.0 (* 2.0 s)) b (- 1.0 b)))
+                      (let ((d (if (<= b 0.25) (* (- (* 16.0 b) 12.0) (+ (* b b) b))
+                                   (sqrt b))))
+                        (+ b (* (- (* 2.0 s) 1.0) (- d b)))))))
+         (min 255 (max 0 (round (* 255.0 res)))))))))
+
+(defun paint-blended (cv lb mode &optional (alpha 1.0))
+  "CSS Compositing 1 §mix-blend-mode: render LB's subtree upright into two offscreen
+buffers (over black + white), recover per-pixel straight colour + coverage, then
+composite over CV blending each pixel's source colour with the CV backdrop already
+painted behind it via MODE.  The canvas is opaque, so the composite reduces to
+mix(backdrop, blend(backdrop, source), coverage*ALPHA)."
+  (multiple-value-bind (sx0 sy0 sx1 sy1) (subtree-paint-bounds lb)
+    (decf sx0) (decf sy0) (incf sx1) (incf sy1)
+    (let ((sw (- sx1 sx0)) (sh (- sy1 sy0)))
+      (when (and (plusp sw) (plusp sh) (<= (* sw sh) 16000000))
+        (let ((offa (make-canvas sw sh '(0 0 0)))
+              (offb (make-canvas sw sh '(255 255 255))))
+          (shift-box lb (- sx0) (- sy0))
+          (let ((*clip* nil) (*round-clip* nil))
+            (%paint-box-content offa lb)
+            (%paint-box-content offb lb))
+          (shift-box lb sx0 sy0)
+          (let ((pa (canvas-pixels offa)) (pb (canvas-pixels offb))
+                (dpx (canvas-pixels cv)) (cw (canvas-width cv)) (chh (canvas-height cv)))
+            (dotimes (sy sh)
+              (let ((dy (+ sy0 sy)))
+                (when (and (>= dy 0) (< dy chh))
+                  (dotimes (sx sw)
+                    (let ((dx (+ sx0 sx)))
+                      (when (and (>= dx 0) (< dx cw))
+                        (let* ((i (* 3 (+ (* sy sw) sx)))
+                               (ar (aref pa i)) (ag (aref pa (+ i 1))) (ab (aref pa (+ i 2)))
+                               (br (aref pb i)) (bg (aref pb (+ i 1))) (bb (aref pb (+ i 2)))
+                               (cov (- 1.0 (/ (+ (- br ar) (- bg ag) (- bb ab)) 765.0))))
+                          (when (> cov 0.004)
+                            (let* ((di (* 3 (+ (* dy cw) dx)))
+                                   (kr (aref dpx di)) (kg (aref dpx (+ di 1))) (kb (aref dpx (+ di 2))))
+                              (flet ((cc (v) (min 255 (max 0 (round (/ v cov))))))
+                                (blend-put cv dx dy
+                                           (blend-channel mode kr (cc ar))
+                                           (blend-channel mode kg (cc ag))
+                                           (blend-channel mode kb (cc ab))
+                                           (min 255 (max 0 (round (* 255.0 cov alpha)))))))))))))))))))))
+
 (defun paint-box (cv lb)
   (handler-case (%paint-box cv lb) (error () nil)))
 (defun %paint-box (cv lb)
@@ -5074,8 +5139,10 @@ ALPHA.  Honours the ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
            (cs (lbox-style lb))
            (op (and cs (let ((o (css:cstyle-opacity cs)))
                          (and (numberp o) (>= o 0.0) (< o 1.0) (float o 1.0)))))
-           (fil (and cs (css:cstyle-filter cs))))
+           (fil (and cs (css:cstyle-filter cs)))
+           (blend (and cs (css:cstyle-mix-blend-mode cs))))
       (cond (fil (paint-filtered cv lb fil (or op 1.0)))
+            (blend (paint-blended cv lb blend (or op 1.0)))
             (op (if m (paint-transformed cv lb m op) (paint-opacity cv lb op)))
             (m (paint-transformed cv lb m))
             (t (%paint-box-content cv lb))))))

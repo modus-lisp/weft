@@ -118,7 +118,23 @@ max-content widths (CSS Grid §11.5)."
     ((:auto :min-content :max-content) (float (grid-track-content-w spec items styles content-w)))
     (t 0.0)))
 
-(defun grid-size-columns (specs content-w cgap items-by-col styles)
+(defun grid-auto-max-p (spec)
+  "True when track SPEC has an `auto` MAX sizing function (CSS Grid §11.8) — `auto`
+itself, or minmax(_, auto).  Such tracks absorb leftover free space when the grid's
+content-distribution is normal/stretch (max-content/min-content maxima do not)."
+  (case (car spec)
+    (:auto t)
+    (:minmax (eq (car (third spec)) :auto))
+    (t nil)))
+
+(defun grid-stretch-dist-p (dist)
+  "True when a content-distribution value DIST (justify-content/align-content) leaves
+auto tracks free to stretch (CSS Grid §11.8): the `normal`/`stretch` default, plus
+weft's flex-shared `flex-start` sentinel (grids spell explicit start as `start`)."
+  (or (null dist)
+      (member dist '("normal" "stretch" "flex-start") :test #'string=)))
+
+(defun grid-size-columns (specs content-w cgap items-by-col styles &optional (dist "flex-start"))
   "Resolve column track SPECS to an array of px widths.  Fixed/percent tracks take
 their size, content tracks take their items' intrinsic width, then leftover space
 is shared among fr tracks in proportion to their flex factor (CSS Grid §11)."
@@ -147,7 +163,20 @@ is shared among fr tracks in proportion to their flex factor (CSS Grid §11)."
       (when (plusp sum-fr)
         (let ((unit (/ free sum-fr)))
           (loop for i below n when (aref flex i) do
-            (incf (aref base i) (* unit (aref flex i)))))))
+            (incf (aref base i) (* unit (aref flex i))))))
+      ;; Stretch auto tracks (CSS Grid §11.8): with no flexible (fr) track to
+      ;; absorb it and a normal/stretch content-distribution, share the leftover
+      ;; free space equally among tracks whose MAX is `auto`, so a single implicit
+      ;; auto column grows to the grid's width (empty items then fill it) rather
+      ;; than collapsing to their 0 content size.
+      (when (and (not (plusp sum-fr)) (grid-stretch-dist-p dist))
+        (let* ((used (loop for i below n sum (aref base i)))
+               (free2 (max 0.0 (- avail used)))
+               (autos (loop for i below n for spec in specs
+                            when (grid-auto-max-p spec) collect i)))
+          (when (and (plusp free2) autos)
+            (let ((unit (/ free2 (length autos))))
+              (dolist (i autos) (incf (aref base i) unit)))))))
     base))
 
 ;;; ---- placement ----------------------------------------------------------
@@ -308,7 +337,8 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
         (destructuring-bind (it r c rspan cspan) p
           (declare (ignore r rspan))
           (when (= cspan 1) (push it (aref items-by-col c)))))
-      (let* ((colw (grid-size-columns col-specs content-w cgap items-by-col styles))
+      (let* ((colw (grid-size-columns col-specs content-w cgap items-by-col styles
+                                      (css:cstyle-justify-content base-cs)))
              ;; column left offsets (content-box relative), applying justify-content
              ;; distribution over the leftover inline space (CSS Align 3).
              (col-used (+ (loop for i below ncols sum (aref colw i)) (* cgap (max 0 (1- ncols)))))

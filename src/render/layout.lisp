@@ -3053,6 +3053,11 @@ paths flatten display:contents wrappers first."
   (let ((v (cdr (assoc "colspan" (h:dnode-attrs cell) :test #'string-equal))))
     (max 1 (or (and v (ignore-errors (parse-integer (string-trim '(#\Space) v) :junk-allowed t))) 1))))
 
+(defun cell-rowspan (cell)
+  "The td/th rowspan (>=1)."
+  (let ((v (cdr (assoc "rowspan" (h:dnode-attrs cell) :test #'string-equal))))
+    (max 1 (or (and v (ignore-errors (parse-integer (string-trim '(#\Space) v) :junk-allowed t))) 1))))
+
 (defun cell-lbox-valign-top-p (lb)
   "True when the cell box LB is TOP-aligned — legacy valign=\"top\" (HTML §14.3).
 Such a cell keeps its content at the cell top when the row is taller; every other
@@ -3439,17 +3444,33 @@ cell-lboxes content-height)."
         ;; PASS 1: lay each row's cells at the content origin CY and record its
         ;; natural height; placement is deferred so an over-tall table can grow the
         ;; rows first (§17.5.3) without re-laying their content.
-        (let ((rowinfo '()) (natural 0))
+        (let ((rowinfo '()) (natural 0)
+              ;; rowspan occupancy: OCC[col] = rows still blocked below by a
+              ;; rowspanning cell from a previous row (CSS 2.1 §17.5.1 cell grid).
+              (occ (make-array (max 1 ncols) :initial-element 0))
+              (spans '())    ; (lb startidx nrows natural-h) — cells to grow in pass 2
+              (ridx 0))
           (dolist (row rows)
             (let ((cells (row-cells row styles node)) (rowh 0) (rowboxes '()) (col 0))
               (dolist (cell cells)
+                ;; skip columns still occupied by a rowspanning cell above
+                (loop while (and (< col ncols) (plusp (aref occ col))) do (incf col))
                 (let* ((span (cell-colspan cell))
+                       (rspan (cell-rowspan cell))
                        (x0 (aref colx (min ncols col)))
                        (x1 (aref colx (min ncols (+ col span))))
                        (cw (max 1 (round (- x1 x0)))))
                   (multiple-value-bind (lb adv) (layout-node cell styles (round (+ cx x0)) cy cw)
                     (declare (ignore adv))
-                    (when lb (push lb rowboxes) (setf rowh (max rowh (lbox-h lb)))))
+                    (when lb
+                      (push lb rowboxes)
+                      (if (> rspan 1)
+                          ;; a rowspanning cell's height spans several rows: defer its
+                          ;; sizing to pass 2 and block its columns for the rows below.
+                          (progn (push (list lb ridx rspan (lbox-h lb)) spans)
+                                 (loop for c from col below (min ncols (+ col span))
+                                       do (setf (aref occ c) rspan)))
+                          (setf rowh (max rowh (lbox-h lb))))))
                   (incf col span)))
               ;; Honor an explicit row height (CSS 2.1 17.5.3): the row is at least
               ;; as tall as its specified height.  This is what materialises HN's
@@ -3460,8 +3481,23 @@ cell-lboxes content-height)."
                   (let ((rh (css::resolve-height (css:cstyle-height rcs) nil)))
                     (when (and (numberp rh) (> rh rowh)) (setf rowh (round rh))))))
               (push (list row (nreverse rowboxes) rowh) rowinfo)
-              (incf natural rowh)))
+              (incf natural rowh)
+              (incf ridx)
+              ;; consume one row of every active rowspan occupancy
+              (dotimes (c ncols) (when (plusp (aref occ c)) (decf (aref occ c))))))
           (setf rowinfo (nreverse rowinfo))
+          ;; A rowspanning cell taller than the rows it covers grows the last row it
+          ;; spans (CSS 2.1 §17.5.3); the common case (spanned rows sized by other
+          ;; cells) leaves the row heights untouched.
+          (let* ((nrows-total (length rowinfo))
+                 (rh-vec (map 'vector #'third rowinfo)))
+            (dolist (sp spans)
+              (destructuring-bind (lb startidx nrows nat-h) sp
+                (declare (ignore lb))
+                (let* ((endidx (min (1- nrows-total) (+ startidx nrows -1)))
+                       (sum (loop for i from startidx to endidx sum (aref rh-vec i))))
+                  (when (> nat-h sum) (incf (aref rh-vec endidx) (- nat-h sum))))))
+            (setf natural (loop for i below nrows-total sum (aref rh-vec i)))
           ;; PASS 2: distribute a table taller than its content across rows in
           ;; proportion to their heights (§17.5.3); with no surplus SHARE is 0 and
           ;; every row keeps its natural height, so ordinary tables are unchanged.
@@ -3469,24 +3505,33 @@ cell-lboxes content-height)."
                 ;; row-group node -> (top . bottom) px band, so a table-row-group /
                 ;; -header-group / -footer-group with its own background or border
                 ;; paints a box behind its rows (CSS 2.1 §17.5.1 layer 2).
-                (group-band (make-hash-table :test 'eq)))
-            (dolist (ri rowinfo)
-              (destructuring-bind (row rowboxes rowh) ri
-                (let* ((share (cond ((<= surplus 0) 0)
+                (group-band (make-hash-table :test 'eq))
+                ;; rowspanning cells: sized after all row tops/heights are known.
+                (span-set (let ((h (make-hash-table :test 'eq)))
+                            (dolist (sp spans) (setf (gethash (first sp) h) t)) h))
+                (row-y (make-array nrows-total)) (row-h2 (make-array nrows-total)))
+            (loop for ri in rowinfo for ridx2 from 0 do
+              (destructuring-bind (row rowboxes rowh-nat) ri
+                (declare (ignore rowh-nat))
+                (let* ((rowh (aref rh-vec ridx2))
+                       (share (cond ((<= surplus 0) 0)
                                     ((> natural 0) (* surplus (/ rowh natural)))
                                     (t (/ surplus (length rowinfo)))))
                        (rh2 (round (+ rowh share))))
+                  (setf (aref row-y ridx2) y (aref row-h2 ridx2) rh2)
                   (dolist (lb rowboxes) (shift-box lb 0 (round (- y (lbox-y lb)))))
                   ;; the baseline group = the single-line text cells; shorter cells align
                   ;; to its tallest.  A row taller than that group (a block/wrapped cell,
                   ;; or a distributed surplus) has no single baseline, so cells center.
                   (let* ((bref (loop for lb in rowboxes
-                                     when (and (not (cell-lbox-valign-top-p lb)) (cell-single-line-text-p lb))
+                                     when (and (not (gethash lb span-set))
+                                               (not (cell-lbox-valign-top-p lb)) (cell-single-line-text-p lb))
                                      maximize (cell-inline-content-height lb)))
                          (center-mode (> rh2 (+ bref 1))))
                     (dolist (lb rowboxes)
-                      (place-cell-content lb rh2 (and (plusp bref) bref) center-mode)
-                      (setf (lbox-h lb) rh2)))                          ; stretch box to row height
+                      (unless (gethash lb span-set)     ; rowspanning cells sized after the loop
+                        (place-cell-content lb rh2 (and (plusp bref) bref) center-mode)
+                        (setf (lbox-h lb) rh2))))                       ; stretch box to row height
                   ;; position:relative on the row, its row-group, or a cell shifts the
                   ;; box(es) visually (the table box model doesn't otherwise honor
                   ;; relative offsets on table parts).  Row + group move the whole row.
@@ -3518,6 +3563,16 @@ cell-lboxes content-height)."
                                     (if cur (max (cdr cur) (+ y rh2)) (+ y rh2)))))))
                   (setf boxes (nconc boxes rowboxes))
                   (incf y rh2))))
+            ;; grow each rowspanning cell to cover the rows it spans, now that every
+            ;; row top/height is known, and re-place its content within that band.
+            (dolist (sp spans)
+              (destructuring-bind (lb startidx nrows nat-h) sp
+                (declare (ignore nat-h))
+                (let* ((endidx (min (1- nrows-total) (+ startidx nrows -1)))
+                       (h (round (- (+ (aref row-y endidx) (aref row-h2 endidx))
+                                    (aref row-y startidx)))))
+                  (place-cell-content lb h nil t)
+                  (setf (lbox-h lb) h))))
             ;; prepend group-background boxes so they paint behind the rows/cells.
             (let ((gboxes '()) (gw (round (aref colx ncols))))
               (maphash (lambda (grp band)
@@ -3534,7 +3589,7 @@ cell-lboxes content-height)."
                                      gboxes)))))
                        group-band)
               (when gboxes (setf boxes (nconc gboxes boxes)))))
-          (values boxes (- y cy)))))))
+          (values boxes (- y cy))))))))
 
 (defun pref-inline-width (node styles cs content-w)
   "Max-content width of NODE's inline content: word + atomic-box widths summed on

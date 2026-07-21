@@ -1425,6 +1425,76 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
          (v (if (second toks) (parse-radius-comp (second toks) fs) h)))
     (when (and h v) (funcall setter (cons h v) cs))))
 
+(defun strip-bg-url (s)
+  "Remove the url(...) chunk from S (so a slash inside a url path is not read as the
+<bg-position> / <bg-size> separator)."
+  (let ((up (search "url(" s :test #'char-equal)))
+    (if up
+        (let ((e (position #\) s :start (+ up 4))))
+          (if e (concatenate 'string (subseq s 0 up) " " (subseq s (1+ e))) s))
+        s)))
+
+(defun parse-one-bg-layer-group (group fs)
+  "Parse one comma-group of a `background` shorthand (CSS Backgrounds 3 §3.10) into a
+BG-LAYER.  Mirrors the layer-1 slot extraction, per-layer: image (gradient | url),
+background-repeat, -attachment, -origin/-clip boxes, and <bg-position> [ / <bg-size> ]."
+  (let* ((grad (parse-gradient group fs))
+         (url (extract-css-url group))
+         (toks (css-background-tokens group))
+         (attach (cond ((member "fixed" toks :test #'string=) "fixed")
+                       ((member "local" toks :test #'string=) "local")
+                       (t "scroll")))
+         (rep (or (find-if (lambda (tk) (member tk '("repeat" "repeat-x" "repeat-y"
+                                                     "no-repeat" "space" "round") :test #'string=))
+                           toks)
+                  "repeat"))
+         (boxes (remove-if-not (lambda (tk) (member tk '("border-box" "padding-box" "content-box")
+                                                    :test #'string=))
+                               toks))
+         (origin (or (first boxes) "padding-box"))
+         (clip (or (second boxes) (first boxes) "border-box"))
+         (g1 (strip-bg-url group))
+         (slash (position #\/ g1))
+         (pos-str (if slash (subseq g1 0 slash) g1))
+         (size-str (and slash (subseq g1 (1+ slash))))
+         (position (let ((postoks (remove-if-not #'bg-position-token-p (css-background-tokens pos-str))))
+                     (when postoks
+                       (let ((v (parse-value "background-position" (format nil "~{~a~^ ~}" postoks))))
+                         (when (and (consp v) (not (eq v :invalid))) (resolve-bg-pos v fs))))))
+         (size (when size-str
+                 (let* ((stoks (css-background-tokens size-str))
+                        (size-toks (cond ((and stoks (member (first stoks) '("contain" "cover")
+                                                             :test #'string=))
+                                          (list (first stoks)))
+                                         (t (loop for tk in stoks while (bg-size-comp tk fs)
+                                                  repeat 2 collect tk)))))
+                   (when size-toks (parse-bg-size (format nil "~{~a~^ ~}" size-toks) fs))))))
+    (make-bg-layer :image (cond (grad (cons :gradient grad)) (url (cons :url url)) (t nil))
+                   :position position :size size :repeat rep
+                   :origin origin :clip clip :attachment attach)))
+
+(defun bg-group-fullbox-solid-p (group fs)
+  "T when GROUP (one background shorthand layer) is a solid gradient with no explicit
+finite <bg-size> — so it covers the whole box and can be folded into background-color
+(CSS Backgrounds 3 §3.10).  An explicit length/percentage size shrinks the tile and is
+NOT foldable (contain/cover/auto still cover)."
+  (let ((grad (parse-gradient group fs)))
+    (and grad (gradient-solid-color grad)
+         (let* ((g1 (strip-bg-url group)) (slash (position #\/ g1)))
+           (or (null slash)
+               (let ((sz (parse-bg-size (subseq g1 (1+ slash)) fs)))
+                 (or (null sz) (eq sz :contain) (eq sz :cover))))))))
+
+(defun thread-extras-longhand (cs values setter)
+  "Apply a per-layer background longhand list VALUES (parsed, in listed order) to the
+BG-EXTRA-LAYERS via SETTER (a function of (layer value)): the k-th extra (layer k+2,
+0-based k) takes VALUES cycled at index (k+1).  No-op when there are no extras or no
+values (so a single-layer background is unaffected)."
+  (let ((extras (cstyle-bg-extra-layers cs)) (n (length values)))
+    (when (and extras (plusp n))
+      (loop for lyr in extras for k from 1
+            do (funcall setter lyr (nth (mod k n) values))))))
+
 (defun apply-decl (cs prop value parent-cs)
   "Apply one declaration to CSTYLE CS (best-effort)."
   ;; The element's font-family (inherited at init, or already set by an earlier `font`
@@ -1527,16 +1597,25 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
            (cond (grad (setf (cstyle-bg-gradient cs) grad)
                        ;; multi-layer background (comma list): PARSE-GRADIENT returned the
                        ;; FIRST (top) layer.  When the LAST (bottom) layer is a solid
-                       ;; gradient, fold its color into background-color so it paints under
-                       ;; the top layer(s) — the common "image over a base color" idiom.
-                       (let ((layers (split-top-commas value)))
-                         (when (> (length layers) 1)
-                           (let* ((lg (parse-gradient (car (last layers)) fs))
-                                  (base (and lg (gradient-solid-color lg))))
-                             (when base (setf (cstyle-background cs) base))))))
+                       ;; FULL-BOX gradient, fold its color into background-color so it
+                       ;; paints under the top layer(s) — the common "image over a base
+                       ;; color" idiom (a sized/positioned solid bottom is kept as a real
+                       ;; layer instead, below).
+                       ;; the fold is a `background` SHORTHAND idiom only — the
+                       ;; `background-image` longhand never sets background-color, and its
+                       ;; per-layer size (which decides full-box) comes from a separate
+                       ;; longhand not visible here, so it keeps every layer real.
+                       (when (string= prop "background")
+                         (let ((layers (split-top-commas value)))
+                           (when (> (length layers) 1)
+                             (let* ((last-g (car (last layers)))
+                                    (base (and (bg-group-fullbox-solid-p last-g fs)
+                                               (gradient-solid-color (parse-gradient last-g fs)))))
+                               (when base (setf (cstyle-background cs) base)))))))
                  ;; `none`/`transparent` clear any background set by an earlier rule
                  ((member tok '("none" "transparent") :test #'string=)
-                  (setf (cstyle-background cs) nil (cstyle-bg-gradient cs) nil (cstyle-bg-image cs) nil))
+                  (setf (cstyle-background cs) nil (cstyle-bg-gradient cs) nil (cstyle-bg-image cs) nil
+                        (cstyle-bg-extra-layers cs) nil))
                  ;; the colour can sit anywhere in the shorthand, not just first —
                  ;; `background: url(…) no-repeat 1px white` still sets the bg colour.
                  (t (let ((c (some #'resolve-color (css-background-tokens value))))
@@ -1596,22 +1675,66 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
                                              repeat 2 collect tk)))))
                        (when size-toks
                          (let ((sz (parse-bg-size (format nil "~{~a~^ ~}" size-toks) fs)))
-                           (when sz (setf (cstyle-bg-size cs) sz))))))))))))
+                           (when sz (setf (cstyle-bg-size cs) sz))))))))))
+           ;; multi-layer backgrounds (CSS Backgrounds 3 §3.10): layers 2..N become
+           ;; BG-LAYER extras (listed top->bottom); the layer-1 primary stays in the
+           ;; single-value slots above.  A solid full-box BOTTOM layer is folded into
+           ;; background-color (above) and dropped here; every other layer is real.  A
+           ;; single-layer value resets any prior extras.
+           (when (member prop '("background" "background-image") :test #'string=)
+             (let ((groups (split-top-commas value)))
+               (if (> (length groups) 1)
+                   (let* ((n (length groups))
+                          ;; only the `background` shorthand folds a full-box solid
+                          ;; bottom layer into background-color (see the fold above).
+                          (fold-last (and (string= prop "background")
+                                          (bg-group-fullbox-solid-p (nth (1- n) groups) fs)))
+                          (extras '()))
+                     (loop for gi from 1 below n
+                           do (unless (and (= gi (1- n)) fold-last)
+                                (push (parse-one-bg-layer-group (nth gi groups) fs) extras)))
+                     (setf (cstyle-bg-extra-layers cs) (nreverse extras)))
+                   (setf (cstyle-bg-extra-layers cs) nil))))))
         ((string= prop "background-repeat")
-         (let ((v (parse-value "background-repeat" value))) (when (stringp v) (setf (cstyle-bg-repeat cs) v))))
+         ;; layer 1 uses the first value; extra layers take the Nth (CSS Backgrounds 3 §3.4).
+         (let* ((groups (split-top-commas value))
+                (v (parse-value "background-repeat" (or (first groups) value))))
+           (when (stringp v) (setf (cstyle-bg-repeat cs) v))
+           (thread-extras-longhand
+            cs (mapcar (lambda (g) (let ((r (parse-value "background-repeat" g))) (if (stringp r) r "repeat"))) groups)
+            (lambda (lyr r) (setf (bg-layer-repeat lyr) r)))))
         ((string= prop "background-position")
-         ;; weft paints one layer: a comma-separated multi-layer value uses its first.
-         (let ((v (parse-value "background-position" (or (first (split-top-commas value)) value))))
-           (when (and (consp v) (not (eq v :invalid))) (setf (cstyle-bg-position cs) (resolve-bg-pos v fs)))))
-        ((string= prop "background-size") (setf (cstyle-bg-size cs) (parse-bg-size value fs)))
+         (let* ((groups (split-top-commas value))
+                (v (parse-value "background-position" (or (first groups) value))))
+           (when (and (consp v) (not (eq v :invalid))) (setf (cstyle-bg-position cs) (resolve-bg-pos v fs)))
+           (thread-extras-longhand
+            cs (mapcar (lambda (g) (let ((pv (parse-value "background-position" g)))
+                                     (and (consp pv) (not (eq pv :invalid)) (resolve-bg-pos pv fs))))
+                       groups)
+            (lambda (lyr p) (setf (bg-layer-position lyr) p)))))
+        ((string= prop "background-size")
+         (let ((groups (split-top-commas value)))
+           (setf (cstyle-bg-size cs) (parse-bg-size (or (first groups) value) fs))
+           (thread-extras-longhand
+            cs (mapcar (lambda (g) (parse-bg-size g fs)) groups)
+            (lambda (lyr s) (setf (bg-layer-size lyr) s)))))
         ((string= prop "background-attachment")
-         ;; weft paints one layer: use the first layer's attachment keyword.
-         (setf (cstyle-bg-attachment cs)
-               (string-downcase (string-trim '(#\Space) (or (first (split-top-commas value)) value)))))
+         ;; layer 1 uses the first layer's attachment keyword; extras take the Nth.
+         (let ((groups (split-top-commas value)))
+           (setf (cstyle-bg-attachment cs)
+                 (string-downcase (string-trim '(#\Space) (or (first groups) value))))
+           (thread-extras-longhand
+            cs (mapcar (lambda (g) (string-downcase (string-trim '(#\Space) g))) groups)
+            (lambda (lyr a) (setf (bg-layer-attachment lyr) a)))))
         ((string= prop "background-origin")
-         (let ((v (string-downcase (string-trim '(#\Space) value))))
+         (let* ((groups (split-top-commas value))
+                (v (string-downcase (string-trim '(#\Space) (or (first groups) value)))))
            (when (member v '("border-box" "padding-box" "content-box") :test #'string=)
-             (setf (cstyle-bg-origin cs) v))))
+             (setf (cstyle-bg-origin cs) v))
+           (thread-extras-longhand
+            cs (mapcar (lambda (g) (string-downcase (string-trim '(#\Space) g))) groups)
+            (lambda (lyr o) (when (member o '("border-box" "padding-box" "content-box") :test #'string=)
+                              (setf (bg-layer-origin lyr) o))))))
         ((string= prop "background-clip")
          (if (and parent-cs (string-equal (string-trim '(#\Space) value) "inherit"))
              ;; background-clip is not inherited by default; the `inherit` keyword
@@ -1622,7 +1745,9 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
                                  (split-top-commas value))))
                (when (and vals (every (lambda (v) (member v '("border-box" "padding-box" "content-box") :test #'string=)) vals))
                  (setf (cstyle-bg-clip cs) (first vals)
-                       (cstyle-bg-clip-list cs) (if (cdr vals) vals nil))))))
+                       (cstyle-bg-clip-list cs) (if (cdr vals) vals nil))
+                 (thread-extras-longhand cs vals
+                   (lambda (lyr c) (setf (bg-layer-clip lyr) c)))))))
         ((string= prop "object-fit")
          (let ((v (parse-value "object-fit" value))) (when (stringp v) (setf (cstyle-object-fit cs) v))))
         ((string= prop "object-position")

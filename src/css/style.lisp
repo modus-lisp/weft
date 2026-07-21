@@ -1485,6 +1485,15 @@ NOT foldable (contain/cover/auto still cover)."
                (let ((sz (parse-bg-size (subseq g1 (1+ slash)) fs)))
                  (or (null sz) (eq sz :contain) (eq sz :cover))))))))
 
+(defun blend-mode-keyword (v)
+  "Map a CSS <blend-mode> keyword string to its paint keyword (:multiply …); an
+unknown / `normal` value -> :normal (CSS Compositing 1)."
+  (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) v))))
+    (if (member v '("multiply" "screen" "overlay" "darken" "lighten"
+                    "difference" "exclusion" "hard-light" "soft-light") :test #'string=)
+        (intern (string-upcase v) :keyword)
+        :normal)))
+
 (defun thread-extras-longhand (cs values setter)
   "Apply a per-layer background longhand list VALUES (parsed, in listed order) to the
 BG-EXTRA-LAYERS via SETTER (a function of (layer value)): the k-th extra (layer k+2,
@@ -1695,6 +1704,12 @@ values (so a single-layer background is unaffected)."
                                 (push (parse-one-bg-layer-group (nth gi groups) fs) extras)))
                      (setf (cstyle-bg-extra-layers cs) (nreverse extras)))
                    (setf (cstyle-bg-extra-layers cs) nil))))))
+        ((string= prop "background-blend-mode")
+         ;; CSS Compositing 1 §background-blend-mode: a per-layer blend list in listed
+         ;; order (cycled), applied to each background layer against the backdrop of the
+         ;; layers below it.  All-normal -> NIL (ordinary source-over, byte-identical).
+         (let ((vs (mapcar #'blend-mode-keyword (split-top-commas value))))
+           (setf (cstyle-bg-blend-list cs) (if (every (lambda (b) (eq b :normal)) vs) nil vs))))
         ((string= prop "background-repeat")
          ;; layer 1 uses the first value; extra layers take the Nth (CSS Backgrounds 3 §3.4).
          (let* ((groups (split-top-commas value))

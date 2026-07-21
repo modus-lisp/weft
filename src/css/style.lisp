@@ -28,6 +28,11 @@
   ;; border-collapse (inherited): separate | collapse.  A collapsed table (and its
   ;; internal table elements) ignore border-radius (CSS Backgrounds 3 §5.5).
   (border-collapse "separate")
+  ;; CSS 2.1 §17.6.1 border-spacing (inherited): the (h . v) px gap between adjacent
+  ;; cell borders and around the table edge in the separated-borders model.  The CSS
+  ;; initial is 0; HTML tables default to 2px (set per-table in UA-STYLE, and by the
+  ;; legacy cellspacing attribute).  Ignored when border-collapse:collapse.
+  (border-spacing (cons 0 0))
   ;; CSS-UI outline: a ring painted just outside the border edge; does NOT
   ;; affect layout.  OUTLINE-COLOR NIL = currentColor.  OUTLINE-STYLE NIL/"none"
   ;; = no outline.  OUTLINE-OFFSET px (may be negative) is the gap between the
@@ -174,12 +179,16 @@
             (cstyle-quotes cs) (cstyle-quotes parent-cs)
             (cstyle-caption-side cs) (cstyle-caption-side parent-cs)
             (cstyle-border-collapse cs) (cstyle-border-collapse parent-cs)
+            (cstyle-border-spacing cs) (cstyle-border-spacing parent-cs)
             (cstyle-list-style cs) (cstyle-list-style parent-cs)
             (cstyle-accent-color cs) (cstyle-accent-color parent-cs)
             (cstyle-text-shadow cs) (cstyle-text-shadow parent-cs)))
     (cond ((member tag *none-tags* :test #'string=) (setf (cstyle-display cs) "none"))
           ((string= tag "li") (setf (cstyle-display cs) "list-item"))
-          ((string= tag "table") (setf (cstyle-display cs) "table"))
+          ((string= tag "table") (setf (cstyle-display cs) "table"
+                                       ;; HTML tables default to 2px border-spacing
+                                       ;; (overridden by cellspacing / author CSS).
+                                       (cstyle-border-spacing cs) (cons 2 2)))
           ((string= tag "tr") (setf (cstyle-display cs) "table-row"))
           ((member tag '("td" "th") :test #'string=) (setf (cstyle-display cs) "table-cell"))
           ((member tag '("thead" "tbody" "tfoot") :test #'string=) (setf (cstyle-display cs) "table-row-group"))
@@ -1832,6 +1841,18 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
         ((string= prop "border-collapse")
          (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
            (when (member v '("separate" "collapse") :test #'string=) (setf (cstyle-border-collapse cs) v))))
+        ((string= prop "border-spacing")
+         ;; CSS 2.1 §17.6.1: one length (both axes) or two (horizontal vertical).
+         (let ((v (string-trim '(#\Space #\Tab #\Newline #\Return) value)))
+           (cond ((and parent-cs (string-equal v "inherit"))
+                  (setf (cstyle-border-spacing cs) (cstyle-border-spacing parent-cs)))
+                 ((member v '("initial" "unset" "revert") :test #'string-equal)
+                  (setf (cstyle-border-spacing cs) (cons 0 0)))
+                 (t (let* ((toks (ws-split-top v))
+                           (h (and toks (resolve-len (first toks) fs)))
+                           (vv (if (cdr toks) (resolve-len (second toks) fs) h)))
+                      (when (and (numberp h) (>= h 0) (numberp vv) (>= vv 0))
+                        (setf (cstyle-border-spacing cs) (cons (round h) (round vv)))))))))
         ((string= prop "border-radius")
          (if (and parent-cs (radius-inherit-p value))
              (setf (cstyle-border-tl-radius cs) (cstyle-border-tl-radius parent-cs)
@@ -2176,6 +2197,13 @@ this is applied before author rules."
                 (when (and n (>= n 0))
                   (setf (cstyle-padding-top cs) n (cstyle-padding-right cs) n
                         (cstyle-padding-bottom cs) n (cstyle-padding-left cs) n))))))))
+    ;; cellspacing=N on a <table> maps to border-spacing (HTML §14.3.1),
+    ;; overriding the 2px UA default; author `border-spacing` still wins.
+    (when (string= tag "table")
+      (let ((cs-attr (el-attr node "cellspacing")))
+        (when cs-attr
+          (let ((n (ignore-errors (parse-integer (string-trim '(#\Space) cs-attr) :junk-allowed t))))
+            (when (and n (>= n 0)) (setf (cstyle-border-spacing cs) (cons n n)))))))
     ;; table cell / row / etc. align= -> text-align (HTML §14.3 presentational).
     (when (member tag '("td" "th" "tr" "thead" "tbody" "tfoot" "col" "colgroup") :test #'string=)
       (let ((al (el-attr node "align")))

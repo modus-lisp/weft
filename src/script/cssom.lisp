@@ -252,6 +252,35 @@
                 (if (eq lv :none) "none" (format nil "~a%" (fmt-color-num (* 100 (%clampf lv 0d0 1d0)))))
                 (%alpha-tail (if (eq a :none) :none (%clampf a 0d0 1d0))))))))
 
+(defparameter +color-fn-spaces+
+  '("srgb" "srgb-linear" "a98-rgb" "rec2020" "prophoto-rgb"
+    "display-p3" "display-p3-linear" "xyz" "xyz-d50" "xyz-d65")
+  "Predefined color() color spaces (CSS Color 4 §predefined + §xyz).")
+
+(defun %color-fn-space-out (space)
+  "The serialized space name: `xyz` aliases to `xyz-d65` (CSS Color 4 §serializing)."
+  (if (string= space "xyz") "xyz-d65" space))
+
+(defun %serialize-color-function (comps alpha)
+  "Serialize a color(<space> c1 c2 c3 [/ a]) value.  COMPS = (space c1 c2 c3),
+   ALPHA the alpha token or NIL.  Each channel resolves via %resolve-color-comp
+   (percentage/100, `none` kept, calc evaluated); channels are NOT gamut-clamped
+   (CSS Color 4 §serializing-color-function-values keeps authored magnitudes),
+   only alpha is clamped to [0,1].  NIL on failure.  Serves BOTH the specified
+   (non-calc) and computed (calc-evaluated) paths identically."
+  (when (= (length comps) 4)
+    (let ((space (string-downcase (first comps))))
+      (when (member space +color-fn-spaces+ :test #'string=)
+        (let ((c1 (%resolve-color-comp (second comps) 1d0))
+              (c2 (%resolve-color-comp (third comps) 1d0))
+              (c3 (%resolve-color-comp (fourth comps) 1d0))
+              (a (%resolve-alpha alpha)))
+          (when (and c1 c2 c3 a)
+            (format nil "color(~a ~a ~a ~a~a)"
+                    (%color-fn-space-out space)
+                    (%fin c1) (%fin c2) (%fin c3)
+                    (%alpha-tail (if (eq a :none) :none (%clampf a 0d0 1d0))))))))))
+
 (defun %computed-modern-color (spec)
   "Computed-value serialization of a modern <color> SPEC, or NIL to defer to the
    sRGB rgba path (keyword/hex/named/legacy rgb/hsl-or-hwb without none)."
@@ -270,6 +299,7 @@
                ((string= fname "oklab") (%serialize-modern-lab :oklab comps alpha))
                ((string= fname "oklch") (%serialize-modern-lab :oklch comps alpha))
                ((string= fname "hwb") (%serialize-modern-hwb comps alpha))
+               ((string= fname "color") (%serialize-color-function comps alpha))
                ((member fname '("hsl" "hsla") :test #'string=)
                 (%serialize-modern-hsl-none comps alpha))
                (t nil)))))))))
@@ -331,6 +361,58 @@
            (search "from" lower)             ; relative color, e.g. rgb(from red r g b)
            (search "min(" lower) (search "max(" lower) (search "clamp(" lower))))
 
+(defun %num-token-p (s)
+  "T iff S is a bare CSS <number> token (no unit) — rejects idents (`eggs`) and
+   dimensions (`0deg`)."
+  (and (plusp (length s))
+       (let ((v (ignore-errors
+                 (let ((*read-eval* nil) (*read-default-float-format* 'double-float))
+                   (multiple-value-bind (val pos) (read-from-string s nil nil)
+                     (and (eql pos (length s)) val))))))
+         (realp v))))
+
+(defun %color-fn-comp-class (s)
+  "Classify a color()/modern channel token: :none | :calc | :percent | :number |
+   :bad.  A `(` token (calc/var/sign/…) is :calc (kept verbatim, not reordered)."
+  (let ((s (string-trim '(#\Space #\Tab #\Newline #\Return) s)))
+    (cond ((zerop (length s)) :bad)
+          ((string-equal s "none") :none)
+          ((find #\( s) :calc)
+          ((and (char= (char s (1- (length s))) #\%)
+                (%num-token-p (subseq s 0 (1- (length s))))) :percent)
+          ((%num-token-p s) :number)
+          (t :bad))))
+
+(defun %color-fn-alpha-class (s)
+  "Classify a color() alpha slot: :absent (no `/`) | :none | :calc | :percent |
+   :number | :bad.  Multiple whitespace-separated tokens (junk after alpha) -> :bad."
+  (cond ((null s) :absent)
+        (t (let ((s (string-trim '(#\Space #\Tab #\Newline #\Return) s)))
+             (cond ((zerop (length s)) :bad)
+                   ((find #\( s) :calc)
+                   ((find-if (lambda (c) (member c '(#\Space #\Tab #\Newline))) s) :bad)
+                   (t (%color-fn-comp-class s)))))))
+
+(defun %canon-color-function (v)
+  "Canonical specified serialization of a color() function V (CSS Color 4
+   §color-function): a canonical string, :invalid, or NIL (verbatim — a channel
+   or the alpha uses calc/var, which weft does not reorder)."
+  (let ((interior (css::%color-fn-interior v "color")))
+    (unless interior (return-from %canon-color-function :invalid))
+    (when (find #\, interior) (return-from %canon-color-function :invalid))
+    (multiple-value-bind (comps alpha-str) (css::%split-color-components interior)
+      ;; COMPS[0] is the space; exactly three channels must follow.
+      (unless (and (= (length comps) 4)
+                   (member (string-downcase (first comps)) +color-fn-spaces+ :test #'string=))
+        (return-from %canon-color-function :invalid))
+      (let ((classes (mapcar #'%color-fn-comp-class (rest comps)))
+            (alpha-class (%color-fn-alpha-class alpha-str)))
+        (when (or (member :bad classes) (eq alpha-class :bad))
+          (return-from %canon-color-function :invalid))
+        (if (or (member :calc classes) (eq alpha-class :calc))
+            nil                         ; keep verbatim (no calc reordering)
+            (or (%serialize-color-function comps alpha-str) :invalid))))))
+
 (defun %specified-lab (v fname)
   "Specified-value serialization of a non-calc lab/lch/oklab/oklch <color> V; NIL
    on failure (caller stores verbatim)."
@@ -375,6 +457,7 @@
        (let ((fname (subseq lower 0 (position #\( lower))))
          (cond
            ((not (member fname +known-color-functions+ :test #'string=)) :invalid)
+           ((string= fname "color") (%canon-color-function v))
            ((member fname '("rgb" "rgba" "hsl" "hsla") :test #'string=)
             (if (%risky-color-tokens-p lower) nil
                 (let ((c (css:parse-value "color" v))) (if (consp c) (rgb-str c) :invalid))))

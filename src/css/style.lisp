@@ -1026,25 +1026,31 @@ position/color-interpolation) rather than the first color stop."
                     rest (concatenate 'string (subseq s 0 fp) " " (subseq s (1+ close))))))))
       (when src (setf (cstyle-border-image-source cs) src))
       ;; the remainder holds slice [ / width [ / outset ]] and repeat keywords, space-
-      ;; separated; split on top-level slashes for the slice/width/outset groups.
-      (let* ((slash1 (position #\/ rest))
-             (slice-part (if slash1 (subseq rest 0 slash1) rest))
-             (after (and slash1 (subseq rest (1+ slash1))))
+      ;; separated.  Repeat keywords (stretch/repeat/round/space) may trail any group
+      ;; (they are the only non-length tokens), so pull them out globally first, then
+      ;; split what's left on top-level slashes for slice/width/outset.
+      (let* ((rep-toks '())
+             (clean (with-output-to-string (o)
+                      (dolist (tk (%bi-ws-split (string-downcase rest)))
+                        (if (%bi-repeat-kw tk) (push tk rep-toks)
+                            (progn (write-string tk o) (write-char #\Space o))))))
+             (slash1 (position #\/ clean))
+             (slice-part (if slash1 (subseq clean 0 slash1) clean))
+             (after (and slash1 (subseq clean (1+ slash1))))
              (slash2 (and after (position #\/ after)))
              (width-part (if slash2 (subseq after 0 slash2) after))
              (outset-part (and slash2 (subseq after (1+ slash2))))
-             ;; repeat keywords may trail the slice group (no slash before them)
-             (slice-toks (%bi-ws-split (string-downcase slice-part)))
-             (rep-toks (remove-if-not #'%bi-repeat-kw slice-toks))
-             (num-toks (remove-if #'%bi-repeat-kw (remove "fill" slice-toks :test #'string=)))
+             (slice-toks (%bi-ws-split slice-part))
+             (num-toks (remove "fill" slice-toks :test #'string=))
              (fillp (and (member "fill" slice-toks :test #'string=) t)))
+        (setf rep-toks (nreverse rep-toks))
         (when num-toks
           (let ((vs (mapcar #'%bi-slice1 num-toks)))
             (when (and vs (every #'identity vs))
               (setf (cstyle-border-image-slice cs) (append (%bi-expand-1-4 vs) (list fillp))))))
-        (when width-part
+        (when (and width-part (plusp (length (string-trim '(#\Space) width-part))))
           (let ((w (parse-border-image-width width-part fs))) (when w (setf (cstyle-border-image-width cs) w))))
-        (when outset-part
+        (when (and outset-part (plusp (length (string-trim '(#\Space) outset-part))))
           (let ((o (parse-border-image-outset outset-part fs))) (when o (setf (cstyle-border-image-outset cs) o))))
         (when rep-toks
           (let ((r (parse-border-image-repeat (format nil "~{~A~^ ~}" rep-toks))))

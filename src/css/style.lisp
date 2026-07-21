@@ -225,15 +225,22 @@
           ((string= tag "table") (setf (cstyle-display cs) "table"
                                        ;; HTML tables default to 2px border-spacing
                                        ;; (overridden by cellspacing / author CSS).
-                                       (cstyle-border-spacing cs) (cons 2 2)))
+                                       (cstyle-border-spacing cs) (cons 2 2)
+                                       ;; a table resets text-align to start (the UA
+                                       ;; rule), so an inherited -webkit-center (e.g.
+                                       ;; from an ancestor <center>) does NOT centre
+                                       ;; cell content — cells inherit start from here.
+                                       (cstyle-text-align cs) "left"))
           ((string= tag "tr") (setf (cstyle-display cs) "table-row"))
           ((member tag '("td" "th") :test #'string=) (setf (cstyle-display cs) "table-cell"))
           ((member tag '("thead" "tbody" "tfoot") :test #'string=) (setf (cstyle-display cs) "table-row-group"))
           ((string= tag "caption") (setf (cstyle-display cs) "table-caption"))
           ;; <center> is a block whose block-level children are horizontally centered
-          ;; (applied as margin:auto in the cascade).  It does NOT set text-align:center
-          ;; here — that inherits and would wrongly centre all descendant text.
-          ((string= tag "center") (setf (cstyle-display cs) "block"))
+          ;; (applied as margin:auto in the cascade) AND whose inline-level content is
+          ;; centered on the line: the UA rule is text-align:-webkit-center, which
+          ;; inherits (descendant text centres too, matching the browser default).
+          ((string= tag "center") (setf (cstyle-display cs) "block"
+                                         (cstyle-text-align cs) "center"))
           ((member tag *block-tags* :test #'string=) (setf (cstyle-display cs) "block"))
           (t (setf (cstyle-display cs) "inline")))
     (when (string= tag "th") (setf (cstyle-font-weight cs) 700 (cstyle-text-align cs) "center"))

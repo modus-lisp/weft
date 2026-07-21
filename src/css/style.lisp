@@ -1298,8 +1298,8 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
            (when (member prop '("background" "background-image") :test #'string=)
              (setf (cstyle-bg-layers cs) (max 1 (length (split-top-commas value)))))
            ;; capture a url() image (data: URI) from `background`/`background-image`
-           (when url
-             (setf (cstyle-bg-image cs) url)
+           (when (or url (and grad (string= prop "background")))
+             (when url (setf (cstyle-bg-image cs) url))
              (when (string= prop "background")
                ;; pull repeat/attachment keywords out of the shorthand
                (let ((toks (css-background-tokens value)))

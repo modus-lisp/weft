@@ -4231,17 +4231,24 @@ green→green gradient at background-size:0.2px still fills, not vanishes)."
                   (fill-css-gradient cv tx ty iw ih grad curcolor)
                   (when (<= (decf budget) 0) (return-from tiles)))))))))))
 
-(defun paint-bg-gradient (cv lb cs grad)
-  "Paint GRAD as a background image: rasterise into its tile (background-size),
-positioned by background-position within the background-origin box, repeated per
-background-repeat, clipped to the background-clip box (CSS Backgrounds 3 §3)."
-  (multiple-value-bind (px0 py0 px1 py1) (bg-box-edges lb cs (css:cstyle-bg-origin cs))
-    (multiple-value-bind (cx0 cy0 cx1 cy1) (bg-box-edges lb cs (css:cstyle-bg-clip cs))
+(defun paint-bg-gradient-core (cv lb cs grad origin clip rep size pos)
+  "Paint GRAD as one background-image layer: rasterise into its tile (background-size
+SIZE), positioned by POS within the background-origin box ORIGIN, repeated per REP,
+clipped to the background-clip box CLIP (CSS Backgrounds 3 §3).  The per-layer
+properties are passed explicitly so a comma-separated multi-layer background paints
+each layer with its own values."
+  (multiple-value-bind (px0 py0 px1 py1) (bg-box-edges lb cs origin)
+    (multiple-value-bind (cx0 cy0 cx1 cy1) (bg-box-edges lb cs clip)
       (tile-gradient cv grad (css:cstyle-color cs) px0 py0 (- px1 px0) (- py1 py0)
-                     cx0 cy0 cx1 cy1
-                     (css:cstyle-bg-repeat cs) (css:cstyle-bg-size cs) (css:cstyle-bg-position cs)))))
+                     cx0 cy0 cx1 cy1 rep size pos))))
 
-(defun paint-bg-image (cv lb cs url)
+(defun paint-bg-gradient (cv lb cs grad)
+  "Single-layer wrapper: paint GRAD using CS's background-* slots (byte-identical
+to the pre-multilayer path)."
+  (paint-bg-gradient-core cv lb cs grad (css:cstyle-bg-origin cs) (css:cstyle-bg-clip cs)
+                          (css:cstyle-bg-repeat cs) (css:cstyle-bg-size cs) (css:cstyle-bg-position cs)))
+
+(defun paint-bg-image-core (cv lb cs url origin clip rep size pos)
   "Decode URL (data: URI or network image) and tile it across the background
 positioning area (background-origin), clipped to the painting area (background-clip),
 honoring background-repeat, -position and -size.  Best-effort: an undecodable image
@@ -4254,17 +4261,15 @@ paints nothing (the bg color shows through)."
                   (ignore-errors (fetch-image url)))))
     (when (and img (plusp (img-w img)) (plusp (img-h img)))
       (let* ((iw0 (img-w img)) (ih0 (img-h img))
-             (rep (css:cstyle-bg-repeat cs))
              (repx (member rep '("repeat" "repeat-x") :test #'string=))
              (repy (member rep '("repeat" "repeat-y") :test #'string=)))
         ;; positioning area = background-origin box (default padding-box)
-        (multiple-value-bind (px0 py0 px1 py1) (bg-box-edges lb cs (css:cstyle-bg-origin cs))
+        (multiple-value-bind (px0 py0 px1 py1) (bg-box-edges lb cs origin)
         ;; painting/clip area = background-clip box (default border-box)
-        (multiple-value-bind (cx0 cy0 cx1 cy1) (bg-box-edges lb cs (css:cstyle-bg-clip cs))
+        (multiple-value-bind (cx0 cy0 cx1 cy1) (bg-box-edges lb cs clip)
         (multiple-value-bind (iw ih)   ; effective tile size after background-size
-            (bg-tile-size (css:cstyle-bg-size cs) img (- px1 px0) (- py1 py0))
-          (let* ((pos (css:cstyle-bg-position cs))
-                 (offx (if pos (bg-pos-offset (first pos) (- (- px1 px0) iw)) 0))
+            (bg-tile-size size img (- px1 px0) (- py1 py0))
+          (let* ((offx (if pos (bg-pos-offset (first pos) (- (- px1 px0) iw)) 0))
                  (offy (if pos (bg-pos-offset (second pos) (- (- py1 py0) ih)) 0))
                  (ox (+ px0 offx)) (oy (+ py0 offy)))
             ;; a degenerate tile (0 wide or tall — e.g. a zero-height-ratio SVG under
@@ -4274,7 +4279,7 @@ paints nothing (the bg color shows through)."
               ;; positioned against the origin box but repeats to fill the clip box.
               (let ((*clip* (clip-intersect cx0 cy0 cx1 cy1)))
                 ;; common case: an intrinsic 1x1 image filling the box — solid rect.
-                (if (and (= iw0 1) (= ih0 1) (null (css:cstyle-bg-size cs)) (>= (aref (img-rgba img) 3) 255))
+                (if (and (= iw0 1) (= ih0 1) (null size) (>= (aref (img-rgba img) 3) 255))
                     (let ((r (aref (img-rgba img) 0)) (g (aref (img-rgba img) 1)) (b (aref (img-rgba img) 2)))
                       (fill-rect cv (if repx cx0 ox) (if repy cy0 oy)
                                  (if repx (- cx1 cx0) 1) (if repy (- cy1 cy0) 1) (list r g b)))
@@ -4293,9 +4298,15 @@ paints nothing (the bg color shows through)."
                               (blit-img cv img tx ty iw ih)
                               (when (<= (decf budget) 0) (return-from tiles))))))))))))))))))
 
-(defun paint-bg-image-fixed (cv lb cs url)
+(defun paint-bg-image (cv lb cs url)
+  "Single-layer wrapper: tile URL using CS's background-* slots (byte-identical
+to the pre-multilayer path)."
+  (paint-bg-image-core cv lb cs url (css:cstyle-bg-origin cs) (css:cstyle-bg-clip cs)
+                       (css:cstyle-bg-repeat cs) (css:cstyle-bg-size cs) (css:cstyle-bg-position cs)))
+
+(defun paint-bg-image-fixed-core (cv lb cs url rep pos)
   "Tile URL's image as a background-attachment:fixed background: the tile grid is
-anchored to the VIEWPORT origin (canvas 0,0) plus the background-position offset,
+anchored to the VIEWPORT origin (canvas 0,0) plus the background-position offset POS,
 NOT to LB's box — so overlapping fixed-bg elements share one continuous tiling
 (this is what fuses Acid2's two offset 2x2 images into a solid yellow fill).  The
 painting is clipped to LB's border box (default background-clip)."
@@ -4307,7 +4318,6 @@ painting is clipped to LB's border box (default background-clip)."
                   (ignore-errors (fetch-image url)))))
     (when (and img (plusp (img-w img)) (plusp (img-h img)))
       (let* ((iw (img-w img)) (ih (img-h img))
-             (rep (css:cstyle-bg-repeat cs))
              (repx (member rep '("repeat" "repeat-x") :test #'string=))
              (repy (member rep '("repeat" "repeat-y") :test #'string=))
              ;; border box of the element (the clip region)
@@ -4316,7 +4326,6 @@ painting is clipped to LB's border box (default background-clip)."
              (by1 (round (+ (lbox-y lb) (lbox-h lb))))
              ;; tile origin: anchored to the viewport (canvas 0,0) plus the
              ;; background-position offset, computed against the viewport (canvas).
-             (pos (css:cstyle-bg-position cs))
              (offx (if pos (bg-pos-offset (first pos)  (- (canvas-width cv) iw)) 0))
              (offy (if pos (bg-pos-offset (second pos) (- (canvas-height cv) ih)) 0)))
         (when (and (> bx1 bx0) (> by1 by0))
@@ -4330,6 +4339,83 @@ painting is clipped to LB's border box (default background-clip)."
                       while (and (< tx bx1) (or repx (= tx startx))) do
                   (when (and (> (+ tx iw) bx0) (> (+ ty ih) by0))
                     (blit-img cv img tx ty)))))))))))
+
+(defun paint-bg-image-fixed (cv lb cs url)
+  "Single-layer wrapper: fixed-attachment tile of URL using CS's slots."
+  (paint-bg-image-fixed-core cv lb cs url (css:cstyle-bg-repeat cs) (css:cstyle-bg-position cs)))
+
+(defun paint-one-bg-layer (cv lb cs layer radii)
+  "Paint one background-image LAYER (a CSS:BG-LAYER) over the already-painted backdrop,
+clipped to the layer's background-clip box (rounded per RADII, NIL = rectangular fast
+path).  Source-over compositing — BLEND modes are handled by PAINT-BG-LAYERS.  Routes
+gradients and url() images through the shared per-layer cores, so a single layer paints
+byte-identically to the pre-multilayer path."
+  (let* ((clip (css:bg-layer-clip layer))
+         (rg (and radii (bg-round-region lb cs clip radii)))
+         (*round-clip* (if rg (cons rg *round-clip*) *round-clip*))
+         (img (css:bg-layer-image layer)))
+    (cond
+      ((null img) nil)
+      ((eq (car img) :gradient)
+       (when (gradient-visible-p (cdr img))
+         (paint-bg-gradient-core cv lb cs (cdr img) (css:bg-layer-origin layer) clip
+                                 (css:bg-layer-repeat layer) (css:bg-layer-size layer)
+                                 (css:bg-layer-position layer))))
+      ((eq (car img) :url)
+       (if (string-equal (css:bg-layer-attachment layer) "fixed")
+           (paint-bg-image-fixed-core cv lb cs (cdr img) (css:bg-layer-repeat layer)
+                                      (css:bg-layer-position layer))
+           (paint-bg-image-core cv lb cs (cdr img) (css:bg-layer-origin layer) clip
+                                (css:bg-layer-repeat layer) (css:bg-layer-size layer)
+                                (css:bg-layer-position layer)))))))
+
+(defun primary-bg-layers (cs)
+  "The layer-1 (topmost) background-image layer(s) built from CS's single-value bg-*
+slots, in bottom→top paint order.  A gradient and a url image can both be present
+(gradient below the image, matching the pre-multilayer paint order); each becomes a
+BG-LAYER carrying CS's shared position/size/repeat/origin/clip/attachment."
+  (let ((out '()))
+    (when (css:cstyle-bg-gradient cs)
+      (push (css:make-bg-layer :image (cons :gradient (css:cstyle-bg-gradient cs))
+                               :position (css:cstyle-bg-position cs) :size (css:cstyle-bg-size cs)
+                               :repeat (css:cstyle-bg-repeat cs) :origin (css:cstyle-bg-origin cs)
+                               :clip (css:cstyle-bg-clip cs) :attachment (css:cstyle-bg-attachment cs))
+            out))
+    (when (css:cstyle-bg-image cs)
+      (push (css:make-bg-layer :image (cons :url (css:cstyle-bg-image cs))
+                               :position (css:cstyle-bg-position cs) :size (css:cstyle-bg-size cs)
+                               :repeat (css:cstyle-bg-repeat cs) :origin (css:cstyle-bg-origin cs)
+                               :clip (css:cstyle-bg-clip cs) :attachment (css:cstyle-bg-attachment cs))
+            out))
+    (nreverse out)))
+
+(defun effective-bg-layers (cs)
+  "The full ordered background-image layer list in BOTTOM→TOP paint order: the extra
+layers 2..N (BG-EXTRA-LAYERS is listed top→bottom, so bottom-most last → reverse it
+first) below the layer-1 primary layer(s) from the single-value slots on top.  The
+blend keyword for each layer is threaded from BG-BLEND-LIST by its LISTED index."
+  (let* ((extras (css:cstyle-bg-extra-layers cs))          ; listed order: layer 2 .. N
+         (prim (primary-bg-layers cs))                     ; layer 1 (bottom→top for a grad+img pair)
+         ;; bottom→top = reverse(extras) then primary
+         (ordered (append (reverse extras) prim))
+         (blends (css:cstyle-bg-blend-list cs)))
+    ;; attach per-layer blend by LISTED index (layer 1 = listed 0, extras = 1..)
+    (when blends
+      (let ((nb (length blends))
+            ;; listed order top→bottom = primary(reversed to top-first) then extras
+            (listed (append (reverse prim) extras)))
+        (loop for lyr in listed for i from 0
+              do (setf (css:bg-layer-blend lyr) (nth (mod i nb) blends)))))
+    ordered))
+
+(defun paint-bg-layers (cv lb cs radii)
+  "Paint the background-image layers over the already-painted background colour, from
+bottom-most to top-most (CSS Backgrounds 3 §3.11.2).  A layer with a non-normal
+background-blend-mode blends against the accumulated backdrop; a normal layer composites
+source-over.  Single-layer, all-normal backgrounds paint byte-identically to the
+pre-multilayer path."
+  (dolist (layer (effective-bg-layers cs))
+    (paint-one-bg-layer cv lb cs layer radii)))
 
 (defun border-edge-raw-color (cs edge)
   "The stored (r g b a) color for EDGE, falling back to BORDER-COLOR, or NIL."
@@ -5371,20 +5457,13 @@ mix(backdrop, blend(backdrop, source), coverage*ALPHA)."
                (multiple-value-bind (bx0 by0 bx1 by1) (bg-box-edges lb cs (effective-bg-clip cs))
                  (with-bg-round ((effective-bg-clip cs))
                    (fill-rect cv bx0 by0 (- bx1 bx0) (- by1 by0) (css:cstyle-background cs)))))
-             (when (and (css:cstyle-bg-gradient cs) (gradient-visible-p (css:cstyle-bg-gradient cs)))
-               ;; a CSS gradient is a background image: rasterise it (honouring
-               ;; background-position/-size/-repeat) as a tiled layer over the box.
-               (with-bg-round ((css:cstyle-bg-clip cs))
-                 (paint-bg-gradient cv lb cs (css:cstyle-bg-gradient cs))))
-             ;; CSS background image: over the bg color, under the borders, tiled and
-             ;; clipped to this box's padding box.  Fixed-attachment images are not
-             ;; painted (out of scope) — for Acid2 that is the correct result (their
-             ;; images are positioned to the viewport, off this element).
-             (when (css:cstyle-bg-image cs)
-               (with-bg-round ((css:cstyle-bg-clip cs))
-                 (if (string-equal (css:cstyle-bg-attachment cs) "fixed")
-                     (paint-bg-image-fixed cv lb cs (css:cstyle-bg-image cs))
-                     (paint-bg-image cv lb cs (css:cstyle-bg-image cs)))))))
+             ;; background-image LAYERS (CSS Backgrounds 3 §3.11.2): a comma-separated
+             ;; background paints its image layers from the BOTTOM-most (last listed) to
+             ;; the TOP-most (first listed), over the background colour.  A CSS gradient
+             ;; is a background image: rasterised (honouring background-position/-size/
+             ;; -repeat) as a tiled layer.  Fixed-attachment images are viewport-anchored.
+             ;; A single layer routes through the same per-layer core → byte-identical.
+             (paint-bg-layers cv lb cs radii)))
            ;; box-shadow (CSS Backgrounds 3 §7): inset shadows paint OVER the background,
            ;; clipped to the padding box, under the box's border and content.
            (when (css:cstyle-box-shadow cs) (paint-box-shadows cv lb cs t)))

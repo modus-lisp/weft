@@ -52,6 +52,9 @@
            #:cstyle-overflow-wrap #:cstyle-word-break
            #:cstyle-bg-image #:cstyle-bg-repeat #:cstyle-bg-position #:cstyle-bg-size #:cstyle-bg-attachment
            #:cstyle-bg-origin #:cstyle-bg-clip #:cstyle-bg-clip-list #:cstyle-bg-layers
+           #:cstyle-bg-extra-layers #:cstyle-bg-blend-list
+           #:bg-layer #:make-bg-layer #:bg-layer-image #:bg-layer-position #:bg-layer-size
+           #:bg-layer-repeat #:bg-layer-origin #:bg-layer-clip #:bg-layer-attachment #:bg-layer-blend
            #:cstyle-object-fit #:cstyle-aspect-ratio #:cstyle-aspect-ratio-auto
            #:cstyle-outline-width #:cstyle-outline-style #:cstyle-outline-color #:cstyle-outline-offset
            #:cstyle-accent-color #:cstyle-box-shadow #:cstyle-text-shadow #:cstyle-opacity

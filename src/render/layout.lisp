@@ -4738,7 +4738,7 @@ ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
                     ;; == the whole box; padding/content-box inset by border[+padding]).
                     (multiple-value-bind (bx0 by0 bx1 by1) (bg-box-edges lb cs (effective-bg-clip cs))
                       (with-bg-round ((effective-bg-clip cs))
-                        (fill-rect cv bx0 by0 (- bx1 bx0) (- by1 by0) (rgb (css:cstyle-background cs)))))))
+                        (fill-rect cv bx0 by0 (- bx1 bx0) (- by1 by0) (css:cstyle-background cs))))))
              ;; CSS background image: over the bg color, under the borders, tiled and
              ;; clipped to this box's padding box.  Fixed-attachment images are not
              ;; painted (out of scope) — for Acid2 that is the correct result (their

@@ -78,6 +78,10 @@
   (bg-clip-list nil)        ; per-layer background-clip list when comma-valued (else NIL)
   (bg-layers 1)             ; number of background layers (from background-image commas)
   (object-fit "fill") ; fill | contain | cover | none | scale-down — how a replaced element's content fills its box
+  ;; CSS Images 3 §object-position: where the object-fit-sized replaced content is
+  ;; placed within its content box, as ((xval xunit) (yval yunit)) px/% (like
+  ;; background-position).  NIL = the initial 50% 50% (centred).
+  (object-position nil)
   (writing-mode "horizontal-tb") ; horizontal-tb | vertical-rl | vertical-lr (inherited)
   (direction "ltr")   ; ltr | rtl (inherited)
   (aspect-ratio nil)  ; preferred width/height ratio (a double), or NIL (auto/intrinsic)
@@ -1427,6 +1431,11 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
                        (cstyle-bg-clip-list cs) (if (cdr vals) vals nil))))))
         ((string= prop "object-fit")
          (let ((v (parse-value "object-fit" value))) (when (stringp v) (setf (cstyle-object-fit cs) v))))
+        ((string= prop "object-position")
+         ;; CSS Images 3 §object-position (same grammar as background-position).
+         (let ((v (parse-value "background-position" value)))
+           (when (and (consp v) (not (eq v :invalid)))
+             (setf (cstyle-object-position cs) (resolve-bg-pos v fs)))))
         ((string= prop "aspect-ratio")
          (let ((v (parse-value "aspect-ratio" value)))
            (cond ((numberp v) (setf (cstyle-aspect-ratio cs) v (cstyle-aspect-ratio-auto cs) nil))

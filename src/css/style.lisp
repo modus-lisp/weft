@@ -2161,7 +2161,13 @@ this is applied before author rules."
       (let ((al (el-attr node "align")))
         (when al (let ((a (string-downcase (string-trim '(#\Space) al))))
                    (when (member a '("left" "right" "center" "justify") :test #'string=)
-                     (setf (cstyle-text-align cs) a))))))))
+                     (setf (cstyle-text-align cs) a))))))
+    ;; the `dir` attribute maps to the `direction` property (HTML rendering
+    ;; presentational hint); it is inherited, so it also steers descendant bidi.
+    (let ((d (el-attr node "dir")))
+      (when d (let ((dd (string-downcase (string-trim '(#\Space) d))))
+                (cond ((string= dd "rtl") (setf (cstyle-direction cs) "rtl"))
+                      ((string= dd "ltr") (setf (cstyle-direction cs) "ltr"))))))))
 
 ;;; ---- custom properties (CSS variables) ----------------------------------
 (defun custom-prop-p (prop)
@@ -2540,6 +2546,13 @@ content gate — the fragment styles a slice of the element's own text."
                    ;; (this is a UA-tier default, applied before the author cascade below).
                    (when (el-attr n "popover")
                      (setf (cstyle-display cs) "none"))
+                   ;; UA rule `[hidden] { display: none }` (HTML rendering §14.3.1): the
+                   ;; hidden attribute removes the element from rendering (the
+                   ;; `until-found` value hides via content-visibility, not display, so
+                   ;; its box is skipped here).  An author `display` rule still wins.
+                   (let ((hv (el-attr n "hidden")))
+                     (when (and hv (not (string-equal hv "until-found")))
+                       (setf (cstyle-display cs) "none")))
                    ;; collect matching author rules, splitting element vs pseudo-element
                    (let ((matched '()) (m-before '()) (m-after '()) (m-first-letter '()) (m-first-line '()))
                      (map-candidate-rules

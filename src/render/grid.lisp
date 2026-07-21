@@ -223,9 +223,11 @@ whole axis (Tailwind's col-span-full) and `5 / -1` spans column 5 to the end."
             ((num left) (values (line left) 1))
             (t (values nil 1)))))))
 
-(defun grid-place-items (items styles ncols &optional areas)
+(defun grid-place-items (items styles ncols &optional areas col-flow (nrows 1))
   "Assign each item a cell region.  Returns a list of (item row col rspan cspan),
-0-based, using row-major auto-placement (CSS Grid §8, grid-auto-flow:row).  AREAS,
+0-based.  Auto-placement is row-major (grid-auto-flow:row, CSS Grid §8) by default;
+when COL-FLOW is true it is column-major (grid-auto-flow:column), filling down each
+column through NROWS rows before advancing to the next (implicit) column.  AREAS,
 when given, is the container's grid-template-areas map NAME->(r0 c0 rspan cspan)
 used to place items that name an area with `grid-area`."
   (let ((occ (make-hash-table :test 'equal))
@@ -258,12 +260,20 @@ used to place items that name an area with `grid-area`."
                       (row-def (or (loop for c from 0 to (- ncols cspan)
                                          when (freep r0 c cspan rspan) return (values r0 c))
                                    (values r0 0)))
+                      ;; grid-auto-flow:column — fill down each column (through NROWS)
+                      ;; then advance to the next, growing implicit columns.
+                      ((and col-flow (not row-def) (not col-def))
+                       (loop named scan for c from cur-c do
+                         (loop for r from (if (= c cur-c) cur-r 0) to (- nrows rspan) do
+                           (when (freep r c cspan rspan) (return-from scan (values r c))))))
                       (t (loop named scan for r from cur-r do
                            (loop for c from (if (= r cur-r) cur-c 0) to (- ncols cspan) do
                              (when (freep r c cspan rspan) (return-from scan (values r c)))))))
                   (mark r c cspan rspan)
                   (push (list it r c rspan cspan) out)
-                  (unless (or row-def col-def) (setf cur-r r cur-c (+ c cspan)))))))))
+                  (unless (or row-def col-def)
+                    (if col-flow (setf cur-c c cur-r (+ r rspan))
+                        (setf cur-r r cur-c (+ c cspan))))))))))
       (nreverse out))))
 
 ;;; ---- self-alignment -----------------------------------------------------
@@ -322,6 +332,8 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
          (col-specs (or (grid-parse-track-list (css:cstyle-grid-template-columns base-cs) fs)
                         '((:auto))))
          (row-specs (grid-parse-track-list (css:cstyle-grid-template-rows base-cs) fs))
+         (col-flow (let ((f (css:cstyle-grid-auto-flow base-cs))) (and f (string= f "column"))))
+         (nrows-tpl (max 1 (length row-specs)))
          (auto-row (first (grid-parse-track-list (css:cstyle-grid-auto-rows base-cs) fs)))
          (auto-col (first (grid-parse-track-list (css:cstyle-grid-auto-columns base-cs) fs)))
          (items (remove-if-not
@@ -332,13 +344,18 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
     ;; explicitly placed past the template's last column line; the extra tracks are
     ;; sized by grid-auto-columns (default auto).
     (let ((explicit-ncols (length col-specs)))
-      (let ((need explicit-ncols))
+      (let ((need explicit-ncols) (n-auto 0))
         (dolist (it items)
           (let ((cs (st styles it)))
             (when cs
               (multiple-value-bind (cline cspan) (grid-placement (css:cstyle-grid-column cs))
-                (when (and cline (>= cline 1))
-                  (setf need (max need (+ (1- cline) (max 1 cspan)))))))))
+                (if (and cline (>= cline 1))
+                    (setf need (max need (+ (1- cline) (max 1 cspan))))
+                    (incf n-auto))))))
+        ;; grid-auto-flow:column packs auto items down NROWS-TPL rows then into the
+        ;; next (implicit) column, so the column count grows to hold them (CSS Grid §8).
+        (when col-flow
+          (setf need (max need (ceiling n-auto nrows-tpl))))
         (when (> need explicit-ncols)
           (setf col-specs (append col-specs
                                    (make-list (- need explicit-ncols)
@@ -349,7 +366,7 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
     ;; so both intrinsic-width contributions and final placement see the used px.
     (dolist (it items)
       (let ((c (st styles it))) (when c (css::resolve-pct-margins c content-w))))
-    (let* ((placed (grid-place-items items styles ncols (css:cstyle-grid-template-areas base-cs)))
+    (let* ((placed (grid-place-items items styles ncols (css:cstyle-grid-template-areas base-cs) col-flow nrows-tpl))
            ;; single-column items feed content-track sizing
            (items-by-col (make-array ncols :initial-element nil)))
       (dolist (p placed)

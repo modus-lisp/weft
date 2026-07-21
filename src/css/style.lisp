@@ -123,6 +123,12 @@
   ;; subtree is rendered to offscreen buffers and blended over the backdrop at this
   ;; alpha, so it is layout-neutral but affects paint.
   (opacity 1.0)
+  ;; CSS Filter Effects 1 §filter: an ordered list of filter functions applied to
+  ;; the element's rendered subtree in paint (see PAINT-FILTERED).  Each entry is
+  ;; (OP . ARG): color ops (:grayscale :sepia :invert :brightness :contrast
+  ;; :saturate :opacity) carry a fraction; :blur carries a radius in px.  NIL = none.
+  ;; Not inherited; layout-neutral, paint-only.
+  (filter nil)
   ;; CSS Containment 3 §container: an element with CONTAINER-TYPE "size" or
   ;; "inline-size" establishes a query container (size containment on the queried
   ;; axis) that descendant @container rules resolve against.  CONTAINER-NAME is a
@@ -1285,6 +1291,11 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
            (cond ((and parent-cs (string-equal v "inherit")) (setf (cstyle-opacity cs) (cstyle-opacity parent-cs)))
                  ((member v '("initial" "unset" "revert") :test #'string-equal) (setf (cstyle-opacity cs) 1.0))
                  (t (let ((o (compute-opacity v fs))) (when o (setf (cstyle-opacity cs) o)))))))
+        ((string= prop "filter")
+         (let ((f (parse-filter value)))
+           (cond ((eq f :invalid))                       ; ignore an invalid list
+                 ((eq f :inherit) (when parent-cs (setf (cstyle-filter cs) (cstyle-filter parent-cs))))
+                 (t (setf (cstyle-filter cs) f)))))
         ((string= prop "content") (setf (cstyle-content cs) (parse-content value)))
         ((string= prop "quotes") (setf (cstyle-quotes cs) (parse-quotes value parent-cs)))
         ((string= prop "counter-reset")

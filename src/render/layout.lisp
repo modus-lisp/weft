@@ -2359,12 +2359,16 @@ size BW x BH, taken around its transform-origin — or NIL when there is no tran
               ((string= fn "translatez"))                                        ; no 2D effect
               (t (return nil)))))))
 (defun tf-axis-aligned-p (m)
-  "True when affine M (a b c d e f) has no rotation/skew — its off-diagonal terms
-vanish — so the transform keeps the box axis-aligned and the geometry/AABB path
-suffices.  A non-axis map (rotate/skew/general matrix) must be rasterised instead."
+  "True when affine M (a b c d e f) is a pure positive scale/translate — off-diagonal
+terms vanish AND both diagonal terms are positive — so the transform keeps the box
+axis-aligned with the SAME orientation and the geometry/AABB path (which paints the
+subtree upright) suffices.  A rotate/skew/general matrix — OR a reflection/180°
+rotation (negative diagonal, e.g. rotate(180deg) = (-1 0 0 -1), scale(-1,1)) — flips
+content and must be rasterised instead so a non-uniform fill maps correctly."
   (destructuring-bind (a b c d e f) m
-    (declare (ignore a d e f))
-    (and (< (abs b) 1.0d-4) (< (abs c) 1.0d-4))))
+    (declare (ignore e f))
+    (and (< (abs b) 1.0d-4) (< (abs c) 1.0d-4)
+         (> a 1.0d-4) (> d 1.0d-4))))
 (defun apply-transforms (box)
   "Post-layout pass: apply each element's CSS transform to its box.  Children are
 processed first so an ancestor's translation shifts an already-transformed subtree

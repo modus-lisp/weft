@@ -988,8 +988,8 @@ text-align.  Returns (values line-boxes total-height)."
          ;; LEFT/RIGHT against the inline base direction (CSS Text 3 §7.1):
          ;; start=left, end=right in LTR and the mirror in RTL.  Without this
          ;; they fell through to the left-align default.
-         (align (let ((a (css:cstyle-text-align base-cs))
-                      (rtl (string= (css:cstyle-direction base-cs) "rtl")))
+         (rtl (string= (css:cstyle-direction base-cs) "rtl"))
+         (align (let ((a (css:cstyle-text-align base-cs)))
                   (cond ((string= a "start") (if rtl "right" "left"))
                         ((string= a "end")   (if rtl "left" "right"))
                         (t a))))
@@ -1102,8 +1102,26 @@ text-align.  Returns (values line-boxes total-height)."
                             (let ((it (car (last items)))) (if (frag-p it) (+ (frag-x it) (frag-w it)) (+ (lbox-x it) (lbox-w it))))
                             lx))    ; blank line (pre-line/pre-wrap forced break): empty line box
                  (used (- lastx lx))
-                 (shift (cond ((string= align "center") (max 0 (floor (- avail used) 2)))
-                              ((string= align "right") (max 0 (- avail used))) (t 0)))
+                 ;; RTL base direction: inline-level boxes order against the base
+                 ;; direction (CSS Writing Modes 4 / bidi) — reflect each item's
+                 ;; position within the line band so the first logical box sits at the
+                 ;; right, packed to the right edge.  (Full bidi of mixed-direction
+                 ;; text is out of scope; this handles the common inline-block run.)
+                 (reflect (when (and rtl items)
+                            (dolist (it items)
+                              (if (frag-p it)
+                                  (setf (frag-x it) (- (+ lx avail) (- (frag-x it) lx) (frag-w it)))
+                                  (shift-box it (round (- (- (+ lx avail) (- (lbox-x it) lx) (lbox-w it))
+                                                          (lbox-x it))) 0)))
+                            t))
+                 (shift (if rtl
+                            ;; reflected group is already right-packed (start = right in
+                            ;; RTL).  weft's text-align default is "left" (CSS initial is
+                            ;; the direction-relative "start"), so only an explicit center
+                            ;; re-aligns; left/right/default keep the right-packed run.
+                            (if (string= align "center") (- (floor (- avail used) 2)) 0)
+                            (cond ((string= align "center") (max 0 (floor (- avail used) 2)))
+                                  ((string= align "right") (max 0 (- avail used))) (t 0))))
                  ;; --- per-line baseline model (CSS 2.1 §10.8) --------------------
                  ;; The line box has a single baseline.  Every inline box contributes
                  ;; an ASCENT above it: the block's strut (its font ascent + half its
@@ -1149,7 +1167,8 @@ text-align.  Returns (values line-boxes total-height)."
                  ;; baseline offset (line top -> baseline) shared by all text runs.
                  (baseline (round (reduce #'max items :initial-value line-asc
                                           :key (lambda (it) (if (frag-p it) (frag-ascent it) 0.0))))))
-            (when (plusp shift)
+            (progn reflect)   ; force the RTL reflection side effect (let* binding)
+            (unless (zerop shift)
               (dolist (it items) (if (frag-p it) (incf (frag-x it) shift) (shift-box it shift 0))))
             (when (and (string= align "justify") (< i n))
               (let* ((frags (remove-if-not #'frag-p items))

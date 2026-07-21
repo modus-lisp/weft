@@ -82,6 +82,17 @@
   (bg-clip "border-box")    ; background painting area:    border-box | padding-box | content-box
   (bg-clip-list nil)        ; per-layer background-clip list when comma-valued (else NIL)
   (bg-layers 1)             ; number of background layers (from background-image commas)
+  ;; CSS Backgrounds 3 §3.10: comma-separated multi-layer backgrounds.  The FIRST
+  ;; (topmost) layer stays in the bg-gradient/bg-image/bg-* slots above (so a single
+  ;; background paints byte-identically to the pre-multilayer path).  BG-EXTRA-LAYERS
+  ;; holds the additional layers 2..N (listed order, top→bottom) as BG-LAYER structs;
+  ;; a solid full-box BOTTOM layer is still folded into background-color instead.
+  ;; NIL = a single-layer background.  Not inherited.
+  (bg-extra-layers nil)
+  ;; CSS Compositing 1 §background-blend-mode: per-layer blend keyword list in listed
+  ;; order (layer 1 first), cycled if shorter than the layer count.  Each is a
+  ;; blend keyword (:multiply :screen ...) or :normal.  NIL = all normal.  Not inherited.
+  (bg-blend-list nil)
   (object-fit "fill") ; fill | contain | cover | none | scale-down — how a replaced element's content fills its box
   ;; CSS Images 3 §object-position: where the object-fit-sized replaced content is
   ;; placed within its content box, as ((xval xunit) (yval yunit)) px/% (like
@@ -162,6 +173,14 @@
   ;; list of lowercased idents (NIL = unnamed).  Not inherited.
   (container-type "normal") (container-name nil)
   (content nil))      ; generated-content string (or (:tmpl seg...) template) for ::before/::after (NIL = no box)
+
+;; CSS Backgrounds 3 §3: one background-image layer.  IMAGE is (:gradient . grad) or
+;; (:url . string) or NIL (an empty `none` layer).  The remaining slots mirror the
+;; per-layer longhands; NIL takes the layer's initial value at paint.  BLEND is the
+;; background-blend-mode keyword (:multiply … | :normal).
+(defstruct bg-layer
+  image (position nil) (size nil) (repeat "repeat")
+  (origin "padding-box") (clip "border-box") (attachment "scroll") (blend :normal))
 
 ;;; ---- UA defaults --------------------------------------------------------
 (defparameter *block-tags*

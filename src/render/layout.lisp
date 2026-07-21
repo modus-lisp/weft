@@ -4415,7 +4415,49 @@ background-blend-mode blends against the accumulated backdrop; a normal layer co
 source-over.  Single-layer, all-normal backgrounds paint byte-identically to the
 pre-multilayer path."
   (dolist (layer (effective-bg-layers cs))
-    (paint-one-bg-layer cv lb cs layer radii)))
+    (let ((mode (css:bg-layer-blend layer)))
+      (if (and mode (not (eq mode :normal)))
+          (paint-bg-layer-blended cv lb cs layer radii)
+          (paint-one-bg-layer cv lb cs layer radii)))))
+
+(defun paint-bg-layer-blended (cv lb cs layer radii)
+  "CSS Compositing 1 §background-blend-mode: paint one background LAYER blended against
+the backdrop already on CV (the background colour + lower layers).  The layer is
+rendered alone over black + white to recover its straight colour + coverage (the same
+trick as PAINT-BLENDED), then each covered pixel is blended with the CV backdrop via the
+layer's blend mode.  Clipped to the layer's background-clip box (rounded per RADII)."
+  (let ((mode (css:bg-layer-blend layer)))
+    (multiple-value-bind (bx0 by0 bx1 by1) (bg-box-edges lb cs (css:bg-layer-clip layer))
+      (let ((sw (- bx1 bx0)) (sh (- by1 by0)))
+        (when (and (plusp sw) (plusp sh) (<= (* sw sh) 16000000))
+          (let ((offa (make-canvas sw sh '(0 0 0)))
+                (offb (make-canvas sw sh '(255 255 255))))
+            (shift-box lb (- bx0) (- by0))
+            (let ((*clip* nil) (*round-clip* nil))
+              (paint-one-bg-layer offa lb cs layer radii)
+              (paint-one-bg-layer offb lb cs layer radii))
+            (shift-box lb bx0 by0)
+            (let ((pa (canvas-pixels offa)) (pb (canvas-pixels offb))
+                  (dpx (canvas-pixels cv)) (cw (canvas-width cv)) (chh (canvas-height cv)))
+              (dotimes (sy sh)
+                (let ((dy (+ by0 sy)))
+                  (when (and (>= dy 0) (< dy chh))
+                    (dotimes (sx sw)
+                      (let ((dx (+ bx0 sx)))
+                        (when (and (>= dx 0) (< dx cw))
+                          (let* ((i (* 3 (+ (* sy sw) sx)))
+                                 (ar (aref pa i)) (ag (aref pa (+ i 1))) (ab (aref pa (+ i 2)))
+                                 (br (aref pb i)) (bg (aref pb (+ i 1))) (bb (aref pb (+ i 2)))
+                                 (cov (- 1.0 (/ (+ (- br ar) (- bg ag) (- bb ab)) 765.0))))
+                            (when (> cov 0.004)
+                              (let* ((di (* 3 (+ (* dy cw) dx)))
+                                     (kr (aref dpx di)) (kg (aref dpx (+ di 1))) (kb (aref dpx (+ di 2))))
+                                (flet ((cc (v) (min 255 (max 0 (round (/ v cov))))))
+                                  (blend-put cv dx dy
+                                             (blend-channel mode kr (cc ar))
+                                             (blend-channel mode kg (cc ag))
+                                             (blend-channel mode kb (cc ab))
+                                             (min 255 (max 0 (round (* 255.0 cov))))))))))))))))))))))
 
 (defun border-edge-raw-color (cs edge)
   "The stored (r g b a) color for EDGE, falling back to BORDER-COLOR, or NIL."

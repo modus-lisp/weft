@@ -493,7 +493,8 @@ feature.  A non-paren token is :unknown."
 (defparameter *supported-properties*
   (let ((h (make-hash-table :test 'equal)))
     (dolist (p '("accent-color" "align-content" "align-items" "align-self" "all"
-                 "aspect-ratio" "background" "background-attachment" "background-clip"
+                 "aspect-ratio" "background" "background-attachment" "background-blend-mode"
+                 "background-clip"
                  "background-color" "background-image" "background-origin"
                  "background-position" "background-repeat" "background-size"
                  "block-size" "border" "border-block" "border-block-end"

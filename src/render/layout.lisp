@@ -94,8 +94,8 @@ no-op passthrough when the cache is unbound (measurement outside a layout pass).
    so its generated box is removed from the enclosing inline run."
   (and cs (member (css:cstyle-position cs) '("absolute" "fixed") :test #'string=)))
 (defun flex-row-p (cs)
-  "True when CS is a flex container whose main axis is horizontal (a row)."
-  (and cs (string= (cdisplay cs) "flex")
+  "True when CS is a flex container (block or inline) whose main axis is horizontal."
+  (and cs (member (cdisplay cs) '("flex" "inline-flex") :test #'string=)
        (let ((d (css:cstyle-flex-direction cs)))
          (not (or (string= d "column") (string= d "column-reverse"))))))
 (defparameter *block-displays* '("block" "list-item" "flex" "table" "flow-root" "grid"))
@@ -261,6 +261,14 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                       ;; it lays out with the full table algorithm and participates in
                       ;; the line as a shrink-to-fit box, like an inline-block.
                       ((and cs (string= (cdisplay cs) "inline-table"))
+                       (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
+                         (declare (ignore adv))
+                         (when lb (atom! lb n))))
+                      ;; inline-flex / inline-grid are atomic inlines (CSS Flexbox 1 §3
+                      ;; / CSS Grid 1 §5): they establish a flex/grid formatting context
+                      ;; internally (via %layout-core) yet participate in the line as a
+                      ;; shrink-to-fit box, exactly like an inline-block/inline-table.
+                      ((and cs (member (cdisplay cs) '("inline-flex" "inline-grid") :test #'string=))
                        (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
                          (declare (ignore adv))
                          (when lb (atom! lb n))))

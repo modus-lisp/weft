@@ -103,10 +103,15 @@ opaque overwrite, A=0 paints nothing).  Used by translucent gradients."
   ;; Clip once up front and write the buffer directly, rather than a per-pixel
   ;; PUT (whose bounds + clip checks and index math dominate large background
   ;; and border fills on a tall page).
-  (let ((r (first color)) (g (second color)) (b (third color))
-        (cw (canvas-width cv)) (ch (canvas-height cv))
-        (x0 (max 0 (round x))) (y0 (max 0 (round y)))
-        (x1 (min (canvas-width cv) (round (+ x w)))) (y1 (min (canvas-height cv) (round (+ y h)))))
+  ;; COLOR is (r g b [a]); a translucent 4th element (float in [0,1)) composites
+  ;; over the pixels beneath (CSS Color 4 §alpha — e.g. an rgba() background) —
+  ;; an opaque color (no alpha, or a>=1) takes the byte-identical overwrite path.
+  (let* ((r (first color)) (g (second color)) (b (third color))
+         (af (fourth color))
+         (a255 (if (and (numberp af) (< af 1.0)) (max 0 (round (* 255 af))) 255))
+         (cw (canvas-width cv)) (ch (canvas-height cv))
+         (x0 (max 0 (round x))) (y0 (max 0 (round y)))
+         (x1 (min (canvas-width cv) (round (+ x w)))) (y1 (min (canvas-height cv) (round (+ y h)))))
     (declare (ignore ch))
     (when *clip*
       (setf x0 (max x0 (the fixnum (first *clip*)))
@@ -114,6 +119,12 @@ opaque overwrite, A=0 paints nothing).  Used by translucent gradients."
             x1 (min x1 (the fixnum (third *clip*)))
             y1 (min y1 (the fixnum (fourth *clip*)))))
     (when (and (< x0 x1) (< y0 y1))
+      (when (< a255 255)
+        ;; translucent fill: composite per pixel (honours *clip* already applied,
+        ;; and *round-clip* via blend-put's rclip-ok test).
+        (loop for yy fixnum from y0 below y1 do
+          (loop for xx fixnum from x0 below x1 do (blend-put cv xx yy r g b a255)))
+        (return-from fill-rect))
       (if *round-clip*
           ;; rounded clip active: route through PUT so the four elliptical corner
           ;; cut-outs are honoured per pixel (slow path, only for border-radius boxes).

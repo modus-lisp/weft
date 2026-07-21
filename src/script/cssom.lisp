@@ -444,6 +444,42 @@
             nil                         ; keep verbatim (no calc reordering)
             (or (%serialize-color-function comps alpha-str) :invalid))))))
 
+(defun %legacy-comma-grammar-ok (interior)
+  "T iff INTERIOR is a well-formed legacy comma-separated rgb()/hsl() body: 3 or 4
+   comma-separated parts, each a single non-empty token (no empty slot, no compound
+   whitespace-separated value like `0 0`).  Reused for the strict-comma reject."
+  (let ((parts (css::%split-top-char interior #\,)))
+    (and (member (length parts) '(3 4))
+         (every (lambda (p)
+                  (let ((tp (string-trim '(#\Space #\Tab #\Newline #\Return) p)))
+                    (and (plusp (length tp))
+                         (not (find-if (lambda (c)
+                                         (member c '(#\Space #\Tab #\Newline #\Return)))
+                                       tp)))))
+                parts))))
+
+(defun %canon-rgb-hsl (v lower)
+  "Canonicalize a legacy/modern rgb()/rgba()/hsl()/hsla() V.  Legacy (comma) syntax
+   rejects `none`, a `/` alpha, and malformed comma grammar; modern (space) syntax
+   with `none` (or calc/var/relative) stays verbatim (resolved form not modelled);
+   otherwise parse + serialize to rgb()/rgba()."
+  (cond
+    ((or (search "calc" lower) (search "var(" lower) (search "min(" lower)
+         (search "max(" lower) (search "clamp(" lower) (search "from" lower))
+     nil)                               ; unresolved math/relative -> verbatim
+    (t (let* ((interior (css::%color-fn-interior v (subseq lower 0 (position #\( lower))))
+              (has-comma (and interior (find #\, interior)))
+              (has-slash (and interior (find #\/ interior)))
+              (has-none (search "none" lower)))
+         (cond
+           ((null interior) :invalid)
+           (has-comma
+            (if (or has-slash has-none (not (%legacy-comma-grammar-ok interior)))
+                :invalid
+                (let ((c (css:parse-value "color" v))) (if (consp c) (rgb-str c) :invalid))))
+           (has-none nil)               ; modern `none` kept verbatim
+           (t (let ((c (css:parse-value "color" v))) (if (consp c) (rgb-str c) :invalid))))))))
+
 (defun %specified-lab (v fname)
   "Specified-value serialization of a non-calc lab/lch/oklab/oklch <color> V; NIL
    on failure (caller stores verbatim)."
@@ -490,8 +526,7 @@
            ((not (member fname +known-color-functions+ :test #'string=)) :invalid)
            ((string= fname "color") (%canon-color-function v))
            ((member fname '("rgb" "rgba" "hsl" "hsla") :test #'string=)
-            (if (%risky-color-tokens-p lower) nil
-                (let ((c (css:parse-value "color" v))) (if (consp c) (rgb-str c) :invalid))))
+            (%canon-rgb-hsl v lower))
            ((and (member fname '("hwb" "lab" "lch" "oklab" "oklch") :test #'string=)
                  (find #\, v))
             :invalid)

@@ -1533,6 +1533,24 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
         ((string= prop "justify-content") (setf (cstyle-justify-content cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "align-items") (setf (cstyle-align-items cs) (string-downcase (string-trim '(#\Space) value))))
         ((string= prop "align-content") (setf (cstyle-align-content cs) (string-downcase (string-trim (list #\Space) value))))
+        ((member prop '("place-items" "place-self" "place-content") :test #'string=)
+         ;; box-alignment shorthands (CSS Box Alignment §5.2): `<align> [<justify>]?`;
+         ;; a single value applies to both axes.  Expand into the two longhands.
+         (let* ((toks (remove "" (split-ws (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))) :test #'string=))
+                (a (first toks)) (j (or (second toks) (first toks))))
+           (when (and a j)
+             (flet ((norm (v self) (if (string= v "normal") (if self "auto" "stretch") v)))
+               (cond ((string= prop "place-items")
+                      (setf (cstyle-align-items cs) (norm a nil))
+                      (when (member (norm j nil) '("stretch" "start" "center" "end" "flex-start" "flex-end" "self-start" "self-end" "baseline") :test #'string=)
+                        (setf (cstyle-justify-items cs) (norm j nil))))
+                     ((string= prop "place-self")
+                      (setf (cstyle-align-self cs) (norm a t))
+                      (when (member (norm j t) '("stretch" "start" "center" "end" "flex-start" "flex-end" "self-start" "self-end" "auto" "baseline") :test #'string=)
+                        (setf (cstyle-justify-self cs) (norm j t))))
+                     (t   ; place-content
+                      (setf (cstyle-align-content cs) a
+                            (cstyle-justify-content cs) j)))))))
         ((member prop '("justify-items" "justify-self" "align-self") :test #'string=)
          ;; grid box-alignment keywords; `normal` maps to stretch (the grid default).
          (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))))

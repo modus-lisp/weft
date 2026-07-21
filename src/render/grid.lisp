@@ -315,8 +315,10 @@ and unknown values pack tightly from ORIGIN (weft does not grow tracks for stret
 (values child-lboxes content-height); CX/CY are the content-box origin, CONTENT-W
 its width, AVAIL-H its definite content height (px) when known else NIL."
   (let* ((fs (css:cstyle-font-size base-cs))
-         (cgap (css:cstyle-column-gap base-cs))
-         (rgap (css:cstyle-row-gap base-cs))
+         ;; percentage gaps resolve against the container content size in that axis
+         ;; (CSS Box Alignment §8.3); an indefinite row basis yields 0.
+         (cgap (css::resolve-gap (css:cstyle-column-gap base-cs) content-w))
+         (rgap (css::resolve-gap (css:cstyle-row-gap base-cs) (and (numberp avail-h) avail-h)))
          (col-specs (or (grid-parse-track-list (css:cstyle-grid-template-columns base-cs) fs)
                         '((:auto))))
          (row-specs (grid-parse-track-list (css:cstyle-grid-template-rows base-cs) fs))

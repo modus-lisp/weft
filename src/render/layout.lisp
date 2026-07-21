@@ -2435,7 +2435,7 @@ normal block flow, so text breaks into line boxes and blocks keep their margins 
 then those boxes are distributed left-to-right across the used number of columns,
 balanced to roughly equal height (column-fill: balance; auto fills each column to
 the content before moving on).  Returns (values column-boxes content-height)."
-  (let* ((gap (max 0.0 (float (css:cstyle-column-gap base-cs) 1.0)))
+  (let* ((gap (max 0.0 (css::resolve-gap (css:cstyle-column-gap base-cs) content-w)))
          (k (multicol-used-count base-cs content-w gap))
          (colw (max 0.0 (/ (- content-w (* (1- k) gap)) k))))
     (if (<= k 1)
@@ -2524,7 +2524,7 @@ column distributes grow/shrink into; NIL means auto (size to content)."
          (row (not (or (string= dir "column") (string= dir "column-reverse"))))
          (justify (css:cstyle-justify-content base-cs))
          (align (css:cstyle-align-items base-cs))
-         (gap (css:cstyle-gap base-cs))
+         (gap (css::resolve-gap (css:cstyle-gap base-cs) (if row content-w (and (numberp avail-h) avail-h))))
          (items (remove-if-not (lambda (k) (let ((c (st styles k))) (and c (not (string= (css:cstyle-display c) "none"))))) (flex-item-nodes node styles)))
          ;; `order` reorders items (CSS 5.4); a stable sort keeps DOM order among ties.
          (items (stable-sort (copy-list items) #'<
@@ -2712,7 +2712,7 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                   ;; line is then laid out and sized independently, and lines stack
                   ;; along the cross axis separated by the cross (row) gap.
                   ;; wrap-reverse is treated as wrap here (lines not reversed).
-                  (let ((cross-gap (css:cstyle-row-gap base-cs))
+                  (let ((cross-gap (css::resolve-gap (css:cstyle-row-gap base-cs) (if row (and (numberp avail-h) avail-h) content-w)))
                         (lines '()) (ci '()) (cb '()) (cg '()) (cs '()) (cw 0))
                     (loop for it in items for b in bases for g in grows for s in shrinks do
                       (let ((add (if ci (+ cw gap b) b)))
@@ -3581,7 +3581,7 @@ max-content width.  Bounded by CONTENT-W so it stays resilient."
          (let ((items (remove-if (lambda (k) (out-of-flow-p styles k)) (effective-child-elements node styles))))
            (min content-w
                 (+ (loop for k in items sum (pref-border-width k styles content-w (1+ depth)))
-                   (* (css:cstyle-gap cs) (max 0 (1- (length items))))))))
+                   (* (css::resolve-gap (css:cstyle-gap cs) content-w) (max 0 (1- (length items))))))))
         (t
          (let ((block-kids (remove-if-not (lambda (k) (and (not (out-of-flow-p styles k))
                                                            (or (block-level-p styles k) (float-p styles k))))

@@ -138,6 +138,10 @@
   ;; :saturate :opacity) carry a fraction; :blur carries a radius in px.  NIL = none.
   ;; Not inherited; layout-neutral, paint-only.
   (filter nil)
+  ;; CSS Compositing 1 §mix-blend-mode: how this element's rendering blends with the
+  ;; backdrop already painted behind it (:multiply :screen :overlay :darken :lighten
+  ;; :difference ...).  NIL/normal = ordinary source-over.  Paint-only, not inherited.
+  (mix-blend-mode nil)
   ;; CSS Containment 3 §container: an element with CONTAINER-TYPE "size" or
   ;; "inline-size" establishes a query container (size containment on the queried
   ;; axis) that descendant @container rules resolve against.  CONTAINER-NAME is a
@@ -1309,6 +1313,14 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
            (cond ((eq f :invalid))                       ; ignore an invalid list
                  ((eq f :inherit) (when parent-cs (setf (cstyle-filter cs) (cstyle-filter parent-cs))))
                  (t (setf (cstyle-filter cs) f)))))
+        ((string= prop "mix-blend-mode")
+         (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
+           (setf (cstyle-mix-blend-mode cs)
+                 (cond ((member v '("multiply" "screen" "overlay" "darken" "lighten"
+                                    "difference" "exclusion" "hard-light" "soft-light")
+                                :test #'string=)
+                        (intern (string-upcase v) :keyword))
+                       (t nil)))))   ; normal / unknown -> ordinary compositing
         ((string= prop "content") (setf (cstyle-content cs) (parse-content value)))
         ((string= prop "quotes") (setf (cstyle-quotes cs) (parse-quotes value parent-cs)))
         ((string= prop "counter-reset")

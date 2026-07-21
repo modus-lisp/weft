@@ -1207,9 +1207,11 @@ text-align.  Returns (values line-boxes total-height)."
                       (loop for j from 0 for it in frags
                             do (incf (frag-x it) (round (* j (/ extra (1- f)))))))))))
             (if (loop for m in metrics
-                      thereis (let ((va (css:cstyle-vertical-align (lbox-style (first m)))))
-                                (and (consp va) (numberp (first va)))))   ; a <length>/<percentage> shift
-                ;; a line carrying an explicit vertical-align uses the baseline model:
+                      thereis (or (member (fourth m) '(:top :bottom))     ; line-relative box
+                                  (let ((va (css:cstyle-vertical-align (lbox-style (first m)))))
+                                    (and va (not (equal va '("baseline")))))))  ; any non-baseline vertical-align
+                ;; a line carrying an explicit vertical-align (length/%, top,
+                ;; bottom, middle, sub, super) uses the baseline model:
                 ;; place each atomic at its aligned position; text frags paint from the
                 ;; shared line baseline (LINE-ASC), so they line up on it.
                 (progn

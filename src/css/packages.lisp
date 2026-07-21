@@ -57,4 +57,7 @@
            #:cstyle-accent-color #:cstyle-box-shadow #:cstyle-text-shadow #:cstyle-opacity
            #:cstyle-filter #:cstyle-object-position #:cstyle-mix-blend-mode
            #:cstyle-clip-path #:parse-clip-path
+           #:cstyle-border-image-source #:cstyle-border-image-slice
+           #:cstyle-border-image-width #:cstyle-border-image-repeat
+           #:cstyle-border-image-outset
            #:cstyle-container-type #:cstyle-container-name))

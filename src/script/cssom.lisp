@@ -458,6 +458,27 @@
                                        tp)))))
                 parts))))
 
+(defun %serialize-modern-rgb (v)
+  "Resolve a modern (space-syntax) rgb()/rgba() V — mixed <number>/<percentage>
+   channels and `none` (-> 0) allowed — to a legacy rgb()/rgba() string, or NIL.
+   Non-calc only (caller excludes calc/var).  Percentages resolve against 255."
+  (let ((interior (css::%color-fn-interior v "rgb")))
+    (when interior
+      (multiple-value-bind (comps alpha) (css::%split-color-components interior)
+        (when (and (= (length comps) 3)
+                   (every (lambda (c)
+                            (member (%color-fn-comp-class c) '(:number :percent :none)))
+                          comps)
+                   (member (%color-fn-alpha-class alpha) '(:absent :none :number :percent)))
+          (flet ((chan (s) (let ((r (%resolve-color-comp s 255d0)))
+                             (if (eq r :none) 0d0 r))))
+            (let ((r (chan (first comps))) (g (chan (second comps)))
+                  (b (chan (third comps))) (a (%resolve-alpha alpha)))
+              (when (and (numberp r) (numberp g) (numberp b) a)
+                (rgb-str (list (%clampf r 0d0 255d0) (%clampf g 0d0 255d0)
+                               (%clampf b 0d0 255d0)
+                               (if (eq a :none) 0d0 (%clampf a 0d0 1d0))))))))))))
+
 (defun %canon-rgb-hsl (v lower)
   "Canonicalize a legacy/modern rgb()/rgba()/hsl()/hsla() V.  Legacy (comma) syntax
    rejects `none`, a `/` alpha, and malformed comma grammar; modern (space) syntax
@@ -467,7 +488,9 @@
     ((or (search "calc" lower) (search "var(" lower) (search "min(" lower)
          (search "max(" lower) (search "clamp(" lower) (search "from" lower))
      nil)                               ; unresolved math/relative -> verbatim
-    (t (let* ((interior (css::%color-fn-interior v (subseq lower 0 (position #\( lower))))
+    (t (let* ((fname (subseq lower 0 (position #\( lower)))
+              (rgbp (member fname '("rgb" "rgba") :test #'string=))
+              (interior (css::%color-fn-interior v fname))
               (has-comma (and interior (find #\, interior)))
               (has-slash (and interior (find #\/ interior)))
               (has-none (search "none" lower)))
@@ -477,7 +500,13 @@
             (if (or has-slash has-none (not (%legacy-comma-grammar-ok interior)))
                 :invalid
                 (let ((c (css:parse-value "color" v))) (if (consp c) (rgb-str c) :invalid))))
-           (has-none nil)               ; modern `none` kept verbatim
+           ;; Modern (space) rgb: css:parse-value handles the plain form; the modern
+           ;; resolver adds mixed <number>/<percentage> channels and `none` (-> 0),
+           ;; always serializing to legacy rgb()/rgba().
+           (rgbp
+            (let ((c (css:parse-value "color" v)))
+              (if (consp c) (rgb-str c) (or (%serialize-modern-rgb v) :invalid))))
+           (has-none nil)               ; modern hsl() `none` kept verbatim
            (t (let ((c (css:parse-value "color" v))) (if (consp c) (rgb-str c) :invalid))))))))
 
 (defun %specified-lab (v fname)

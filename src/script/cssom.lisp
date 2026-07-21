@@ -529,6 +529,139 @@
                 ((string= fname "oklab") :oklab) (t :oklch))
           comps alpha))))))
 
+;;; ---- color-mix() specified serialization + validation (CSS Color 5 §color-mix)
+;;; The SPECIFIED value of a valid color-mix() re-prints the function: `in <space>
+;;; [<method> hue]`, each nested <color> canonicalized (canon-color-value), and the
+;;; percentages normalized (percentage after the color; a lone 50%/50% pair or a
+;;; single 50% dropped; a single percentage's complement filled to 100%).  Only the
+;;; interpolation space keyword and the (polar-only) hue interpolation method are
+;;; grammar; malformed input rejects.  This is a pure re-serialization — it never
+;;; mixes the colors (that is the COMPUTED path) so it needs no color model.
+(defparameter +mix-rect-spaces+
+  '("srgb" "srgb-linear" "display-p3" "a98-rgb" "prophoto-rgb" "rec2020"
+    "lab" "oklab" "xyz" "xyz-d50" "xyz-d65"))
+(defparameter +mix-polar-spaces+ '("hsl" "hwb" "lch" "oklch"))
+(defparameter +mix-hue-methods+ '("shorter" "longer" "increasing" "decreasing"))
+
+(defun %ws-split-top (s)
+  "Split S on top-level whitespace runs, keeping parenthesised groups intact."
+  (let ((out '()) (depth 0) (start nil) (n (length s)))
+    (dotimes (i n)
+      (let ((c (char s i)))
+        (cond ((char= c #\() (incf depth) (unless start (setf start i)))
+              ((char= c #\)) (when (plusp depth) (decf depth)))
+              ((and (zerop depth) (member c '(#\Space #\Tab #\Newline #\Return)))
+               (when start (push (subseq s start i) out) (setf start nil)))
+              (t (unless start (setf start i))))))
+    (when start (push (subseq s start n) out))
+    (nreverse out)))
+
+(defun %mix-parse-method (part)
+  "Parse `in <space> [<method> hue]`.  Returns (space . method) — method NIL for the
+   default `shorter` — or :invalid.  A hue method is valid only on a polar space."
+  (let ((toks (%ws-split-top (string-trim '(#\Space #\Tab #\Newline #\Return) part))))
+    (if (and toks (string-equal (first toks) "in"))
+        (let ((rest (rest toks)))
+          (cond
+            ((= (length rest) 1)
+             (let ((sp (string-downcase (first rest))))
+               (if (or (member sp +mix-rect-spaces+ :test #'string=)
+                       (member sp +mix-polar-spaces+ :test #'string=))
+                   (cons sp nil) :invalid)))
+            ((= (length rest) 3)
+             (let ((sp (string-downcase (first rest)))
+                   (m (string-downcase (second rest)))
+                   (h (string-downcase (third rest))))
+               (if (and (member sp +mix-polar-spaces+ :test #'string=)
+                        (member m +mix-hue-methods+ :test #'string=)
+                        (string= h "hue"))
+                   (cons sp (if (string= m "shorter") nil m)) :invalid)))
+            (t :invalid)))
+        :invalid)))
+
+(defun %mix-pct (tok)
+  "Parse a color-mix percentage token: (:lit <double>) for a literal 0-100%,
+   (:calc <raw>) for a calc/var kept verbatim, or :invalid."
+  (let ((tl (string-trim '(#\Space #\Tab #\Newline #\Return) tok)))
+    (cond
+      ((find #\( tl) (list :calc tl))
+      ((and (plusp (length tl)) (char= (char tl (1- (length tl))) #\%))
+       (let ((num (parse-num-double (subseq tl 0 (1- (length tl))))))
+         (if (and num (<= 0d0 num 100d0)) (list :lit num) :invalid)))
+      (t :invalid))))
+
+(defun %mix-parse-colorpart (part)
+  "Parse `<color> [<pct>]` / `<pct> <color>`.  Returns (color-string . pct) where
+   pct is NIL | (:lit n) | (:calc raw), or :invalid."
+  (let ((toks (%ws-split-top (string-trim '(#\Space #\Tab #\Newline #\Return) part))))
+    (flet ((canon (tok) (canon-color-value tok)))
+      (cond
+        ((= (length toks) 1)
+         (let ((c (canon (first toks))))
+           (if (eq c :invalid) :invalid
+               (cons (or c (string-trim '(#\Space #\Tab #\Newline #\Return) (first toks))) nil))))
+        ((= (length toks) 2)
+         (let* ((t0 (first toks)) (t1 (second toks))
+                (c0 (canon t0)) (c1 (canon t1)))
+           (cond
+             ((and (not (eq c0 :invalid)) (eq c1 :invalid))
+              (let ((p (%mix-pct t1)))
+                (if (eq p :invalid) :invalid
+                    (cons (or c0 (string-trim '(#\Space #\Tab #\Newline #\Return) t0)) p))))
+             ((and (eq c0 :invalid) (not (eq c1 :invalid)))
+              (let ((p (%mix-pct t0)))
+                (if (eq p :invalid) :invalid
+                    (cons (or c1 (string-trim '(#\Space #\Tab #\Newline #\Return) t1)) p))))
+             (t :invalid))))
+        (t :invalid)))))
+
+(defun %mix-pct-strs (p1 p2)
+  "Serialize the two percentage suffixes (each with a leading space or empty)."
+  (labels ((calcp (p) (and (consp p) (eq (car p) :calc)))
+           (litp (p) (and (consp p) (eq (car p) :lit)))
+           (litn (p) (and (litp p) (second p)))
+           (one (p) (cond ((calcp p) (format nil " ~a" (second p)))
+                          ((litp p) (format nil " ~a%" (num->css (second p))))
+                          (t ""))))
+    (cond
+      ((or (calcp p1) (calcp p2)) (values (one p1) (one p2)))
+      ((and (null p1) (null p2)) (values "" ""))
+      (t (let ((n1 (or (litn p1) (- 100d0 (litn p2))))
+               (n2 (or (litn p2) (- 100d0 (litn p1)))))
+           (if (and (= n1 50d0) (= n2 50d0)) (values "" "")
+               (values (format nil " ~a%" (num->css n1))
+                       (format nil " ~a%" (num->css n2)))))))))
+
+(defun %canon-color-mix (v)
+  "Canonical specified serialization of a color-mix() V, :invalid, or NIL (verbatim)."
+  (block nil
+    (let ((interior (css::%color-fn-interior v "color-mix")))
+      (unless interior (return :invalid))
+      (let ((parts (css::%split-top-char interior #\,)))
+        (when (< (length parts) 3) (return :invalid))
+        (let ((method (%mix-parse-method (first parts))))
+          (when (eq method :invalid) (return :invalid))
+          (let ((colorparts (rest parts)))
+            (unless (= (length colorparts) 2) (return :invalid))
+            (let ((cp1 (%mix-parse-colorpart (first colorparts)))
+                  (cp2 (%mix-parse-colorpart (second colorparts))))
+              (when (or (eq cp1 :invalid) (eq cp2 :invalid)) (return :invalid))
+              (let ((space (car method)) (hm (cdr method)))
+                (multiple-value-bind (p1s p2s) (%mix-pct-strs (cdr cp1) (cdr cp2))
+                  (return
+                    (format nil "color-mix(in ~a~a, ~a~a, ~a~a)"
+                            space (if hm (format nil " ~a hue" hm) "")
+                            (car cp1) p1s (car cp2) p2s)))))))))))
+
+(defun %specified-hwb (v)
+  "Specified serialization of a non-calc hwb() V: rgb()/rgba() when fully numeric,
+   hwb(...) form when any channel is `none` (CSS Color 4 §hwb); NIL on failure."
+  (ignore-errors
+   (let ((interior (css::%color-fn-interior v "hwb")))
+     (when interior
+       (multiple-value-bind (comps alpha) (css::%split-color-components interior)
+         (%serialize-modern-hwb comps alpha))))))
+
 (defun canon-color-value (value)
   "Canonicalize a <color> specified VALUE (CSS Color 4 / CSSOM serialization).
    Named colors, system colors, currentcolor and transparent serialize as their
@@ -577,6 +710,13 @@
                  (not (search "max(" lower)) (not (search "clamp(" lower))
                  (not (search "from" lower)))
             (%canon-lab-value v fname))
+           ((and (string= fname "hwb")
+                 (not (search "calc(" lower)) (not (search "var(" lower))
+                 (not (search "sign(" lower)) (not (search "min(" lower))
+                 (not (search "max(" lower)) (not (search "clamp(" lower))
+                 (not (search "from" lower)))
+            (or (%specified-hwb v) :invalid))
+           ((string= fname "color-mix") (%canon-color-mix v))
            (t nil)))))))
 
 ;;; ---- calc() simplification + serialization (CSS Values 4 §10.9/§10.10) -----

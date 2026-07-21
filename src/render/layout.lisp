@@ -4508,6 +4508,58 @@ shadows.  First-listed shadow is topmost, so paint the list in reverse."
                 (paint-inset-shadow cv lb cs offx offy blur spread color)
                 (paint-outset-shadow cv lb cs offx offy blur spread color))))))))
 
+(defun bevel-darken (c)
+  "Darken a border color to 9/16 per channel — the darker tone used by the
+inset/outset/ridge/groove 3D border styles (CSS 2.1 §8.5.3); the lighter tone is
+the border color itself.  Matches the reference UA's shading of these styles."
+  (if (>= (length c) 4)
+      (list (floor (* (first c) 9) 16) (floor (* (second c) 9) 16) (floor (* (third c) 9) 16) (fourth c))
+      (list (floor (* (first c) 9) 16) (floor (* (second c) 9) 16) (floor (* (third c) 9) 16))))
+
+(defun paint-beveled-borders (cv style x0 y0 x1 y1 bt br bb bl base)
+  "Paint the four border edges with the 3D bevel of inset/outset/ridge/groove
+(CSS 2.1 §8.5.3).  Top/left and bottom/right edges get opposite tones (light = the
+border color, dark = bevel-darken) so the box looks embedded (inset), raised
+(outset), carved (groove) or ridged (ridge).  groove/ridge split each edge into an
+outer and inner half with opposite tones.  Corners are mitered on the 45-deg
+diagonal (fill-poly), matching the per-side border painter."
+  (let* ((light base) (dark (bevel-darken base))
+         (ix0 (+ x0 bl)) (iy0 (+ y0 bt)) (ix1 (- x1 br)) (iy1 (- y1 bb))
+         (mx0 (+ x0 (/ bl 2))) (my0 (+ y0 (/ bt 2)))
+         (mx1 (- x1 (/ br 2))) (my1 (- y1 (/ bb 2))))
+    (labels ((p (pts col) (fill-poly cv pts col))
+             ;; full mitered trapezoid for each side
+             (top-full (c)    (p (list (cons x0 y0) (cons x1 y0) (cons ix1 iy0) (cons ix0 iy0)) c))
+             (bottom-full (c) (p (list (cons x0 y1) (cons ix0 iy1) (cons ix1 iy1) (cons x1 y1)) c))
+             (left-full (c)   (p (list (cons x0 y0) (cons ix0 iy0) (cons ix0 iy1) (cons x0 y1)) c))
+             (right-full (c)  (p (list (cons x1 y0) (cons x1 y1) (cons ix1 iy1) (cons ix1 iy0)) c))
+             ;; outer/inner halves (outer = nearer the outer box edge)
+             (top-o (c)  (p (list (cons x0 y0) (cons x1 y0) (cons mx1 my0) (cons mx0 my0)) c))
+             (top-i (c)  (p (list (cons mx0 my0) (cons mx1 my0) (cons ix1 iy0) (cons ix0 iy0)) c))
+             (bot-o (c)  (p (list (cons x0 y1) (cons mx0 my1) (cons mx1 my1) (cons x1 y1)) c))
+             (bot-i (c)  (p (list (cons mx0 my1) (cons ix0 iy1) (cons ix1 iy1) (cons mx1 my1)) c))
+             (left-o (c) (p (list (cons x0 y0) (cons mx0 my0) (cons mx0 my1) (cons x0 y1)) c))
+             (left-i (c) (p (list (cons mx0 my0) (cons ix0 iy0) (cons ix0 iy1) (cons mx0 my1)) c))
+             (right-o (c)(p (list (cons x1 y0) (cons x1 y1) (cons mx1 my1) (cons mx1 my0)) c))
+             (right-i (c)(p (list (cons mx1 my0) (cons mx1 my1) (cons ix1 iy1) (cons ix1 iy0)) c)))
+      (cond
+        ((string= style "inset")   ; top/left dark, bottom/right light
+         (when (plusp bt) (top-full dark))   (when (plusp bl) (left-full dark))
+         (when (plusp bb) (bottom-full light))(when (plusp br) (right-full light)))
+        ((string= style "outset")  ; top/left light, bottom/right dark
+         (when (plusp bt) (top-full light))  (when (plusp bl) (left-full light))
+         (when (plusp bb) (bottom-full dark))(when (plusp br) (right-full dark)))
+        ((string= style "ridge")   ; outer half = outset tone, inner half = inset tone
+         (when (plusp bt) (top-o light)  (top-i dark))
+         (when (plusp bl) (left-o light) (left-i dark))
+         (when (plusp bb) (bot-o dark)   (bot-i light))
+         (when (plusp br) (right-o dark) (right-i light)))
+        ((string= style "groove")  ; outer half = inset tone, inner half = outset tone
+         (when (plusp bt) (top-o dark)   (top-i light))
+         (when (plusp bl) (left-o dark)  (left-i light))
+         (when (plusp bb) (bot-o light)  (bot-i dark))
+         (when (plusp br) (right-o light)(right-i dark)))))))
+
 (defun paint-borders (cv lb cs)
   "Paint the four border edges, each with its own color.  Edges whose
 border-style is none/hidden are suppressed (zero effective width).
@@ -4525,7 +4577,14 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
          (ct (border-edge-color cs :t)) (crr (border-edge-color cs :r))
          (cb (border-edge-color cs :b)) (cl (border-edge-color cs :l)))
     (when (and (<= bt 0) (<= br 0) (<= bb 0) (<= bl 0)) (return-from paint-borders))
-    (let ((radii (and (box-has-radius-p cs) (corner-radii-px cs w h))))
+    (let* ((radii (and (box-has-radius-p cs) (corner-radii-px cs w h)))
+           (ts (css:cstyle-border-top-style cs))
+           (bevel (and ts (equal ct crr) (equal ct cb) (equal ct cl)
+                       (member ts '("inset" "outset" "ridge" "groove") :test #'string=)
+                       (equal ts (css:cstyle-border-right-style cs))
+                       (equal ts (css:cstyle-border-bottom-style cs))
+                       (equal ts (css:cstyle-border-left-style cs))
+                       ts)))
      (cond
       ((and radii (some #'plusp radii) (equal ct crr) (equal ct cb) (equal ct cl))
        ;; uniform color + border-radius: fill the rounded ring (outer border-box
@@ -4550,6 +4609,9 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
            ;; inner ring (at the inner edge of each border)
            (fill-rect cv x0 (- (+ y0 bt) tt) w tt ct) (fill-rect cv x0 (- y1 bb) w tb cb)
            (fill-rect cv (- (+ x0 bl) tl) y0 tl h cl) (fill-rect cv (- x1 br) y0 tr h crr))))
+      (bevel
+       ;; uniform inset/outset/ridge/groove: 3D bevel shading (CSS 2.1 §8.5.3).
+       (paint-beveled-borders cv bevel x0 y0 x1 y1 bt br bb bl ct))
       ((and (equal ct crr) (equal ct cb) (equal ct cl))
         ;; uniform color: overlapping rectangles, exactly as the original code.
           (when (plusp bt) (fill-rect cv x0 y0 w bt ct))

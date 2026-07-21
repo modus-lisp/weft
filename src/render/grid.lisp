@@ -156,14 +156,31 @@ is shared among fr tracks in proportion to their flex factor (CSS Grid §11)."
                  (let ((mxsz (grid-fixed-size mx content-w items styles)))
                    (setf (aref base i) (max mnsz (min mxsz (grid-track-content-w '(:max-content) items styles content-w)))))))))
         (t (setf (aref base i) (grid-fixed-size spec content-w items styles)))))
-    ;; distribute free space over fr tracks
-    (let* ((fixed-sum (loop for i below n sum (aref base i)))
-           (free (max 0.0 (- avail fixed-sum)))
-           (sum-fr (loop for i below n when (aref flex i) sum (aref flex i))))
+    ;; distribute free space over fr tracks (CSS Grid §11.7.1 "find the size of an
+    ;; fr"): a flex track's used size is max(base, fr*factor).  The fr unit is found
+    ;; over the leftover space with any track whose base exceeds fr*factor frozen at
+    ;; its base and removed from the fr pool, then recomputed — so minmax(50px,1fr)
+    ;; alongside 1fr in 200px sizes 100/100, not 125/75 (fr added atop the base).
+    (let* ((sum-fr (loop for i below n when (aref flex i) sum (aref flex i)))
+           (frozen (make-array n :initial-element nil)))
       (when (plusp sum-fr)
-        (let ((unit (/ free sum-fr)))
-          (loop for i below n when (aref flex i) do
-            (incf (aref base i) (* unit (aref flex i))))))
+        (loop
+          (let* ((nonflex (loop for i below n
+                                when (or (not (aref flex i)) (aref frozen i)) sum (aref base i)))
+                 (leftover (max 0.0 (- avail nonflex)))
+                 (active (loop for i below n when (and (aref flex i) (not (aref frozen i)))
+                               sum (aref flex i))))
+            (if (<= active 0.0)
+                (return)
+                (let ((hyp (/ leftover active)) (froze nil))
+                  (loop for i below n
+                        when (and (aref flex i) (not (aref frozen i))
+                                  (> (aref base i) (* hyp (aref flex i))))
+                        do (setf (aref frozen i) t froze t))
+                  (unless froze
+                    (loop for i below n when (and (aref flex i) (not (aref frozen i)))
+                          do (setf (aref base i) (* hyp (aref flex i))))
+                    (return)))))))
       ;; Stretch auto tracks (CSS Grid §11.8): with no flexible (fr) track to
       ;; absorb it and a normal/stretch content-distribution, share the leftover
       ;; free space equally among tracks whose MAX is `auto`, so a single implicit

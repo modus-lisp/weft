@@ -295,6 +295,24 @@ ex/ch use the right per-face metric (WPT's Ahem: x-height 0.8em, char advance 1.
                        (t num)))   ; treat unknown abs units as px-ish
                nil))))))
 
+(defun parse-gap-value (tok fs)
+  "Parse a row-gap/column-gap length: a percentage becomes a deferred (:pct . N)
+form (resolved against the container content size at layout, CSS Box Alignment
+§8.3), a length collapses to px, else NIL."
+  (let ((tt (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) tok))))
+    (if (and (plusp (length tt)) (char= (char tt (1- (length tt))) #\%))
+        (let ((p (parse-value "percentage" tt))) (when (numberp p) (cons :pct p)))
+        (resolve-len tt fs))))
+
+(defun resolve-gap (g basis)
+  "Resolve a gap slot value to px: a number is used as-is, a deferred (:pct . N)
+percentage resolves against BASIS (the container content size in that axis); an
+indefinite basis (NIL) yields 0 per CSS Box Alignment §8.3."
+  (cond ((numberp g) (float g 1.0))
+        ((and (consp g) (eq (car g) :pct))
+         (if (numberp basis) (* (float basis 1.0) (/ (cdr g) 100.0)) 0.0))
+        (t 0.0)))
+
 (defun calc-tokenize (s)
   "Split a calc() expression into operand and operator (+ - * /) tokens.  Handles
 tight operators (Tailwind's `calc(var(--spacing)*8)`, its var already substituted)
@@ -1606,15 +1624,17 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
            (when (search "row" v) (setf (cstyle-grid-auto-flow cs) "row"))))
         ((string= prop "gap")   ; row-gap [column-gap]; single value applies to both
          (let* ((parts (remove "" (split-ws (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))) :test #'string=))
-                (r (and parts (resolve-len (first parts) fs)))
-                (c (if (and (cdr parts) (resolve-len (second parts) fs)) (resolve-len (second parts) fs) r)))
+                (r (and parts (parse-gap-value (first parts) fs)))
+                (c (if (cdr parts) (or (parse-gap-value (second parts) fs) r) r)))
            (when r (setf (cstyle-row-gap cs) r (cstyle-gap cs) r))
            (when c (setf (cstyle-column-gap cs) c))))
-        ((string= prop "row-gap") (let ((v (len))) (when v (setf (cstyle-row-gap cs) v (cstyle-gap cs) v))))
+        ((string= prop "row-gap") (let ((v (parse-gap-value value fs))) (when v (setf (cstyle-row-gap cs) v (cstyle-gap cs) v))))
         ((string= prop "column-gap")
          (let ((v (string-downcase (string-trim '(#\Space) value))))
            (cond ((string= v "normal") (setf (cstyle-column-gap cs) fs))   ; multicol normal gap = 1em
-                 ((len) (setf (cstyle-column-gap cs) (len) (cstyle-gap cs) (len))))))
+                 ((parse-gap-value value fs)
+                  (let ((g (parse-gap-value value fs)))
+                    (setf (cstyle-column-gap cs) g (cstyle-gap cs) g))))))
         ((string= prop "column-count")
          (let ((v (string-downcase (string-trim '(#\Space) value))))
            (setf (cstyle-column-count cs)

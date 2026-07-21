@@ -56,4 +56,5 @@
            #:cstyle-outline-width #:cstyle-outline-style #:cstyle-outline-color #:cstyle-outline-offset
            #:cstyle-accent-color #:cstyle-box-shadow #:cstyle-text-shadow #:cstyle-opacity
            #:cstyle-filter #:cstyle-object-position #:cstyle-mix-blend-mode
+           #:cstyle-clip-path #:parse-clip-path
            #:cstyle-container-type #:cstyle-container-name))

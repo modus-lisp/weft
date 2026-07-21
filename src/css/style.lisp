@@ -142,6 +142,12 @@
   ;; backdrop already painted behind it (:multiply :screen :overlay :darken :lighten
   ;; :difference ...).  NIL/normal = ordinary source-over.  Paint-only, not inherited.
   (mix-blend-mode nil)
+  ;; CSS Masking 1 §clip-path: a basic-shape the element (and its subtree) is clipped
+  ;; to in paint.  Parsed form (see PARSE-CLIP-PATH): (:inset t r b l . radii) |
+  ;; (:circle rad cx cy) | (:ellipse rx ry cx cy) | (:polygon (x . y) ...), where each
+  ;; length is px (float) or (:pct . N) resolved against the border box at paint.
+  ;; NIL = none.  Not inherited; layout-neutral, paint-only.
+  (clip-path nil)
   ;; CSS Containment 3 §container: an element with CONTAINER-TYPE "size" or
   ;; "inline-size" establishes a query container (size containment on the queried
   ;; axis) that descendant @container rules resolve against.  CONTAINER-NAME is a
@@ -1321,6 +1327,8 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
                                 :test #'string=)
                         (intern (string-upcase v) :keyword))
                        (t nil)))))   ; normal / unknown -> ordinary compositing
+        ((string= prop "clip-path")
+         (setf (cstyle-clip-path cs) (parse-clip-path value fs)))
         ((string= prop "content") (setf (cstyle-content cs) (parse-content value)))
         ((string= prop "quotes") (setf (cstyle-quotes cs) (parse-quotes value parent-cs)))
         ((string= prop "counter-reset")

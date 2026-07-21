@@ -25,7 +25,7 @@
            #:cstyle-border-top-color #:cstyle-border-right-color #:cstyle-border-bottom-color #:cstyle-border-left-color
            #:cstyle-border-top-style #:cstyle-border-right-style #:cstyle-border-bottom-style #:cstyle-border-left-style
            #:cstyle-border-tl-radius #:cstyle-border-tr-radius #:cstyle-border-br-radius #:cstyle-border-bl-radius
-           #:cstyle-border-collapse
+           #:cstyle-border-collapse #:cstyle-border-spacing
            #:border-edge-painted-p
            #:cstyle-text-decoration #:cstyle-list-style
            #:cstyle-max-width #:cstyle-min-width #:cstyle-margin-left-auto #:cstyle-margin-right-auto

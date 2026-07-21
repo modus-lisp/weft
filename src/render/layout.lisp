@@ -3318,6 +3318,14 @@ column, colspans distributed across the columns they span (CSS 2.1 17.5.2)."
                     (let ((add (/ (- cmin cur-min) k))) (dolist (i cols) (incf (aref mins i) add))))))))))
       (values maxs mins specs ncols))))
 
+(defun table-spacing (cs)
+  "(values HS VS) border-spacing in px for a table with style CS (CSS 2.1 §17.6.1);
+0 when border-collapse:collapse (spacing does not apply to the collapsed model)."
+  (if (and cs (string= (css:cstyle-border-collapse cs) "collapse"))
+      (values 0 0)
+      (let ((bs (and cs (css:cstyle-border-spacing cs))))
+        (if (consp bs) (values (car bs) (cdr bs)) (values 0 0)))))
+
 (defun table-natural-width (node styles avail)
   "Shrink-to-fit CONTENT width of a display:table NODE: the sum of its column
 max-content (or fixed) widths.  0 when it has no cells.  A percentage column
@@ -3344,19 +3352,23 @@ width the table grows so the non-percentage columns fit in the remaining
                                                (/ 100.0 (third sp))))))
                  (incf fixed-sum (max 0.0 (- mx (float (second sp)))))))
             (t (incf fixed-sum mx)))))
-      (if (plusp tot-pct)
-          (let ((fixed-need (/ fixed-sum (- 1.0 (/ (min tot-pct 99.9) 100.0)))))
-            (max fixed-need pct-need (loop for i below ncols sum (aref maxs i))))
-          fixed-sum))))
+      ;; separated-borders spacing widens the table by (ncols+1) horizontal gaps.
+      (let ((hspace (* (1+ ncols) (table-spacing (st styles node)))))
+        (+ hspace
+           (if (plusp tot-pct)
+               (let ((fixed-need (/ fixed-sum (- 1.0 (/ (min tot-pct 99.9) 100.0)))))
+                 (max fixed-need pct-need (loop for i below ncols sum (aref maxs i))))
+               fixed-sum))))))
 
 (defun table-min-width (node styles avail)
   "Min-content CONTENT width of a display:table NODE: the sum of its per-column
 min-content (or fixed floor) widths.  0 when it has no cells."
   (multiple-value-bind (maxs mins specs ncols) (table-column-model node styles avail)
     (declare (ignore maxs))
-    (loop for i below ncols
-          sum (let ((sp (aref specs i)))
-                (if (numberp sp) (max sp (aref mins i)) (aref mins i))))))
+    (+ (* (1+ ncols) (table-spacing (st styles node)))
+       (loop for i below ncols
+             sum (let ((sp (aref specs i)))
+                   (if (numberp sp) (max sp (aref mins i)) (aref mins i)))))))
 
 (defun fit-columns (rspecs maxs mins target ncols)
   "Fit per-column widths to a TARGET total (CSS 2.1 17.5.2 pragmatic).  RSPECS is
@@ -3461,14 +3473,19 @@ cell-lboxes content-height)."
   (let ((rows (table-rows node styles)))
     (when (null rows) (return-from layout-table (values nil 0)))
     (multiple-value-bind (maxs mins specs ncols) (table-column-model node styles content-w)
-      (let* ((rspecs (loop for i below ncols collect (resolve-spec (aref specs i) content-w)))
+      (let* ((sp (multiple-value-list (table-spacing base-cs)))
+             (hs (first sp)) (vs (second sp))  ; horizontal / vertical border-spacing
+             (rspecs (loop for i below ncols collect (resolve-spec (aref specs i) content-w)))
+             ;; columns fit within the content width minus the (ncols+1) horizontal gaps.
              (colw (fit-columns rspecs
                                 (loop for i below ncols collect (aref maxs i))
                                 (loop for i below ncols collect (aref mins i))
-                                content-w ncols))
+                                (max 0 (- content-w (* (1+ ncols) hs))) ncols))
              (colx (make-array (1+ ncols) :initial-element 0.0))
-             (y cy) (boxes '()))
-        (loop for i below ncols do (setf (aref colx (1+ i)) (+ (aref colx i) (nth i colw))))
+             (y (+ cy vs)) (boxes '()))
+        ;; col i's left edge = hs + Σ(prior colw + hs); colx[ncols] = right table edge.
+        (setf (aref colx 0) (float hs))
+        (loop for i below ncols do (setf (aref colx (1+ i)) (+ (aref colx i) (nth i colw) hs)))
         ;; PASS 1: lay each row's cells at the content origin CY and record its
         ;; natural height; placement is deferred so an over-tall table can grow the
         ;; rows first (§17.5.3) without re-laying their content.
@@ -3486,7 +3503,9 @@ cell-lboxes content-height)."
                 (let* ((span (cell-colspan cell))
                        (rspan (cell-rowspan cell))
                        (x0 (aref colx (min ncols col)))
-                       (x1 (aref colx (min ncols (+ col span))))
+                       ;; drop the trailing gap so a cell spans its columns + the
+                       ;; internal spacing only, not the gap after its last column.
+                       (x1 (- (aref colx (min ncols (+ col span))) hs))
                        (cw (max 1 (round (- x1 x0)))))
                   (multiple-value-bind (lb adv) (layout-node cell styles (round (+ cx x0)) cy cw)
                     (declare (ignore adv))
@@ -3529,7 +3548,9 @@ cell-lboxes content-height)."
           ;; PASS 2: distribute a table taller than its content across rows in
           ;; proportion to their heights (§17.5.3); with no surplus SHARE is 0 and
           ;; every row keeps its natural height, so ordinary tables are unchanged.
-          (let ((surplus (if (and (numberp target-h) (> target-h natural)) (- target-h natural) 0))
+          (let* ((vspace (* (1+ nrows-total) vs))   ; (nrows+1) vertical border-spacing gaps
+                 (eff-target (and (numberp target-h) (- target-h vspace)))
+                 (surplus (if (and eff-target (> eff-target natural)) (- eff-target natural) 0))
                 ;; row-group node -> (top . bottom) px band, so a table-row-group /
                 ;; -header-group / -footer-group with its own background or border
                 ;; paints a box behind its rows (CSS 2.1 §17.5.1 layer 2).
@@ -3590,7 +3611,7 @@ cell-lboxes content-height)."
                               (cons (if cur (min (car cur) y) y)
                                     (if cur (max (cdr cur) (+ y rh2)) (+ y rh2)))))))
                   (setf boxes (nconc boxes rowboxes))
-                  (incf y rh2))))
+                  (incf y (+ rh2 vs)))))
             ;; grow each rowspanning cell to cover the rows it spans, now that every
             ;; row top/height is known, and re-place its content within that band.
             (dolist (sp spans)

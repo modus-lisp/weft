@@ -862,6 +862,17 @@ position/color-interpolation) rather than the first color stop."
                               (if cfg (parse-conic-cfg cfg fs) (list 0.0 *default-gpos*))
                             (list :conic from pos stops repeating))))))))))))
 
+(defun gradient-stops (grad)
+  "The color-stop list of a parsed gradient GRAD, by type."
+  (case (first grad) (:linear (third grad)) (:radial (fifth grad)) (:conic (fourth grad))))
+
+(defun gradient-solid-color (grad)
+  "When GRAD's color stops are all one color (a `linear-gradient(C,C)` solid fill),
+that color (r g b a); else NIL.  Used to fold a solid bottom background layer into
+background-color so it paints under the upper image layers."
+  (let ((cols (loop for s in (gradient-stops grad) when (eq (first s) :c) collect (second s))))
+    (when (and cols (every (lambda (c) (equal c (first cols))) cols)) (first cols))))
+
 (defun comma-split-top (s)
   "Split S on commas not inside parens."
   (let ((out '()) (depth 0) (start 0))
@@ -1285,7 +1296,16 @@ CSS shorthand replication rules (1->all; 2->TL/BR,TR/BL; 3->TL,TR/BL,BR)."
                                     (remove "url" (css-background-tokens value) :test #'string=))
                           2))
              (return-from apply-decl))
-           (cond (grad (setf (cstyle-bg-gradient cs) grad))
+           (cond (grad (setf (cstyle-bg-gradient cs) grad)
+                       ;; multi-layer background (comma list): PARSE-GRADIENT returned the
+                       ;; FIRST (top) layer.  When the LAST (bottom) layer is a solid
+                       ;; gradient, fold its color into background-color so it paints under
+                       ;; the top layer(s) — the common "image over a base color" idiom.
+                       (let ((layers (split-top-commas value)))
+                         (when (> (length layers) 1)
+                           (let* ((lg (parse-gradient (car (last layers)) fs))
+                                  (base (and lg (gradient-solid-color lg))))
+                             (when base (setf (cstyle-background cs) base))))))
                  ;; `none`/`transparent` clear any background set by an earlier rule
                  ((member tok '("none" "transparent") :test #'string=)
                   (setf (cstyle-background cs) nil (cstyle-bg-gradient cs) nil (cstyle-bg-image cs) nil))

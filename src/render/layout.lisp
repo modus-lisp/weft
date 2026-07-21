@@ -4815,17 +4815,23 @@ ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
                                   (let ((rg (and radii (bg-round-region lb cs ,clip-box radii))))
                                     (if rg (cons rg *round-clip*) *round-clip*))))
                             ,@body)))
-             (cond ((and (css:cstyle-bg-gradient cs) (gradient-visible-p (css:cstyle-bg-gradient cs)))
-                    ;; a CSS gradient is a background image: rasterise it (honouring
-                    ;; background-position/-size/-repeat) as a tiled layer over the box.
-                    (with-bg-round ((css:cstyle-bg-clip cs))
-                      (paint-bg-gradient cv lb cs (css:cstyle-bg-gradient cs))))
-                   ((css:cstyle-background cs)
-                    ;; background-clip: fill only the painting area (default border-box
-                    ;; == the whole box; padding/content-box inset by border[+padding]).
-                    (multiple-value-bind (bx0 by0 bx1 by1) (bg-box-edges lb cs (effective-bg-clip cs))
-                      (with-bg-round ((effective-bg-clip cs))
-                        (fill-rect cv bx0 by0 (- bx1 bx0) (- by1 by0) (css:cstyle-background cs))))))
+             ;; background-color is the BOTTOM-most background layer (CSS Backgrounds 3
+             ;; §3.10): always paint it first, then the gradient/image layers over it —
+             ;; so a sized/positioned gradient tile that does not cover the box lets the
+             ;; base colour (e.g. a `linear-gradient(blue,blue)` bottom layer folded into
+             ;; background-color) show through.  For an opaque full-box gradient the
+             ;; colour is fully covered, so this is byte-identical to painting only it.
+             (when (css:cstyle-background cs)
+               ;; background-clip: fill only the painting area (default border-box ==
+               ;; the whole box; padding/content-box inset by border[+padding]).
+               (multiple-value-bind (bx0 by0 bx1 by1) (bg-box-edges lb cs (effective-bg-clip cs))
+                 (with-bg-round ((effective-bg-clip cs))
+                   (fill-rect cv bx0 by0 (- bx1 bx0) (- by1 by0) (css:cstyle-background cs)))))
+             (when (and (css:cstyle-bg-gradient cs) (gradient-visible-p (css:cstyle-bg-gradient cs)))
+               ;; a CSS gradient is a background image: rasterise it (honouring
+               ;; background-position/-size/-repeat) as a tiled layer over the box.
+               (with-bg-round ((css:cstyle-bg-clip cs))
+                 (paint-bg-gradient cv lb cs (css:cstyle-bg-gradient cs))))
              ;; CSS background image: over the bg color, under the borders, tiled and
              ;; clipped to this box's padding box.  Fixed-attachment images are not
              ;; painted (out of scope) — for Acid2 that is the correct result (their

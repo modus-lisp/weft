@@ -173,6 +173,7 @@
           ((string= tag "tr") (setf (cstyle-display cs) "table-row"))
           ((member tag '("td" "th") :test #'string=) (setf (cstyle-display cs) "table-cell"))
           ((member tag '("thead" "tbody" "tfoot") :test #'string=) (setf (cstyle-display cs) "table-row-group"))
+          ((string= tag "caption") (setf (cstyle-display cs) "table-caption"))
           ;; <center> is a block whose block-level children are horizontally centered
           ;; (applied as margin:auto in the cascade).  It does NOT set text-align:center
           ;; here — that inherits and would wrongly centre all descendant text.

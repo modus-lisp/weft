@@ -552,36 +552,64 @@ alt-text placeholder."
                              :children (list (make-frag :x 2 :w (word-w alt cs) :text alt :style cs :node node))))))
     lb))
 
-(defun object-fit-geom (fit iw ih dx dy dw dh)
+(defun obj-pos-off (spec avail)
+  "CSS Images 3 §object-position: placement offset along one axis for content that
+leaves AVAIL free space (box-size - content-size).  SPEC = (val unit) as parsed by
+background-position: `%` -> that fraction of AVAIL; a length -> the offset directly;
+NIL/other -> 50% (centred)."
+  (if (and (consp spec) (>= (length spec) 2))
+      (let ((val (first spec)) (unit (second spec)))
+        (if (string= unit "%") (round (* avail (/ val 100.0))) (round val)))
+      (round avail 2)))
+
+(defun obj-pos-frac (spec)
+  "Fraction 0..1 from an object-position component SPEC (`%` value), else 0.5 — used to
+place the `cover` source crop when the length form has no direct pixel mapping."
+  (if (and (consp spec) (>= (length spec) 2) (string= (second spec) "%"))
+      (max 0.0 (min 1.0 (/ (first spec) 100.0)))
+      0.5))
+
+(defun object-fit-geom (fit iw ih dx dy dw dh &optional opos)
   "Map CSS object-fit FIT for an IW×IH image into content box (DX DY DW DH):
 return (values ox oy ow oh src) — the dest rectangle to paint and a source crop
 SRC=(sx sy sw sh) in image pixels (NIL = whole image).  `cover` crops the image to
 the box's aspect ratio and fills it (a wide relief image → a portrait hero, no
-distortion); `contain` fits the whole image inside the box, centred; `none` paints
-at intrinsic size, centred and cropped to the box; `scale-down` is none-or-contain,
-whichever is smaller.  `fill` (and any unknown value) never reaches here."
+distortion); `contain` fits the whole image inside the box; `none` paints at
+intrinsic size, cropped to the box; `scale-down` is none-or-contain, whichever is
+smaller.  OPOS ((xspec)(yspec)) is object-position (NIL = centred, 50% 50%); it
+places the sized content within the box (or shifts the `cover` source crop).
+`fill` (and any unknown value) never reaches here."
   (if (or (null iw) (null ih) (<= iw 0) (<= ih 0) (<= dw 0) (<= dh 0))
       (values dx dy dw dh nil)
-      (flet ((contain ()
-               (let* ((s (min (/ dw iw) (/ dh ih)))
-                      (w (max 1 (round (* iw s)))) (h (max 1 (round (* ih s)))))
-                 (values (+ dx (round (- dw w) 2)) (+ dy (round (- dh h) 2)) w h nil)))
-             (cover ()
-               (let (sx sy sw sh)
-                 (if (> (* iw dh) (* ih dw))       ; image wider than box → crop its width
-                     (setf sh ih sw (max 1 (round (/ (* ih dw) dh))) sy 0 sx (round (- iw sw) 2))
-                     (setf sw iw sh (max 1 (round (/ (* iw dh) dw))) sx 0 sy (round (- ih sh) 2)))
-                 (values dx dy dw dh (list sx sy sw sh))))
-             (none ()
-               (let* ((sw (min iw dw)) (sh (min ih dh))
-                      (sx (round (- iw sw) 2)) (sy (round (- ih sh) 2)))
-                 (values (+ dx (round (- dw sw) 2)) (+ dy (round (- dh sh) 2)) sw sh
-                         (list sx sy sw sh)))))
-        (cond ((string= fit "cover") (cover))
-              ((string= fit "contain") (contain))
-              ((string= fit "none") (none))
-              ((string= fit "scale-down") (if (or (> iw dw) (> ih dh)) (contain) (none)))
-              (t (values dx dy dw dh nil))))))
+      (let ((px (and (consp opos) (first opos))) (py (and (consp opos) (second opos))))
+        (flet ((contain ()
+                 (let* ((s (min (/ dw iw) (/ dh ih)))
+                        (w (max 1 (round (* iw s)))) (h (max 1 (round (* ih s)))))
+                   (values (+ dx (obj-pos-off px (- dw w))) (+ dy (obj-pos-off py (- dh h))) w h nil)))
+               (cover ()
+                 (let (sx sy sw sh)
+                   (if (> (* iw dh) (* ih dw))       ; image wider than box → crop its width
+                       (setf sh ih sw (max 1 (round (/ (* ih dw) dh))) sy 0
+                             sx (round (* (- iw sw) (obj-pos-frac px))))
+                       (setf sw iw sh (max 1 (round (/ (* iw dh) dw))) sx 0
+                             sy (round (* (- ih sh) (obj-pos-frac py)))))
+                   (values dx dy dw dh (list sx sy sw sh))))
+               (none ()
+                 ;; content at intrinsic size iw×ih, placed at offset (ox,oy) within
+                 ;; the box, then clipped to it: visible dest rect + source crop.
+                 (let* ((ox (obj-pos-off px (- dw iw))) (oy (obj-pos-off py (- dh ih)))
+                        (vis-x0 (max 0 ox)) (vis-y0 (max 0 oy))
+                        (vis-x1 (min dw (+ ox iw))) (vis-y1 (min dh (+ oy ih)))
+                        (vw (- vis-x1 vis-x0)) (vh (- vis-y1 vis-y0)))
+                   (if (or (<= vw 0) (<= vh 0))
+                       (values dx dy 0 0 (list 0 0 0 0))    ; entirely outside the box
+                       (values (+ dx vis-x0) (+ dy vis-y0) vw vh
+                               (list (max 0 (- ox)) (max 0 (- oy)) vw vh))))))
+          (cond ((string= fit "cover") (cover))
+                ((string= fit "contain") (contain))
+                ((string= fit "none") (none))
+                ((string= fit "scale-down") (if (or (> iw dw) (> ih dh)) (contain) (none)))
+                (t (values dx dy dw dh nil)))))))
 
 (defun object-data-image (node)
   "Decoded IMG for an <object> whose data attribute is a decodable image data:
@@ -5104,8 +5132,10 @@ ALPHA.  Honours the ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
                  (multiple-value-bind (ox oy ow oh src)
                      (object-fit-geom fit (img-w (lbox-img lb)) (img-h (lbox-img lb))
                                       (round (lbox-x lb)) (round (lbox-y lb))
-                                      (round (lbox-w lb)) (round (lbox-h lb)))
-                   (blit-img cv (lbox-img lb) ox oy ow oh src))
+                                      (round (lbox-w lb)) (round (lbox-h lb))
+                                      (css:cstyle-object-position cs))
+                   (when (and (plusp ow) (plusp oh))
+                     (blit-img cv (lbox-img lb) ox oy ow oh src)))
                  (blit-img cv (lbox-img lb) (round (lbox-x lb)) (round (lbox-y lb))
                            (round (lbox-w lb)) (round (lbox-h lb))))))
          ;; Replaced vector content (inline <svg>, <canvas>): composite over the

@@ -2584,13 +2584,29 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                                                 (if (and is (css:cstyle-margin-right-auto is)) 1 0))))
                           (mauto (and (> n-mauto 0) (> extra 0)))
                           (auto-unit (if mauto (/ extra n-mauto) 0))
+                          ;; *-reverse flips the main axis: main-start is the far
+                          ;; (right/bottom) edge, so flex-start packs there and
+                          ;; flex-end at CX (CSS Flexbox §5.1 / §8.2).  Items are
+                          ;; already reversed for traversal, so packing the whole
+                          ;; run at CX+EXTRA lands its main-start edge flush right.
+                          (rev (member dir '("row-reverse" "column-reverse") :test #'string=))
                           (start (cond (mauto cx)
                                        ((string= justify "center") (+ cx (/ extra 2)))
-                                       ((string= justify "flex-end") (+ cx extra)) (t cx)))
+                                       ((member justify '("flex-end" "end" "right") :test #'string=)
+                                        (if rev cx (+ cx extra)))
+                                       ((member justify '("flex-start" "start" "left") :test #'string=)
+                                        (if rev (+ cx extra) cx))
+                                       ((member justify '("space-between" "space-around" "space-evenly") :test #'string=) cx)
+                                       (t (if rev (+ cx extra) cx))))   ; default = flex-start
                           (between (cond (mauto 0)
                                          ((and (string= justify "space-between") (> n 1)) (/ extra (1- n)))
-                                         ((string= justify "space-around") (/ extra n)) (t 0)))
-                          (x (if (and (not mauto) (string= justify "space-around")) (+ start (/ between 2)) start))
+                                         ((string= justify "space-around") (/ extra n))
+                                         ((string= justify "space-evenly") (/ extra (1+ n))) (t 0)))
+                          ;; space-around insets by half a gap; space-evenly by a full
+                          ;; gap (equal space before, between and after every item).
+                          (x (cond ((and (not mauto) (string= justify "space-around")) (+ start (/ between 2)))
+                                   ((and (not mauto) (string= justify "space-evenly")) (+ start between))
+                                   (t start)))
                           (boxes '()) (max-h 0))
                      (loop for it in litems for w in sizes for pbm in lpbm
                            for is = (st styles it)

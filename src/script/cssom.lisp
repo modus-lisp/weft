@@ -393,6 +393,37 @@
                    ((find-if (lambda (c) (member c '(#\Space #\Tab #\Newline))) s) :bad)
                    (t (%color-fn-comp-class s)))))))
 
+(defun %hue-comp-class (s)
+  "Classify an lch/oklch hue token: :none | :calc | :number | :angle | :bad.  A hue
+   is <number> | <angle> (deg/grad/rad/turn); a <percentage> is not a valid hue."
+  (let ((s (string-trim '(#\Space #\Tab #\Newline #\Return) s)))
+    (cond ((zerop (length s)) :bad)
+          ((string-equal s "none") :none)
+          ((find #\( s) :calc)
+          ((%num-token-p s) :number)
+          ((and (css::angle-tok-p s)
+                (%num-token-p (subseq s 0 (or (position-if #'alpha-char-p s) 0))))
+           :angle)
+          (t :bad))))
+
+(defun %canon-lab-value (v fname)
+  "Validate + serialize a non-calc lab/lch/oklab/oklch V (CSS Color 4 §lab/§lch):
+   a canonical string, or :invalid.  Exactly three channels (L, a/C, b/H) plus an
+   optional single alpha; lch/oklch hue accepts an <angle>.  Commas, wrong channel
+   count, angle in a/b, idents and junk-after-alpha all reject."
+  (let ((interior (css::%color-fn-interior v fname)))
+    (if (and interior (not (find #\, interior))
+             (multiple-value-bind (comps alpha) (css::%split-color-components interior)
+               (and (= (length comps) 3)
+                    (let ((chromatic (member fname '("lch" "oklch") :test #'string=)))
+                      (and (not (eq (%color-fn-comp-class (first comps)) :bad))
+                           (not (eq (%color-fn-comp-class (second comps)) :bad))
+                           (not (eq (if chromatic (%hue-comp-class (third comps))
+                                        (%color-fn-comp-class (third comps))) :bad))
+                           (not (eq (%color-fn-alpha-class alpha) :bad)))))))
+        (or (%specified-lab v fname) :invalid)
+        :invalid)))
+
 (defun %canon-color-function (v)
   "Canonical specified serialization of a color() function V (CSS Color 4
    §color-function): a canonical string, :invalid, or NIL (verbatim — a channel
@@ -473,7 +504,7 @@
                  (not (search "sign(" lower)) (not (search "min(" lower))
                  (not (search "max(" lower)) (not (search "clamp(" lower))
                  (not (search "from" lower)))
-            (or (%specified-lab v fname) nil))
+            (%canon-lab-value v fname))
            (t nil)))))))
 
 ;;; ---- calc() simplification + serialization (CSS Values 4 §10.9/§10.10) -----

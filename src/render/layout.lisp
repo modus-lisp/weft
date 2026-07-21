@@ -4511,6 +4511,22 @@ box with thick borders this yields the classic triangles (e.g. CSS triangles)."
              (inner (make-round-region (+ x0 bl) (+ y0 bt) (- x1 br) (- y1 bb)
                                        (inset-radii radii bl bt br bb))))
          (fill-round-ring cv outer inner ct)))
+      ((and (equal ct crr) (equal ct cb) (equal ct cl)
+            (flet ((dbl (s) (and s (string= s "double"))))
+              (and (dbl (css:cstyle-border-top-style cs)) (dbl (css:cstyle-border-right-style cs))
+                   (dbl (css:cstyle-border-bottom-style cs)) (dbl (css:cstyle-border-left-style cs))
+                   (>= (min bt br bb bl) 3))))
+       ;; uniform double (CSS 2.1 §border-style): two lines with a gap, each a third
+       ;; of the border width — paint the outer third and inner third as nested rings
+       ;; and leave the middle third for the box background to show through.
+       (flet ((edge3 (n) (max 1.0 (ffloor (/ n 3.0)))))
+         (let ((tt (edge3 bt)) (tr (edge3 br)) (tb (edge3 bb)) (tl (edge3 bl)))
+           ;; outer ring
+           (fill-rect cv x0 y0 w tt ct) (fill-rect cv x0 (- y1 tb) w tb cb)
+           (fill-rect cv x0 y0 tl h cl) (fill-rect cv (- x1 tr) y0 tr h crr)
+           ;; inner ring (at the inner edge of each border)
+           (fill-rect cv x0 (- (+ y0 bt) tt) w tt ct) (fill-rect cv x0 (- y1 bb) w tb cb)
+           (fill-rect cv (- (+ x0 bl) tl) y0 tl h cl) (fill-rect cv (- x1 br) y0 tr h crr))))
       ((and (equal ct crr) (equal ct cb) (equal ct cl))
         ;; uniform color: overlapping rectangles, exactly as the original code.
           (when (plusp bt) (fill-rect cv x0 y0 w bt ct))

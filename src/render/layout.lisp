@@ -3862,6 +3862,28 @@ forms its own stacking level above in-flow siblings."
 (defun lbox-z (lb)
   (let ((cs (lbox-style lb))) (if cs (or (css:cstyle-z-index cs) 0) 0)))
 
+(defun lbox-stacking-context-p (lb cs)
+  "True when LB establishes a stacking context (CSS 2.1 §9.9.1 / css-position-3):
+a positioned box with a numeric z-index, opacity < 1, or a rasterised transform.
+A NON-context box does not isolate its positioned descendants' z-order — their
+negative z-index refers to the ancestor context, so they paint behind LB itself."
+  (and cs
+       ;; z-index defaults to 0 in weft (CSS `auto`), so only a NONZERO z-index on a
+       ;; positioned box counts as an explicit stacking context (auto/0 do not).
+       (or (and (numberp (css:cstyle-z-index cs)) (not (zerop (css:cstyle-z-index cs)))
+                (member (css:cstyle-position cs) '("relative" "absolute" "fixed") :test #'string=))
+           (let ((o (css:cstyle-opacity cs))) (and (numberp o) (< o 1.0)))
+           (box-raster-transform-matrix lb))))
+
+(defun lbox-hoist-neg (lb cs)
+  "Direct children of LB that must paint BEHIND LB's own background: negative
+z-index positioned boxes, when LB does not itself establish a stacking context
+(so they belong to the ancestor context — e.g. an abs z-index:-1 child sits behind
+its position:relative z-index:auto parent, CSS 2.1 §9.9.1)."
+  (unless (lbox-stacking-context-p lb cs)
+    (remove-if-not (lambda (c) (and (lbox-positioned-p c) (minusp (lbox-z c))))
+                   (lbox-children lb))))
+
 (defun lbox-float-p (lb)
   "True when LB is a floated box (CSS float:left|right)."
   (let ((cs (and (eq (lbox-kind lb) :block) (lbox-style lb))))
@@ -4729,8 +4751,16 @@ ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
   (when lb
     (case (lbox-kind lb)
       (:block
-       (let ((cs (lbox-style lb)))
+       (let* ((cs (lbox-style lb))
+              (hoist (and cs (lbox-hoist-neg lb cs)))
+              (kids (if hoist (remove-if (lambda (c) (member c hoist)) (lbox-children lb))
+                        (lbox-children lb))))
         (when (box-visible-p cs)
+         ;; A negative z-index positioned child of a non-stacking-context box belongs
+         ;; to the ancestor stacking context: paint it BEHIND this box's own
+         ;; background/border (CSS 2.1 §9.9.1), then omit it from the normal child
+         ;; pass so it is not repainted on top.
+         (dolist (c hoist) (paint-box cv c))
          ;; An anonymous box (e.g. the wrapper generated for a block nested inside
          ;; an inline — HN's <a><div class=votearrow>) can carry a NIL style: it
          ;; paints no background/border of its own, but its children MUST still
@@ -4843,8 +4873,8 @@ ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
                                   (inset-radii radii (used-border cs :l) (used-border cs :t)
                                                (used-border cs :r) (used-border cs :b)))))))
                     (*round-clip* (if rr (cons rr *round-clip*) *round-clip*)))
-               (paint-children cv (lbox-children lb)))
-             (paint-children cv (lbox-children lb)))
+               (paint-children cv kids))
+             (paint-children cv kids))
          ;; outline paints on top of the box + descendants, and is NOT clipped by
          ;; this box's own overflow (CSS-UI §outline; CSS 2.1 appendix E step 10).
          (when cs (paint-outline cv lb cs)))))

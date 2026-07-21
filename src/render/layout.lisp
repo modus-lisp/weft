@@ -2489,7 +2489,19 @@ the content before moving on).  Returns (values column-boxes content-height)."
                                        (%layout-core node styles box-x box-y content-w avail-h))
           (values (and lb (copy-list (lbox-children lb))) (max 0.0 (float ch 1.0))))
         (multiple-value-bind (lb ch)
-            (let ((*multicol-measuring* t)) (%layout-core node styles box-x box-y colw avail-h))
+            ;; measure the in-flow content in ONE column of the used column width.
+            ;; The container's own `width` (here 100px) sizes the multicol BOX, but
+            ;; its content flows at the COLUMN width (colw) — force it for the measure
+            ;; so a child block fills the column, not the whole multicol box, then
+            ;; restore (the outer %layout-core keeps the box at its real width).
+            (let ((*multicol-measuring* t)
+                  (saved-w (css:cstyle-width base-cs))
+                  (saved-bs (css:cstyle-box-sizing base-cs)))
+              (setf (css:cstyle-width base-cs) (float colw 1.0)
+                    (css:cstyle-box-sizing base-cs) "content-box")
+              (unwind-protect (%layout-core node styles box-x box-y colw avail-h)
+                (setf (css:cstyle-width base-cs) saved-w
+                      (css:cstyle-box-sizing base-cs) saved-bs)))
           (declare (ignore ch))
           (let ((kids (and lb (remove-if-not (lambda (c) (typep c 'lbox)) (lbox-children lb)))))
             (if (null kids)

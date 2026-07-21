@@ -41,9 +41,34 @@ side), RX/RY the corner radii.  Outside the ellipse there = cut away."
   (and (> rx 0.0) (> ry 0.0) (> dx 0.0) (> dy 0.0)
        (let ((u (/ dx rx)) (v (/ dy ry))) (> (+ (* u u) (* v v)) 1.0))))
 
+(defun point-in-poly-f (pts fx fy)
+  "Even-odd point-in-polygon test for a simple-vector PTS of (x . y) float vertices."
+  (let ((inside nil) (n (length pts)))
+    (declare (type simple-vector pts) (type fixnum n))
+    (dotimes (i n inside)
+      (let* ((j (if (zerop i) (1- n) (1- i)))
+             (va (svref pts i)) (vb (svref pts j))
+             (xi (car va)) (yi (cdr va)) (xj (car vb)) (yj (cdr vb)))
+        (when (and (not (eq (> yi fy) (> yj fy)))
+                   (< fx (+ xi (/ (* (- xj xi) (- fy yi)) (- yj yi)))))
+          (setf inside (not inside)))))))
+
 (defun region-contains-f (rg fx fy)
-  "True when the FLOAT point (FX FY) lies inside rounded region RG (rect minus the four
-elliptical corner cut-outs, CSS Backgrounds 3 §5.5)."
+  "True when the FLOAT point (FX FY) lies inside region RG.  A 12-element simple-vector
+is a rounded rect (rect minus four elliptical corner cut-outs, CSS Backgrounds 3 §5.5);
+a CONS is a clip-path basic shape (CSS Masking 1): (:circle cx cy rx ry) an ellipse
+region, (:polygon x0 y0 x1 y1 pts) an even-odd polygon within its bounding box."
+  (when (consp rg)
+    (return-from region-contains-f
+      (case (car rg)
+        (:circle (let ((cx (second rg)) (cy (third rg)) (rx (fourth rg)) (ry (fifth rg)))
+                   (and (> rx 0.0) (> ry 0.0)
+                        (let ((u (/ (- fx cx) rx)) (v (/ (- fy cy) ry)))
+                          (<= (+ (* u u) (* v v)) 1.0)))))
+        (:polygon (let ((x0 (second rg)) (y0 (third rg)) (x1 (fourth rg)) (y1 (fifth rg)))
+                    (and (>= fx x0) (< fx x1) (>= fy y0) (< fy y1)
+                         (point-in-poly-f (sixth rg) fx fy))))
+        (t nil))))
   (let ((x0 (svref rg 0)) (y0 (svref rg 1)) (x1 (svref rg 2)) (y1 (svref rg 3)))
     (and (>= fx x0) (< fx x1) (>= fy y0) (< fy y1)
          (not (corner-cuts-p (- (+ x0 (svref rg 4)) fx) (- (+ y0 (svref rg 5)) fy)   ; TL

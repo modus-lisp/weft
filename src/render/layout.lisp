@@ -4432,6 +4432,66 @@ given the border-box RADII, or NIL if no rounding remains after insetting."
                (pb (if content (max 0 (css::resolve-pad (css:cstyle-padding-bottom cs) nil)) 0)))
           (round-region x0 y0 x1 y1 (inset-radii radii (+ bl pl) (+ bt pt) (+ br pr) (+ bb pb)))))))
 
+(defun clip-lp-px (v ref &optional (origin 0.0))
+  "Resolve a clip-path length-percentage V (px float | (:pct . N)) to a device px
+coordinate: ORIGIN + px, or ORIGIN + N% of REF."
+  (+ origin (cond ((numberp v) (float v 1.0))
+                  ((and (consp v) (eq (car v) :pct)) (* (/ (cdr v) 100.0) (float ref 1.0)))
+                  (t 0.0))))
+
+(defun clip-shape-radius (spec ref-w ref-h cx cy x0 y0 x1 y1)
+  "Resolve a circle/ellipse <shape-radius> SPEC on the axis whose REF is REF-W (px |
+\(:pct . N) | :closest-side | :farthest-side).  CX/CY the centre, (X0 Y0 X1 Y1) the box."
+  (cond ((numberp spec) (float spec 1.0))
+        ((and (consp spec) (eq (car spec) :pct)) (* (/ (cdr spec) 100.0) (float ref-w 1.0)))
+        ((eq spec :closest-side) (min (abs (- cx x0)) (abs (- x1 cx))
+                                      (abs (- cy y0)) (abs (- y1 cy))))
+        ((eq spec :farthest-side) (max (abs (- cx x0)) (abs (- x1 cx))
+                                       (abs (- cy y0)) (abs (- y1 cy))))
+        (t 0.0)))
+
+(defun clip-path-region (lb spec)
+  "Build a *ROUND-CLIP* region for CS's clip-path SPEC over LB's border box (the
+default reference box), or NIL if it degenerates.  Lengths/percentages resolve here
+because the box geometry is only known at paint (CSS Masking 1 §clip-path)."
+  (let* ((x0 (float (lbox-x lb) 1.0)) (y0 (float (lbox-y lb) 1.0))
+         (w (float (lbox-w lb) 1.0)) (h (float (lbox-h lb) 1.0))
+         (x1 (+ x0 w)) (y1 (+ y0 h)))
+    (case (car spec)
+      (:inset
+       (destructuring-bind (top right bottom left) (cdr spec)
+         (let ((ix0 (clip-lp-px left w x0)) (iy0 (clip-lp-px top h y0))
+               (ix1 (- x1 (clip-lp-px right w))) (iy1 (- y1 (clip-lp-px bottom h))))
+           (when (and (< ix0 ix1) (< iy0 iy1))
+             (make-round-region ix0 iy0 ix1 iy1 #(0.0 0.0 0.0 0.0 0.0 0.0 0.0 0.0))))))
+      (:circle
+       (destructuring-bind (rad cx cy) (cdr spec)
+         (let* ((pcx (clip-lp-px cx w x0)) (pcy (clip-lp-px cy h y0))
+                ;; circle radius resolves against sqrt(w²+h²)/√2 for percentages
+                (r (cond ((and (consp rad) (eq (car rad) :pct))
+                          (* (/ (cdr rad) 100.0) (/ (sqrt (+ (* w w) (* h h))) (sqrt 2.0))))
+                         (t (clip-shape-radius rad w h pcx pcy x0 y0 x1 y1)))))
+           (when (> r 0.0) (list :circle pcx pcy (float r 1.0) (float r 1.0))))))
+      (:ellipse
+       (destructuring-bind (rx ry cx cy) (cdr spec)
+         (let* ((pcx (clip-lp-px cx w x0)) (pcy (clip-lp-px cy h y0))
+                (prx (clip-shape-radius rx w h pcx pcy x0 y0 x1 y1))
+                (pry (clip-shape-radius ry h w pcy pcx y0 x0 y1 x1)))
+           (when (and (> prx 0.0) (> pry 0.0))
+             (list :circle pcx pcy (float prx 1.0) (float pry 1.0))))))
+      (:polygon
+       (let* ((pts (cdr spec))
+              (v (map 'simple-vector
+                      (lambda (p) (cons (clip-lp-px (car p) w x0) (clip-lp-px (cdr p) h y0)))
+                      pts))
+              (bx0 x1) (by0 y1) (bx1 x0) (by1 y0))
+         (when (>= (length v) 3)
+           (loop for p across v do
+             (setf bx0 (min bx0 (car p)) by0 (min by0 (cdr p))
+                   bx1 (max bx1 (car p)) by1 (max by1 (cdr p))))
+           (list :polygon bx0 by0 (+ bx1 1.0) (+ by1 1.0) v))))
+      (t nil))))
+
 (defun fill-round-ring (cv outer inner color)
   "Fill the ring OUTER minus INNER (both rounded regions) with the uniform COLOR — a
 solid rounded border (§5.5).  INNER may be NIL (a filled rounded rect).  Hard-edged
@@ -5140,12 +5200,20 @@ mix(backdrop, blend(backdrop, source), coverage*ALPHA)."
            (op (and cs (let ((o (css:cstyle-opacity cs)))
                          (and (numberp o) (>= o 0.0) (< o 1.0) (float o 1.0)))))
            (fil (and cs (css:cstyle-filter cs)))
-           (blend (and cs (css:cstyle-mix-blend-mode cs))))
-      (cond (fil (paint-filtered cv lb fil (or op 1.0)))
-            (blend (paint-blended cv lb blend (or op 1.0)))
-            (op (if m (paint-transformed cv lb m op) (paint-opacity cv lb op)))
-            (m (paint-transformed cv lb m))
-            (t (%paint-box-content cv lb))))))
+           (blend (and cs (css:cstyle-mix-blend-mode cs)))
+           ;; clip-path (CSS Masking 1): a per-pixel clip region on this box + subtree,
+           ;; layered onto *ROUND-CLIP* around the whole paint (own box AND descendants).
+           (clip (and cs (css:cstyle-clip-path cs)))
+           (crg (and clip (clip-path-region lb clip))))
+      (flet ((body ()
+               (cond (fil (paint-filtered cv lb fil (or op 1.0)))
+                     (blend (paint-blended cv lb blend (or op 1.0)))
+                     (op (if m (paint-transformed cv lb m op) (paint-opacity cv lb op)))
+                     (m (paint-transformed cv lb m))
+                     (t (%paint-box-content cv lb)))))
+        (if crg
+            (let ((*round-clip* (cons crg *round-clip*))) (body))
+            (body))))))
 (defun %paint-box-content (cv lb)
   (when lb
     (case (lbox-kind lb)

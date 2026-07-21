@@ -4790,7 +4790,13 @@ ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
               (hoist (and cs (lbox-hoist-neg lb cs)))
               (kids (if hoist (remove-if (lambda (c) (member c hoist)) (lbox-children lb))
                         (lbox-children lb))))
-        (when (box-visible-p cs)
+        (let ((vis (box-visible-p cs)))
+         ;; visibility:hidden/collapse suppresses only THIS box's own rendering
+         ;; (background, border, image, marker, outline); its layout space and its
+         ;; descendants are unaffected, and a descendant may re-assert
+         ;; visibility:visible to paint (CSS 2.1 §11.2 — visibility is inherited but
+         ;; overridable).  So VIS gates the own-paint steps below while children
+         ;; (hoisted neg-z + the normal child pass) always recurse.
          ;; A negative z-index positioned child of a non-stacking-context box belongs
          ;; to the ancestor stacking context: paint it BEHIND this box's own
          ;; background/border (CSS 2.1 §9.9.1), then omit it from the normal child
@@ -4800,7 +4806,7 @@ ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
          ;; an inline — HN's <a><div class=votearrow>) can carry a NIL style: it
          ;; paints no background/border of its own, but its children MUST still
          ;; paint, so every style-dependent step is guarded by (when cs ...).
-         (when cs
+         (when (and cs vis)
            ;; box-shadow (CSS Backgrounds 3 §7): outset shadows paint BEHIND the box,
            ;; before its own background/border.  Gated on a non-NIL box-shadow slot, so
            ;; a box without box-shadow paints byte-identically.
@@ -4844,7 +4850,7 @@ ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
            ;; box-shadow (CSS Backgrounds 3 §7): inset shadows paint OVER the background,
            ;; clipped to the padding box, under the box's border and content.
            (when (css:cstyle-box-shadow cs) (paint-box-shadows cv lb cs t)))
-         (when (lbox-img lb)
+         (when (and vis (lbox-img lb))
            (let ((fit (and cs (css:cstyle-object-fit cs))))
              (if (and fit (not (string= fit "fill")))
                  (multiple-value-bind (ox oy ow oh src)
@@ -4856,10 +4862,10 @@ ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
                            (round (lbox-w lb)) (round (lbox-h lb))))))
          ;; Replaced vector content (inline <svg>, <canvas>): composite over the
          ;; box's background, under its borders.
-         (when (lbox-vpaint lb)
+         (when (and vis (lbox-vpaint lb))
            (funcall (lbox-vpaint lb) cv (round (lbox-x lb)) (round (lbox-y lb))
                     (round (lbox-w lb)) (round (lbox-h lb))))
-         (when cs
+         (when (and cs vis)
            (paint-borders cv lb cs)
            (when (and (lbox-marker lb) (plusp (length (marker-glyph (lbox-marker lb)))))
              ;; the list marker (•, disc/circle/square) is painted via scribe so the
@@ -4918,7 +4924,7 @@ ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
              (paint-children cv kids))
          ;; outline paints on top of the box + descendants, and is NOT clipped by
          ;; this box's own overflow (CSS-UI §outline; CSS 2.1 appendix E step 10).
-         (when cs (paint-outline cv lb cs)))))
+         (when (and cs vis) (paint-outline cv lb cs)))))
       (:line
        (loop for cell on (lbox-children lb)
              for it = (car cell)

@@ -818,6 +818,21 @@ semantics handled elsewhere."
   "Remove invisible bidi/format controls from S (see FORMAT-CONTROL-P)."
   (if (find-if #'format-control-p s) (remove-if #'format-control-p s) s))
 
+(defun expand-tabs (s start-col &optional (tabsize 8))
+  "Expand each tab in S to the spaces needed to reach the next TABSIZE-column tab
+stop, counting characters from START-COL (CSS white-space:pre uses tab-size 8 by
+default).  Returns (values expanded-string end-col).  Only touches strings that
+actually contain a tab, so the common no-tab pre line is returned unchanged."
+  (if (find #\Tab s)
+      (let ((out (make-string-output-stream)) (col start-col))
+        (loop for c across s do
+          (if (char= c #\Tab)
+              (let ((n (- tabsize (mod col tabsize))))
+                (dotimes (k n) (write-char #\Space out)) (incf col n))
+              (progn (write-char c out) (incf col))))
+        (values (get-output-stream-string out) col))
+      (values s (+ start-col (length s)))))
+
 (defun lang-prefix-p (lang code)
   "T if the (already lowercased) LANG is CODE or a CODE-prefixed subtag (e.g.
 \"tr\" matches \"tr\" and \"tr-tr\")."
@@ -1905,21 +1920,25 @@ Returns (values lbox advance-height)."
         ;; run per line, identical to before).
         (let* ((segs (collect-styled node styles cs)) (yy cy)
                (lh (max *font-h* (round (used-line-height cs))))
-               (frags '()) (lx cx))
+               (frags '()) (lx cx) (col 0))
           (labels ((emit-line ()
                      (push (make-lbox :x cx :y yy :w content-w :h lh :kind :line
                                       :children (nreverse frags))
                            children)
-                     (setf frags '() lx cx) (incf yy lh) (incf content-h lh)))
+                     (setf frags '() lx cx col 0) (incf yy lh) (incf content-h lh)))
             (dolist (seg segs)
               (destructuring-bind (txt st snode) seg
-                (loop for raw in (split-newlines txt) for i from 0
-                      for part = (strip-format-controls raw) do
-                  (when (plusp i) (emit-line))                 ; newline -> next line
-                  (when (plusp (length part))
+                (loop for raw in (split-newlines txt) for i from 0 do
+                  (when (plusp i) (emit-line))                 ; newline -> next line (resets COL)
+                  ;; expand tabs to the next 8-column stop (COL tracks the visual
+                  ;; column across styled runs on this line), then drop controls.
+                  (let ((part (multiple-value-bind (ex nc)
+                                  (expand-tabs (strip-format-controls raw) col)
+                                (setf col nc) ex)))
+                   (when (plusp (length part))
                     (let ((ww (word-w part st)))
                       (push (make-frag :x lx :w ww :text part :style st :node snode) frags)
-                      (incf lx ww))))))
+                      (incf lx ww)))))))
             (emit-line)))
         (let* ((content-final (if (numberp exp-h)
                                   (if border-box (- exp-h pt pb bt bb) exp-h)  ; explicit height wins (§10.7)

@@ -41,6 +41,7 @@
            #:cstyle-row-gap #:cstyle-column-gap
            #:cstyle-column-count #:cstyle-column-width #:cstyle-column-fill
            #:cstyle-column-span #:cstyle-column-height #:cstyle-column-wrap
+           #:cstyle-column-rule-width #:cstyle-column-rule-style #:cstyle-column-rule-color
            #:cstyle-transform #:cstyle-transform-origin #:cstyle-perspective #:cstyle-backface-visibility
            #:cstyle-translate #:cstyle-rotate #:cstyle-scale #:cstyle-effective-transform
            #:cstyle-counter-reset #:cstyle-counter-increment

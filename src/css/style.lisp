@@ -70,6 +70,9 @@
   ;; CSS Multi-column (css3-multicol): NIL count/width = auto.
   (column-count nil) (column-width nil) (column-fill "balance")
   (column-span "none")                    ; none | all (a spanner interrupts the columns)
+  ;; column-rule: a line drawn in each column gap (css3-multicol §7).  Width/style/
+  ;; color like a border-* ; NIL color = use the element's `color`.
+  (column-rule-width 3.0) (column-rule-style "none") (column-rule-color nil)
   ;; CSS Multicol Level 2 (column-height / column-wrap): stored only to detect that
   ;; an L2 feature is in play so the L1 column flow can decline to fragment it.
   (column-height nil) (column-wrap nil)
@@ -2248,6 +2251,24 @@ values (so a single-layer background is unaffected)."
         ((string= prop "column-fill")
          (let ((v (string-downcase (string-trim '(#\Space) value))))
            (when (member v '("balance" "auto") :test #'string=) (setf (cstyle-column-fill cs) v))))
+        ((string= prop "column-rule-width")
+         (let ((w (resolve-border-width-token (string-trim '(#\Space) value) fs)))
+           (when w (setf (cstyle-column-rule-width cs) (float w)))))
+        ((string= prop "column-rule-style")
+         (when (border-style-token-p value)
+           (setf (cstyle-column-rule-style cs) (string-downcase (string-trim '(#\Space) value)))))
+        ((string= prop "column-rule-color")
+         (let ((c (resolve-border-color value cs))) (when c (setf (cstyle-column-rule-color cs) c))))
+        ((string= prop "column-rule")   ; shorthand: <width> || <style> || <color>
+         (dolist (tok (split-tokens (string-trim '(#\Space) value)))
+           (cond ((border-style-token-p tok)
+                  (setf (cstyle-column-rule-style cs) (string-downcase tok)))
+                 ((member (string-downcase tok) '("thin" "medium" "thick") :test #'string=)
+                  (setf (cstyle-column-rule-width cs) (float (resolve-border-width-token tok fs))))
+                 ((resolve-len tok fs)
+                  (setf (cstyle-column-rule-width cs) (float (resolve-len tok fs))))
+                 ((resolve-border-color tok cs)
+                  (setf (cstyle-column-rule-color cs) (resolve-border-color tok cs))))))
         ((string= prop "columns")   ; shorthand: <column-width> || <column-count>
          (let ((parts (remove "" (split-ws (string-downcase (string-trim '(#\Space) value))) :test #'string=)))
            (dolist (p parts)

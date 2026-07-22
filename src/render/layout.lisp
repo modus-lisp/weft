@@ -4257,18 +4257,41 @@ in-view set (INVIEW-LAZY-IMAGE-URLS) and warms it concurrently binds this NIL fo
 that probe layout, so the slow fetches don't serialise on the layout thread, then T
 for the final layout that fills the boxes from the now-warm cache.")
 
+(defparameter *lazy-image-overscan* 200.0
+  "Extra px ABOVE the current scroll offset within which a deferred loading=lazy <img>
+is still kept loaded, so an image just scrolled a little past the top edge doesn't
+un-load.  Only applies once scrolled (*LAZY-SCROLL-Y* > 0); at the top of the document
+the in-view band has no upper edge above it, so the unscrolled behaviour is unchanged.")
+
+(defvar *lazy-scroll-y* 0.0
+  "The viewport's current scroll offset (document px) the in-view loading=lazy band is
+measured from.  0 (the default) is the top-of-document assumption — the standalone /
+reader raster path — where the band is [0, FOLD + *LAZY-IMAGE-LOOKAHEAD*], exactly the
+original behaviour.  An interactive host (loom's glass driver) rebinds this to the live
+scroll-y so scrolling down pulls the images that enter [scroll-y - *LAZY-IMAGE-OVERSCAN*,
+scroll-y + FOLD + *LAZY-IMAGE-LOOKAHEAD*] into the load band — like a real browser.")
+
 (defun map-inview-lazy-imgs (root fold fn)
   "Call FN with each deferred loading=lazy <img> box in ROOT whose document top is
-within FOLD + *LAZY-IMAGE-LOOKAHEAD* and whose content bitmap is still empty — the
-in-view band that should load, per HTML §lazy-loading.  FOLD NIL (no viewport, a
-pure reader render) puts the whole document in-band (no deferral)."
-  (let ((limit (if fold (+ fold *lazy-image-lookahead*) most-positive-fixnum)))
+within the scroll-relative in-view band and whose content bitmap is still empty — the
+band that should load, per HTML §lazy-loading.  The band is [*LAZY-SCROLL-Y* -
+*LAZY-IMAGE-OVERSCAN*, *LAZY-SCROLL-Y* + FOLD + *LAZY-IMAGE-LOOKAHEAD*]; at the default
+scroll-y 0 the lower edge is dropped so the band is exactly [-inf, FOLD + lookahead] —
+the original unscrolled behaviour.  FOLD NIL (no viewport, a pure reader render) puts
+the whole document in-band (no deferral)."
+  (let ((hi (if fold (+ *lazy-scroll-y* fold *lazy-image-lookahead*) most-positive-fixnum))
+        ;; Only clamp the bottom of the band once scrolled: at the document top the
+        ;; original pass had no lower edge, so a box with a negative top (negative
+        ;; margins) still loaded — keep that exactly when *LAZY-SCROLL-Y* is 0.
+        (lo (if (and fold (plusp *lazy-scroll-y*))
+                (- *lazy-scroll-y* *lazy-image-overscan*)
+                most-negative-fixnum)))
     (labels ((walk (lb)
                (when (typep lb 'lbox)
                  (let ((node (lbox-node lb)))
                    (when (and node (string-equal (h:dnode-name node) "img")
                               (img-loading-lazy-p node)
-                              (<= (lbox-y lb) limit))
+                              (<= lo (lbox-y lb) hi))
                      ;; the img's decoded bitmap lives on its (single) content child;
                      ;; only act while it is still empty (never re-touch an eager fill).
                      (let ((c (find-if #'lbox-p (lbox-children lb))))

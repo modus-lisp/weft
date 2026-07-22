@@ -46,8 +46,28 @@ whole so their inner commas/spaces survive."
                         (if (realp v) v 0))))
       (t (let ((px (css::resolve-len tok fs))) (if (numberp px) (list :fixed px) '(:auto)))))))
 
-(defun grid-parse-track-list (str fs)
-  "Expand a grid-template-* string into a flat list of track specs."
+(defun grid-auto-repeat-count (sub avail gap)
+  "Repetition count for repeat(auto-fill|auto-fit, SUB) that fits in AVAIL px with
+GAP between tracks (CSS Grid §7.2.3).  SUB must be fixed/percent tracks; falls back
+to 1 when the axis size is indefinite or a sub track is not fixed-size."
+  (let ((sizes (mapcar (lambda (s) (case (car s)
+                                     (:fixed (float (second s)))
+                                     (:percent (and (numberp avail) (* avail (/ (second s) 100.0))))
+                                     (:minmax (case (car (second s))   ; auto-fill uses the min sizing fn
+                                                (:fixed (float (second (second s))))
+                                                (:percent (and (numberp avail) (* avail (/ (second (second s)) 100.0))))
+                                                (t nil)))
+                                     (t nil)))
+                       sub)))
+    (if (and (numberp avail) sub (every #'identity sizes))
+        (let* ((rep-size (+ (reduce #'+ sizes) (* gap (max 0 (1- (length sub))))))
+               (per (+ rep-size gap)))
+          (if (plusp per) (max 1 (floor (+ avail gap) per)) 1))
+        1)))
+
+(defun grid-parse-track-list (str fs &optional avail (gap 0.0))
+  "Expand a grid-template-* string into a flat list of track specs.  AVAIL (the
+axis's definite content size) and GAP resolve repeat(auto-fill|auto-fit)."
   (when (and str (plusp (length str)))
     (let ((out '()))
       (dolist (tok (grid-split-top-level str))
@@ -55,10 +75,14 @@ whole so their inner commas/spaces survive."
           (cond
             ((and (>= (length low) 7) (string= (subseq low 0 7) "repeat("))
              ;; repeat(N, <track-list>) — count then the sub-list, expanded N times.
+             ;; N may be auto-fill / auto-fit (resolved from AVAIL/GAP).
              (let* ((inner (subseq tok 7 (max 7 (1- (length tok)))))
                     (comma (position #\, inner))
-                    (count (max 1 (or (and comma (ignore-errors (parse-integer (subseq inner 0 comma) :junk-allowed t))) 1)))
-                    (sub (and comma (grid-parse-track-list (subseq inner (1+ comma)) fs))))
+                    (count-str (and comma (string-downcase (string-trim '(#\Space) (subseq inner 0 comma)))))
+                    (sub (and comma (grid-parse-track-list (subseq inner (1+ comma)) fs)))
+                    (count (cond ((and count-str (member count-str '("auto-fill" "auto-fit") :test #'string=))
+                                  (grid-auto-repeat-count sub avail gap))
+                                 (t (max 1 (or (and comma (ignore-errors (parse-integer count-str :junk-allowed t))) 1))))))
                (dotimes (i count) (dolist (s sub) (push s out)))))
             ((and (>= (length low) 7) (string= (subseq low 0 7) "minmax("))
              (let* ((inner (subseq tok 7 (max 7 (1- (length tok)))))
@@ -257,9 +281,13 @@ used to place items that name an area with `grid-area`."
                     (cond
                       ((and row-def col-def) (values r0 c0))
                       (col-def (loop for r from 0 when (freep r c0 cspan rspan) return (values r c0)))
-                      (row-def (or (loop for c from 0 to (- ncols cspan)
-                                         when (freep r0 c cspan rspan) return (values r0 c))
-                                   (values r0 0)))
+                      ;; NB: keep the column search's result as a SINGLE value — an
+                      ;; (or (loop ... return (values r0 c)) ...) would drop c (OR only
+                      ;; forwards multiple values from its last form), mis-placing any
+                      ;; item with an explicit grid-row but auto column.
+                      (row-def (let ((fc (loop for c from 0 to (- ncols cspan)
+                                               when (freep r0 c cspan rspan) return c)))
+                                 (values r0 (or fc 0))))
                       ;; grid-auto-flow:column — fill down each column (through NROWS)
                       ;; then advance to the next, growing implicit columns.
                       ((and col-flow (not row-def) (not col-def))
@@ -329,9 +357,10 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
          ;; (CSS Box Alignment §8.3); an indefinite row basis yields 0.
          (cgap (css::resolve-gap (css:cstyle-column-gap base-cs) content-w))
          (rgap (css::resolve-gap (css:cstyle-row-gap base-cs) (and (numberp avail-h) avail-h)))
-         (col-specs (or (grid-parse-track-list (css:cstyle-grid-template-columns base-cs) fs)
+         (col-specs (or (grid-parse-track-list (css:cstyle-grid-template-columns base-cs) fs content-w cgap)
                         '((:auto))))
-         (row-specs (grid-parse-track-list (css:cstyle-grid-template-rows base-cs) fs))
+         (row-specs (grid-parse-track-list (css:cstyle-grid-template-rows base-cs) fs
+                                           (and (numberp avail-h) avail-h) rgap))
          (col-flow (let ((f (css:cstyle-grid-auto-flow base-cs))) (and f (string= f "column"))))
          (nrows-tpl (max 1 (length row-specs)))
          (auto-row (first (grid-parse-track-list (css:cstyle-grid-auto-rows base-cs) fs)))
@@ -452,6 +481,22 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
                   (let ((unit (/ free sum-fr)))
                     (loop for r below nrows when (aref rflex r) do
                       (incf (aref rbase r) (* unit (aref rflex r))))))))
+            ;; Stretch auto rows to a definite height (CSS Grid §11.8), mirroring the
+            ;; column auto-track stretch: with no fr row and a normal/stretch
+            ;; align-content, share the leftover block space equally among auto-max
+            ;; rows so a single implicit/auto row grows to the grid's height instead
+            ;; of collapsing to its (often zero) content height.
+            (when (and (numberp avail-h)
+                       (grid-stretch-dist-p (css:cstyle-align-content base-cs))
+                       (notany #'identity (coerce rflex 'list)))
+              (let* ((used (+ (loop for r below nrows sum (aref rbase r)) (* rgap (max 0 (1- nrows)))))
+                     (free2 (max 0.0 (- avail-h used)))
+                     (autos (loop for r below nrows
+                                  for spec = (or (nth r row-specs) auto-row '(:auto))
+                                  when (grid-auto-max-p spec) collect r)))
+                (when (and (plusp free2) autos)
+                  (let ((unit (/ free2 (length autos))))
+                    (dolist (r autos) (incf (aref rbase r) unit))))))
             ;; row top offsets, applying align-content distribution over the
             ;; leftover block space when the grid has a definite height (CSS Align 3).
             (let* ((row-used (+ (loop for r below nrows sum (aref rbase r)) (* rgap (max 0 (1- nrows)))))

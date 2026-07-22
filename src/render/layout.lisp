@@ -2870,7 +2870,17 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                       (when (string= wrap "wrap-reverse") (setf laid (nreverse laid)))
                       (let* ((nlines (length laid))
                              (total (+ (reduce #'+ (mapcar #'cdr laid)) (* cross-gap (max 0 (1- nlines)))))
-                             (ac (css:cstyle-align-content base-cs))
+                             ;; wrap-reverse also flips the cross-start/-end EDGES for
+                             ;; align-content (CSS Flexbox §5.3/§8.3): the reversed line
+                             ;; list packs from the (now bottom) cross-start, so a
+                             ;; flex-start line-set lands at the bottom.  Swap the
+                             ;; start/end keyword so leading/between compute on that edge.
+                             (ac (let ((ac0 (css:cstyle-align-content base-cs)))
+                                   (if (string= wrap "wrap-reverse")
+                                       (cond ((member ac0 '("flex-start" "start") :test #'string=) "flex-end")
+                                             ((member ac0 '("flex-end" "end") :test #'string=) "flex-start")
+                                             (t ac0))
+                                       ac0)))
                              (extra (if (numberp avail-h) (max 0 (- avail-h total)) 0))
                              (lead (cond ((<= extra 0) 0)
                                          ((member ac '("flex-end" "end") :test #'string=) extra)
@@ -2969,7 +2979,28 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                                   sum (+ (if (and is (css:cstyle-margin-top-auto is)) 1 0)
                                          (if (and is (css:cstyle-margin-bottom-auto is)) 1 0))))
                    (auto-unit (if (and (> n-mauto 0) (> free 0)) (/ free n-mauto) 0))
-                   (y cy))
+                   ;; column main-axis packing (CSS Flexbox §8.2): distribute the free
+                   ;; block space per justify-content.  *-reverse makes main-start the
+                   ;; BOTTOM edge, so flex-start packs the run at the bottom.  Auto
+                   ;; margins (auto-unit>0) already absorbed the free space -> pack at cy.
+                   (rev (string= dir "column-reverse"))
+                   (mauto (> auto-unit 0))
+                   (jstart (cond (mauto cy)
+                                 ((string= justify "center") (+ cy (/ free 2)))
+                                 ((member justify '("flex-end" "end") :test #'string=)
+                                  (if rev cy (+ cy free)))
+                                 ((member justify '("flex-start" "start") :test #'string=)
+                                  (if rev (+ cy free) cy))
+                                 ((member justify '("space-between" "space-around" "space-evenly") :test #'string=) cy)
+                                 (t (if rev (+ cy free) cy))))
+                   (jbetween (cond (mauto 0)
+                                   ((and (string= justify "space-between") (> nitems 1)) (/ free (1- nitems)))
+                                   ((string= justify "space-around") (/ free nitems))
+                                   ((string= justify "space-evenly") (/ free (1+ nitems)))
+                                   (t 0)))
+                   (y (cond ((and (not mauto) (string= justify "space-around")) (+ jstart (/ jbetween 2)))
+                            ((and (not mauto) (string= justify "space-evenly")) (+ jstart jbetween))
+                            (t jstart))))
               (loop for lb in boxes for h in tgt for it in items
                     for is = (st styles it)
                     for mt = (if (and is (not (css:cstyle-margin-top-auto is))) (css:cstyle-margin-top is) 0)
@@ -2997,9 +3028,9 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                            (shift-box lb (round (- content-w (lbox-w lb))) 0))
                           ((string= a "stretch")
                            (when (null (css:cstyle-width s)) (setf (lbox-w lb) content-w))))))
-                (incf y (+ mt h mb gap))
+                (incf y (+ mt h mb gap jbetween))
                 (when (and (> auto-unit 0) is (css:cstyle-margin-bottom-auto is)) (incf y auto-unit)))
-              (values (remove nil boxes) (max 0 (- y cy gap)))))))))
+              (values (remove nil boxes) (max 0 (- y cy gap jbetween)))))))))
 
 (defun cell-like-p (c styles)
   "True when child C of a table participates as a cell — i.e. it is not itself an

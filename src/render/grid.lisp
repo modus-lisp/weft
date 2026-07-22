@@ -357,14 +357,17 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
          ;; (CSS Box Alignment §8.3); an indefinite row basis yields 0.
          (cgap (css::resolve-gap (css:cstyle-column-gap base-cs) content-w))
          (rgap (css::resolve-gap (css:cstyle-row-gap base-cs) (and (numberp avail-h) avail-h)))
+         (auto-row (first (grid-parse-track-list (css:cstyle-grid-auto-rows base-cs) fs)))
+         (auto-col (first (grid-parse-track-list (css:cstyle-grid-auto-columns base-cs) fs)))
+         ;; With NO explicit grid-template-columns every column is implicit and is
+         ;; sized by grid-auto-columns (CSS Grid §7.5); fall back to that single track
+         ;; rather than a bare (:auto) so grid-auto-flow:column honours auto-columns.
          (col-specs (or (grid-parse-track-list (css:cstyle-grid-template-columns base-cs) fs content-w cgap)
-                        '((:auto))))
+                        (list (or auto-col '(:auto)))))
          (row-specs (grid-parse-track-list (css:cstyle-grid-template-rows base-cs) fs
                                            (and (numberp avail-h) avail-h) rgap))
          (col-flow (let ((f (css:cstyle-grid-auto-flow base-cs))) (and f (string= f "column"))))
          (nrows-tpl (max 1 (length row-specs)))
-         (auto-row (first (grid-parse-track-list (css:cstyle-grid-auto-rows base-cs) fs)))
-         (auto-col (first (grid-parse-track-list (css:cstyle-grid-auto-columns base-cs) fs)))
          (items (remove-if-not
                  (lambda (k) (let ((c (st styles k))) (and c (not (string= (css:cstyle-display c) "none")))))
                  (child-elements node))))

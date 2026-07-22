@@ -2634,7 +2634,31 @@ the content before moving on).  Returns (values column-boxes content-height)."
                         (incf col) (setf col-top (lbox-y c)))
                       (shift-box c (* col (+ colw gap)) (- cy col-top))
                       (setf maxh (max maxh (- (+ (lbox-y c) (lbox-h c)) cy)))))
-                  (values kids maxh))))))))
+                  (values (append kids (multicol-rule-boxes base-cs cx cy colw gap (1+ col) maxh))
+                          maxh))))))))
+
+(defun multicol-rule-boxes (base-cs cx cy colw gap ncol maxh)
+  "Synthetic solid lboxes for column-rule, one centered in each interior gap
+between NCOL used columns (css3-multicol §7).  NIL when the rule doesn't paint
+(style none/hidden, zero width, or a single column).  The rule sits in the gap and
+takes no layout space; only the solid style is drawn (dashed/dotted approximate to
+solid — a visible rule is better than none)."
+  (let ((style (css:cstyle-column-rule-style base-cs))
+        (rw (css:cstyle-column-rule-width base-cs)))
+    (when (and (> ncol 1) (> rw 0) (css::border-edge-painted-p style)
+               (not (string-equal style "none")))
+      (let* ((color (or (css:cstyle-column-rule-color base-cs) (css:cstyle-color base-cs) '(0 0 0 1.0)))
+             (col4 (if (>= (length color) 4) color (append color '(1.0))))
+             (boxes '()))
+        (loop for i from 1 below ncol do
+          (let* ((gap-left (+ cx (* i colw) (* (1- i) gap)))
+                 (center (+ gap-left (/ gap 2.0)))
+                 (rx (- center (/ rw 2.0)))
+                 (cs (css::make-cstyle)))
+            (setf (css:cstyle-background cs) col4)
+            (push (make-lbox :x (round rx) :y (round cy) :w (max 1 (round rw))
+                             :h (round maxh) :style cs :kind :block) boxes)))
+        (nreverse boxes)))))
 
 (defun anon-flex-item (kids ref styles)
   "A synthetic block-level flex item wrapping a contiguous run of text/inline content

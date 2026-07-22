@@ -1601,9 +1601,13 @@ values (so a single-layer background is unaffected)."
                (mapcar (lambda (op) (cons (car op) (if (eq (cdr op) :default) 1 (cdr op))))
                        (parse-counter-ops value))))
         ((string= prop "color")
-         (if (string-equal (string-trim '(#\Space) value) "inherit")
-             (when parent-cs (setf (cstyle-color cs) (cstyle-color parent-cs)))   ; a{color:inherit} resets the UA link colour
-             (let ((c (resolve-color value))) (when c (setf (cstyle-color cs) c)))))
+         (let ((v (string-downcase (string-trim '(#\Space) value))))
+           (cond ;; color is inherited, so inherit AND unset take the parent colour
+                 ;; (CSS Cascade 5: unset == inherit on an inherited property).
+                 ((and parent-cs (member v '("inherit" "unset") :test #'string=))
+                  (setf (cstyle-color cs) (cstyle-color parent-cs)))   ; a{color:inherit} resets the UA link colour
+                 ((string= v "initial") (setf (cstyle-color cs) '(0 0 0 1.0)))
+                 (t (let ((c (resolve-color value))) (when c (setf (cstyle-color cs) c)))))))
         ((member prop '("background-color" "background" "background-image") :test #'string=)
          (let ((grad (parse-gradient value fs))
                (url (extract-css-url value))
@@ -1620,7 +1624,18 @@ values (so a single-layer background is unaffected)."
                                     (remove "url" (css-background-tokens value) :test #'string=))
                           2))
              (return-from apply-decl))
-           (cond (grad (setf (cstyle-bg-gradient cs) grad)
+           (cond ;; CSS-wide keywords.  background* is NOT inherited, so initial /
+                 ;; unset / revert all reset it to the UA value (transparent for a
+                 ;; plain element) — clearing every background layer (CSS Cascade 5).
+                 ((member tok '("initial" "unset" "revert") :test #'string=)
+                  (setf (cstyle-background cs) nil (cstyle-bg-gradient cs) nil
+                        (cstyle-bg-image cs) nil (cstyle-bg-extra-layers cs) nil))
+                 ((and (string= tok "inherit") parent-cs)
+                  (setf (cstyle-background cs) (cstyle-background parent-cs)
+                        (cstyle-bg-gradient cs) (cstyle-bg-gradient parent-cs)
+                        (cstyle-bg-image cs) (cstyle-bg-image parent-cs)
+                        (cstyle-bg-extra-layers cs) (cstyle-bg-extra-layers parent-cs)))
+                 (grad (setf (cstyle-bg-gradient cs) grad)
                        ;; multi-layer background (comma list): PARSE-GRADIENT returned the
                        ;; FIRST (top) layer.  When the LAST (bottom) layer is a solid
                        ;; FULL-BOX gradient, fold its color into background-color so it
@@ -1642,6 +1657,13 @@ values (so a single-layer background is unaffected)."
                  ((member tok '("none" "transparent") :test #'string=)
                   (setf (cstyle-background cs) nil (cstyle-bg-gradient cs) nil (cstyle-bg-image cs) nil
                         (cstyle-bg-extra-layers cs) nil))
+                 ;; `currentColor` background resolves to the element's used `color`,
+                 ;; which is not final until the cascade completes — stash a sentinel
+                 ;; and resolve it in RESOLVE-CURRENTCOLOR-BG after the element's style
+                 ;; is fully computed (CSS Color 4 §currentColor).
+                 ((some (lambda (tk) (string-equal (string-trim '(#\Space) tk) "currentcolor"))
+                        (css-background-tokens value))
+                  (setf (cstyle-background cs) :currentcolor))
                  ;; the colour can sit anywhere in the shorthand, not just first —
                  ;; `background: url(…) no-repeat 1px white` still sets the bg colour.
                  (t (let ((c (some #'resolve-color (css-background-tokens value))))
@@ -2579,7 +2601,10 @@ this is applied before author rules."
   "Substitute var(--name[, fallback]) in VALUE using VARS (a hash --name -> string),
    resolving recursively; an unresolved var with no fallback yields empty (so the
    declaration usually becomes invalid, per CSS).  VARS may be NIL."
-  (if (or (null vars) (null (search "var(" value)))
+  ;; Even with no custom-property environment (VARS NIL) a var() with a fallback
+  ;; must still resolve to that fallback (CSS Variables §3), so only the absence of
+  ;; any var() short-circuits.
+  (if (null (search "var(" value))
       value
       (with-output-to-string (out)
         (let ((i 0) (n (length value)))
@@ -2600,7 +2625,7 @@ this is applied before author rules."
                                 (comma (position #\, inner))
                                 (name (string-trim '(#\Space #\Tab) (subseq inner 0 (or comma (length inner)))))
                                 (fb (and comma (string-trim '(#\Space #\Tab) (subseq inner (1+ comma)))))
-                                (v (gethash name vars)))
+                                (v (and vars (gethash name vars))))
                            (write-string (cond (v v) (fb (resolve-vars fb vars)) (t "")) out)
                            ;; var() is a whole token; a following token may abut the
                            ;; `)` with no space (minified `var(--p-margin-y)0`), so
@@ -2867,6 +2892,13 @@ true against its nearest matching ancestor query container."
              (and anc (eq :true (cq-eval (cdr q) (cdddr anc))))))
          cq))
 
+(defun resolve-currentcolor-bg (cs)
+  "Resolve a deferred `background-color:currentColor` sentinel to the element's
+final used `color` (CSS Color 4).  A no-op unless the sentinel is present."
+  (when (eq (cstyle-background cs) :currentcolor)
+    (setf (cstyle-background cs) (cstyle-color cs)))
+  cs)
+
 (defun compute-styles (document stylesheet &optional container-sizes)
   "Compute a CSTYLE for every element under DOCUMENT, applying STYLESHEET (a list
 of CSS-RULEs).  Returns a hash-table element->CSTYLE.  When CONTAINER-SIZES (a
@@ -2918,6 +2950,7 @@ measured containers; otherwise their declarations are held back (not-yet-resolve
                                     "table-row" "table-cell" "table-caption")
                                 :test #'string=)
                         (setf (cstyle-display cs) "block"))))
+                   (resolve-currentcolor-bg cs)
                    (and (cstyle-content cs) cs))))
              (fragment-style (parent-cs matched vars)
                "Build a CSTYLE for a ::first-letter/::first-line fragment (inherits
@@ -2932,6 +2965,7 @@ content gate — the fragment styles a slice of the element's own text."
                      (dolist (d (third m))
                        (unless (custom-prop-p (css-decl-prop d))
                          (apply-decl cs (css-decl-prop d) (resolve-vars (css-decl-value d) vars) parent-cs))))
+                   (resolve-currentcolor-bg cs)
                    cs)))
              (walk (n parent-cs parent-vars anc-bloom cq-anc)
                (when (eq (weft.html:dnode-kind n) :element)
@@ -3066,6 +3100,7 @@ content gate — the fragment styles a slice of the element's own text."
                                        :test #'string=)
                            (setf (cstyle-padding-top cs) 0.0 (cstyle-padding-bottom cs) 0.0
                                  (cstyle-padding-left cs) 0.0 (cstyle-padding-right cs) 0.0)))
+                       (resolve-currentcolor-bg cs)
                        (setf (gethash n styles) cs)
                        ;; generated content (computed after the element's own style is known)
                        (let ((bs (pseudo-style cs m-before vars)) (as (pseudo-style cs m-after vars))

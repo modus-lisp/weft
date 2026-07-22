@@ -1556,7 +1556,14 @@ transposed vertical flow does not yet place correctly, so it declines to transpo
   "A copy of CS with its physical box dimensions swapped, so the horizontal engine
 lays it out in the vertical box's logical frame; writing-mode is reset so the swapped
 subtree is not transposed again."
-  (let ((c (css::copy-cstyle cs)))
+  (let ((c (css::copy-cstyle cs))
+        ;; TRANSPOSE-TREE mirrors the block axis for vertical-rl (physical x =
+        ;; block-extent - ly - lh), so the logical-frame block-START edge (top) ends
+        ;; at the physical RIGHT.  The rotatefs below map physical left/right -> logical
+        ;; top/bottom (correct for vertical-lr); for vertical-rl the block-axis margins/
+        ;; padding/borders must additionally swap so physical-right (block-start) lands
+        ;; on the logical top, matching the mirror (CSS Writing Modes 4 §6.4).
+        (rl (string= (css:cstyle-writing-mode cs) "vertical-rl")))
     (rotatef (css:cstyle-width c) (css:cstyle-height c))
     (rotatef (css:cstyle-min-width c) (css:cstyle-min-height c))
     (rotatef (css:cstyle-max-width c) (css:cstyle-max-height c))
@@ -1569,6 +1576,11 @@ subtree is not transposed again."
     ;; absolute insets are logical too: block-start/inline-start map across axes.
     (rotatef (css:cstyle-top c) (css:cstyle-left c))
     (rotatef (css:cstyle-bottom c) (css:cstyle-right c))
+    (when rl
+      (rotatef (css:cstyle-margin-top c) (css:cstyle-margin-bottom c))
+      (rotatef (css:cstyle-padding-top c) (css:cstyle-padding-bottom c))
+      (rotatef (css:cstyle-border-top-width c) (css:cstyle-border-bottom-width c))
+      (rotatef (css:cstyle-top c) (css:cstyle-bottom c)))
     (setf (css:cstyle-writing-mode c) "horizontal-tb")
     c))
 (defun swap-all-styles (styles)

@@ -4076,12 +4076,20 @@ below existing floats if it does not fit.  Records it in *FLOATS*; returns its l
          (mb (css:cstyle-margin-bottom cs))
          (extra (+ (css::resolve-pad (css:cstyle-padding-left cs) content-w) (css::resolve-pad (css:cstyle-padding-right cs) content-w)
                    (used-border cs :l) (used-border cs :r)))
-         ;; AVAIL-W is the available content width handed to LAYOUT-NODE; for an
-         ;; auto-width float the box fills (avail - margins), so to shrink-wrap
-         ;; we size it to the float's preferred content width + its own
-         ;; padding/border/margins (CSS 10.3.5 shrink-to-fit), capped at content.
+         (border-box (equal (css:cstyle-box-sizing cs) "border-box"))
+         ;; AVAIL-W is the float's MARGIN-box width — used to test whether it fits
+         ;; in the current band (and, for an auto-width float, the content width
+         ;; handed to LAYOUT-NODE).  A definite `width` under box-sizing:border-box
+         ;; already includes the padding+border (EXTRA), so it must NOT be added on
+         ;; top again — else the box measures wider than it is.  Getting this right
+         ;; is what lets the negative-margin sidebar idiom (width:320px;
+         ;; margin-left:-320px; box-sizing:border-box) collapse to a zero-width
+         ;; margin box that sits beside a 100%-wide float instead of dropping below
+         ;; it (CSS 2.1 §9.5 / CSS Sizing 3 §box-sizing).  An auto-width float is
+         ;; shrink-wrapped to its preferred content width plus padding/border/margins
+         ;; (CSS 2.1 §10.3.5), capped at the available content width.
          (avail-w (let ((w (css:cstyle-width cs)))
-                    (if (numberp w) (+ w ml mr extra)
+                    (if (numberp w) (+ w ml mr (if border-box 0 extra))
                         (min content-w
                              (max 0 (+ (pref-content-width node styles content-w) extra ml mr))))))
          ;; A float with `clear` drops below the relevant existing floats before

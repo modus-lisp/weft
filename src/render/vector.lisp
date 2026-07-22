@@ -75,7 +75,12 @@ a replaced element composites over.  Out-of-bounds samples read white."
 composite it back — so transparent regions and anti-aliased edges blend with the
 page underneath."
   (when (and root (plusp w) (plusp h))
-    (let ((sc (%copy-region-to-scribe cv x y w h)))
+    (let ((sc (%copy-region-to-scribe cv x y w h))
+          ;; Composite vector fills in sRGB (gamma=1 power space = straight sRGB
+          ;; interpolation) to match Chrome's SVG alpha compositing; scribe's default
+          ;; opaque-canvas path blends in linear light, which over-lightens a
+          ;; semi-transparent fill (fill-opacity/opacity) vs Chrome.
+          (scribe::*blend-gamma* 1d0))
       (ignore-errors (st:render-svg-to-canvas root :width w :height h :canvas sc))
       (%blit-scribe cv sc x y))))
 

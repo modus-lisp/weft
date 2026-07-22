@@ -183,6 +183,17 @@
   ;; axis) that descendant @container rules resolve against.  CONTAINER-NAME is a
   ;; list of lowercased idents (NIL = unnamed).  Not inherited.
   (container-type "normal") (container-name nil)
+  ;; SVG paint (SVG 1.1 §11): fill/stroke are inherited properties, but weft stores
+  ;; them here NON-inherited (NIL = not declared on THIS element) so the SVG bridge
+  ;; can distinguish a CSS-cascaded value (which overrides a presentation attribute)
+  ;; from mere inheritance (which a presentation attribute overrides).  A value is
+  ;; :none | :currentcolor | an (r g b a) colour list | a raw string (e.g. url(#id)).
+  (fill nil) (stroke nil)
+  ;; Other SVG presentation properties (stroke-width, stroke-dasharray, stroke-linecap,
+  ;; fill-opacity, …) declared via page CSS: an alist (lowercased-name . raw-value-string),
+  ;; NIL = none.  NON-inherited (holds only values declared on THIS element); injected as
+  ;; attributes onto the stencil node so the SVG renderer applies them (and inherits per SVG).
+  (svg-props nil)
   (content nil))      ; generated-content string (or (:tmpl seg...) template) for ::before/::after (NIL = no box)
 
 ;; CSS Backgrounds 3 §3: one background-image layer.  IMAGE is (:gradient . grad) or
@@ -1727,6 +1738,30 @@ values (so a single-layer background is unaffected)."
                   (setf (cstyle-color cs) (cstyle-color parent-cs)))   ; a{color:inherit} resets the UA link colour
                  ((string= v "initial") (setf (cstyle-color cs) '(0 0 0 1.0)))
                  (t (let ((c (resolve-color value))) (when c (setf (cstyle-color cs) c)))))))
+        ;; SVG fill/stroke (SVG 1.1 §11) — cascaded onto SVG elements from page CSS.
+        ((member prop '("fill" "stroke") :test #'string=)
+         (let* ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value)))
+                (paint (cond ((member v '("none" "transparent") :test #'string=) :none)
+                             ((string= v "currentcolor") :currentcolor)
+                             ((and (>= (length v) 4) (string= (subseq v 0 4) "url(")) value)
+                             ((member v '("inherit" "unset" "initial") :test #'string=) nil)
+                             (t (resolve-color value)))))
+           (when paint
+             (if (string= prop "fill")
+                 (setf (cstyle-fill cs) paint)
+                 (setf (cstyle-stroke cs) paint)))))
+        ;; Other SVG presentation properties from page CSS (SVG 1.1 §11.4 / §13):
+        ;; kept as raw strings and injected as attributes for the stencil renderer.
+        ((member prop '("stroke-width" "stroke-dasharray" "stroke-dashoffset"
+                        "stroke-linecap" "stroke-linejoin" "stroke-miterlimit"
+                        "stroke-opacity" "fill-opacity" "fill-rule" "paint-order"
+                        "stop-color" "stop-opacity" "color-interpolation")
+                 :test #'string=)
+         (let ((v (string-trim '(#\Space #\Tab #\Newline #\Return) value)))
+           (unless (member (string-downcase v) '("inherit" "unset" "initial") :test #'string=)
+             (let ((cell (assoc prop (cstyle-svg-props cs) :test #'string=)))
+               (if cell (setf (cdr cell) v)
+                   (push (cons prop v) (cstyle-svg-props cs)))))))
         ((member prop '("background-color" "background" "background-image") :test #'string=)
          (let ((grad (parse-gradient value fs))
                (url (extract-css-url value))

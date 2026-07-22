@@ -4179,7 +4179,8 @@ container sizes stabilise.  Returns (values ROOT ADV STYLES)."
         (values root adv styles))))
 
 (defun layout-tree (document styles width &optional viewport-height scroll-to abs-vh)
-  (let* ((*floats* nil) (*abs-pending* nil) (*fixed-pending* nil)
+  (let* ((*svg-styles* styles)   ; expose the cascade to the inline-SVG bridge (CSS-cascaded fill/stroke/color)
+         (*floats* nil) (*abs-pending* nil) (*fixed-pending* nil)
          (*intrinsic-cache* (make-hash-table :test 'equal))
          ;; Lay out the ROOT element (<html>), not <body>: the root's own width /
          ;; border / margin / padding form the containing block for <body> (Acid3's

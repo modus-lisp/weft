@@ -27,20 +27,65 @@ name so the shapes are recognised."
   (let ((c (position #\: name)))
     (if c (subseq name (1+ c)) name)))
 
+(defvar *svg-styles* nil
+  "The page's cascade (element dnode -> CSTYLE) for the current layout pass, bound
+by LAYOUT-TREE.  Lets DNODE->SVG-NODE resolve CSS-cascaded fill/stroke/color onto
+inline-SVG elements (icon libraries: `.icon{fill:currentColor}`, `svg rect{fill:blue}`
+from page CSS) — which are otherwise invisible to the presentation-attribute bridge.")
+
+(defun %paint->attr (paint color)
+  "Render a cascaded SVG paint (see CSTYLE-FILL) back to a stencil attribute string.
+COLOR is the element's cascaded `color` (an (r g b a) list) for currentColor."
+  (cond ((eq paint :none) "none")
+        ((eq paint :currentcolor)
+         (if (and (consp color) (>= (length color) 3))
+             (format nil "rgb(~D,~D,~D)" (round (first color)) (round (second color)) (round (third color)))
+             "black"))
+        ((stringp paint) paint)                       ; url(#id) etc.
+        ((and (consp paint) (>= (length paint) 3))
+         (format nil "rgb(~D,~D,~D)" (round (first paint)) (round (second paint)) (round (third paint))))
+        (t nil)))
+
 (defun dnode->svg-node (dn)
   "Convert a weft <svg> element subtree DN into a stencil SVG DOM node, so the
 stencil renderer can paint it.  Element children recurse; character-data children
-accumulate into the node's text (for <text>/<tspan>)."
-  (let ((sn (st:make-svg-node (local-name (h:dnode-name dn))
-                              (mapcar (lambda (a) (cons (string-downcase (car a)) (cdr a)))
-                                      (h:dnode-attrs dn))))
-        (txt nil))
-    (loop for c across (h:dnode-children dn) do
-      (case (h:dnode-kind c)
-        (:element (st:append-child sn (dnode->svg-node c)))
-        (:text (setf txt (concatenate 'string (or txt "") (or (h:dnode-data c) ""))))))
-    (when txt (setf (st:svg-node-text sn) txt))
-    sn))
+accumulate into the node's text (for <text>/<tspan>).
+
+Page CSS cascaded onto the SVG (via *SVG-STYLES*) is injected as fill/stroke/color
+attributes so a rule like `.icon rect{fill:blue}` or `fill:currentColor` from page
+CSS paints — which is otherwise invisible to the presentation-attribute bridge.
+Precedence (SVG 1.1 §6.3 / CSS): CSTYLE-FILL/STROKE hold a value only when a CSS
+rule or inline style declared it ON this element, so injecting it correctly
+overrides a lower-priority presentation attribute; inheritance of fill/stroke down
+the tree is left to stencil's own paint-state, which carries the injected values."
+  (let* ((cs (and *svg-styles* (gethash dn *svg-styles*)))
+         (decl-fill (and cs (css:cstyle-fill cs)))
+         (decl-stroke (and cs (css:cstyle-stroke cs)))
+         (color (and cs (css:cstyle-color cs)))
+         (attrs (mapcar (lambda (a) (cons (string-downcase (car a)) (cdr a)))
+                        (h:dnode-attrs dn))))
+    (flet ((put-attr (name val)
+             (when val
+               (let ((cell (assoc name attrs :test #'string=)))
+                 (if cell (setf (cdr cell) val)
+                     (setf attrs (append attrs (list (cons name val)))))))))
+      (when decl-fill (put-attr "fill" (%paint->attr decl-fill color)))
+      (when decl-stroke (put-attr "stroke" (%paint->attr decl-stroke color)))
+      ;; other cascaded SVG presentation properties (stroke-width, dasharray, …)
+      (when cs
+        (dolist (sp (css:cstyle-svg-props cs)) (put-attr (car sp) (cdr sp))))
+      ;; expose the cascaded color so a currentColor paint (declared here or via a
+      ;; presentation attribute) resolves against the page's cascaded `color`
+      (when (and color (not (assoc "color" attrs :test #'string=)))
+        (put-attr "color" (%paint->attr :currentcolor color))))
+    (let ((sn (st:make-svg-node (local-name (h:dnode-name dn)) attrs))
+          (txt nil))
+      (loop for c across (h:dnode-children dn) do
+        (case (h:dnode-kind c)
+          (:element (st:append-child sn (dnode->svg-node c)))
+          (:text (setf txt (concatenate 'string (or txt "") (or (h:dnode-data c) ""))))))
+      (when txt (setf (st:svg-node-text sn) txt))
+      sn)))
 
 ;;; ---- scribe <-> page-canvas pixel bridging --------------------------------
 (defun %copy-region-to-scribe (cv x y w h)

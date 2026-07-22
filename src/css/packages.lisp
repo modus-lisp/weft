@@ -59,6 +59,7 @@
            #:cstyle-object-fit #:cstyle-aspect-ratio #:cstyle-aspect-ratio-auto
            #:cstyle-outline-width #:cstyle-outline-style #:cstyle-outline-color #:cstyle-outline-offset
            #:cstyle-accent-color #:cstyle-box-shadow #:cstyle-text-shadow #:cstyle-opacity
+           #:cstyle-fill #:cstyle-stroke #:cstyle-svg-props
            #:cstyle-filter #:cstyle-object-position #:cstyle-mix-blend-mode
            #:cstyle-clip-path #:parse-clip-path #:cstyle-mask
            #:cstyle-border-image-source #:cstyle-border-image-slice

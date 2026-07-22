@@ -101,6 +101,15 @@ axis's definite content size) and GAP resolve repeat(auto-fill|auto-fit)."
                                   (grid-auto-repeat-count sub avail gap))
                                  (t (max 1 (or (and comma (ignore-errors (parse-integer count-str :junk-allowed t))) 1))))))
                (dotimes (i count) (dolist (s sub) (push s out)))))
+            ((and (>= (length low) 12) (string= (subseq low 0 12) "fit-content("))
+             ;; fit-content(L): a content track clamped at L (CSS Grid §7.2.2).
+             (let* ((inner (subseq tok 12 (max 12 (1- (length tok)))))
+                    (spec (grid-parse-single inner fs)))
+               (push (list :fit-content (case (car spec)
+                                          (:fixed (float (second spec)))
+                                          (:percent (list :percent (second spec)))
+                                          (t 0.0)))
+                     out)))
             ((and (>= (length low) 7) (string= (subseq low 0 7) "minmax("))
              (let* ((inner (subseq tok 7 (max 7 (1- (length tok)))))
                     (comma (position #\, inner)))
@@ -157,6 +166,14 @@ max-content widths (CSS Grid §11.5)."
     (:fixed (float (second spec)))
     (:percent (* content-w (/ (second spec) 100.0)))
     ((:auto :min-content :max-content) (float (grid-track-content-w spec items styles content-w)))
+    ;; fit-content(L): min(max-content, max(min-content, L)) — a content-sized track
+    ;; capped at L, never stretched (CSS Grid §7.2.2).
+    (:fit-content
+     (let* ((lim (let ((l (second spec)))
+                   (if (and (consp l) (eq (car l) :percent)) (* content-w (/ (second l) 100.0)) (float l))))
+            (mx (grid-track-content-w '(:max-content) items styles content-w))
+            (mn (grid-track-content-w '(:min-content) items styles content-w)))
+       (min mx (max mn lim))))
     (t 0.0)))
 
 (defun grid-auto-max-p (spec)

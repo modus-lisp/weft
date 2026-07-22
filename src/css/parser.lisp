@@ -543,6 +543,7 @@ feature.  A non-paren token is :unknown."
                  "text-decoration" "text-decoration-color" "text-decoration-line"
                  "text-decoration-style" "text-indent" "text-overflow"
                  "text-transform" "top" "transform" "transform-origin" "transition"
+                 "translate" "rotate" "scale"
                  "vertical-align" "visibility" "white-space" "width" "word-break"
                  "word-spacing" "word-wrap" "writing-mode" "z-index"))
       (setf (gethash p h) t))

@@ -122,6 +122,10 @@
   ;; CSS Transforms: TRANSFORM is a list of (fn arg...) (e.g. ("translate" "10px" "5px")),
   ;; NIL = none.  TRANSFORM-ORIGIN is ((val unit) (val unit)) or NIL (= 50% 50%).
   (transform nil) (transform-origin nil)
+  ;; CSS Transforms 2 §3 individual transform properties.  TRANSLATE/ROTATE/SCALE hold
+  ;; synthesized transform-function forms ((fn arg...) …) or NIL; the effective matrix
+  ;; is translate then rotate then scale then the TRANSFORM list (see cstyle-effective-transform).
+  (translate nil) (rotate nil) (scale nil)
   ;; CSS Backgrounds 3 §7 box-shadow: a list of shadows, first listed = topmost.
   ;; Each shadow is (INSET OFFX OFFY BLUR SPREAD COLOR): INSET boolean, OFFX/OFFY/
   ;; BLUR/SPREAD px floats (BLUR>=0), COLOR an (r g b a) list or :currentcolor.
@@ -2137,6 +2141,15 @@ values (so a single-layer background is unaffected)."
          (let ((tl (parse-value "transform" value)))
            (setf (cstyle-transform cs)
                  (if (and (listp tl) (not (equal tl '("none")))) tl nil))))
+        ;; CSS Transforms 2 §3 individual transform properties.  Each is normalized
+        ;; into the equivalent transform-function form; the effective matrix applies
+        ;; translate, then rotate, then scale, then the `transform` list.
+        ((string= prop "translate")
+         (setf (cstyle-translate cs) (parse-individual-transform :translate value)))
+        ((string= prop "rotate")
+         (setf (cstyle-rotate cs) (parse-individual-transform :rotate value)))
+        ((string= prop "scale")
+         (setf (cstyle-scale cs) (parse-individual-transform :scale value)))
         ((string= prop "box-shadow")
          (let ((v (string-trim '(#\Space #\Tab #\Newline) value)))
            (cond ((string-equal v "inherit")

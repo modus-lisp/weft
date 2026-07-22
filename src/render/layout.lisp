@@ -2614,7 +2614,11 @@ column distributes grow/shrink into; NIL means auto (size to content)."
          (row (not (or (string= dir "column") (string= dir "column-reverse"))))
          (justify (css:cstyle-justify-content base-cs))
          (align (css:cstyle-align-items base-cs))
-         (gap (css::resolve-gap (css:cstyle-gap base-cs) (if row content-w (and (numberp avail-h) avail-h))))
+         ;; Main-axis gap: a row's main axis is horizontal (=column-gap), a column's is
+         ;; vertical (=row-gap) — CSS Box Alignment §8.  (cstyle-gap mirrors row-gap, so
+         ;; using it for a row applied the cross gap; wrong when the two differ.)
+         (gap (css::resolve-gap (if row (css:cstyle-column-gap base-cs) (css:cstyle-row-gap base-cs))
+                                (if row content-w (and (numberp avail-h) avail-h))))
          (items (remove-if-not (lambda (k) (let ((c (st styles k))) (and c (not (string= (css:cstyle-display c) "none"))))) (flex-item-nodes node styles)))
          ;; `order` reorders items (CSS 5.4); a stable sort keeps DOM order among ties.
          (items (stable-sort (copy-list items) #'<

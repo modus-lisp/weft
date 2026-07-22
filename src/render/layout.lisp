@@ -5217,8 +5217,16 @@ and 4 edges (stretched/repeated/rounded), plus the middle when `fill` is set (CS
 Backgrounds & Borders 3 §6).  Returns T when a decodable source painted, else NIL."
   (let ((src (css:cstyle-border-image-source cs)))
     (when src
-      (let* ((x0 (float (lbox-x lb) 1.0)) (y0 (float (lbox-y lb) 1.0))
-             (bw (float (lbox-w lb) 1.0)) (bh (float (lbox-h lb) 1.0))
+      (let* ((outset (css:cstyle-border-image-outset cs))
+             ;; border-image-outset (§6.5) extends the border-image area OUTWARD beyond
+             ;; the border box by (t r b l) px; the 9-slice corners/edges anchor to the
+             ;; expanded outer edge, so the image shifts out by the outset.
+             (ot (if outset (float (first outset) 1.0) 0.0))
+             (orr (if outset (float (second outset) 1.0) 0.0))
+             (ob (if outset (float (third outset) 1.0) 0.0))
+             (ol (if outset (float (fourth outset) 1.0) 0.0))
+             (x0 (- (float (lbox-x lb) 1.0) ol)) (y0 (- (float (lbox-y lb) 1.0) ot))
+             (bw (+ (float (lbox-w lb) 1.0) ol orr)) (bh (+ (float (lbox-h lb) 1.0) ot ob))
              (bt (used-border cs :t)) (br (used-border cs :r))
              (bb (used-border cs :b)) (bl (used-border cs :l))
              (img (bi-source-img src bw bh (css:cstyle-color cs))))

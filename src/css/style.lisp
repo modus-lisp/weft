@@ -126,6 +126,12 @@
   ;; synthesized transform-function forms ((fn arg...) …) or NIL; the effective matrix
   ;; is translate then rotate then scale then the TRANSFORM list (see cstyle-effective-transform).
   (translate nil) (rotate nil) (scale nil)
+  ;; CSS Transforms 2 §perspective: the distance (px) from the z=0 plane to the
+  ;; viewer, establishing a perspective for THIS element's transformed children
+  ;; (a child's translateZ(d) then scales by P/(P-d)).  NIL = none (flat).  Not
+  ;; inherited.  BACKFACE-VISIBILITY: "visible" | "hidden" — a hidden back face
+  ;; (an element rotated past edge-on, cos<0) is not painted.
+  (perspective nil) (backface-visibility "visible")
   ;; CSS Backgrounds 3 §7 box-shadow: a list of shadows, first listed = topmost.
   ;; Each shadow is (INSET OFFX OFFY BLUR SPREAD COLOR): INSET boolean, OFFX/OFFY/
   ;; BLUR/SPREAD px floats (BLUR>=0), COLOR an (r g b a) list or :currentcolor.
@@ -2311,6 +2317,17 @@ values (so a single-layer background is unaffected)."
         ((string= prop "transform-origin")
          (let ((toks (remove "" (split-ws (string-downcase (string-trim '(#\Space) value))) :test #'string=)))
            (setf (cstyle-transform-origin cs) (and toks (subseq toks 0 (min 2 (length toks)))))))
+        ((string= prop "perspective")
+         (let ((v (string-downcase (string-trim '(#\Space) value))))
+           (setf (cstyle-perspective cs)
+                 (if (member v '("none" "") :test #'string=) nil
+                     (let ((p (resolve-len value (cstyle-font-size cs))))
+                       ;; a non-positive perspective is invalid (CSS Transforms 2 §perspective)
+                       (and (numberp p) (plusp p) (float p 1.0)))))))
+        ((string= prop "backface-visibility")
+         (let ((v (string-downcase (string-trim '(#\Space) value))))
+           (when (member v '("visible" "hidden") :test #'string=)
+             (setf (cstyle-backface-visibility cs) v))))
         ((string= prop "column-span")
          (setf (cstyle-column-span cs)
                (if (string-equal (string-trim '(#\Space) value) "all") "all" "none")))

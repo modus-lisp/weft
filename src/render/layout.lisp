@@ -2436,16 +2436,61 @@ matrix, so the flow declines to project it (falls back to the untransformed box)
                                  (/= 0 (tf-num (or (second (rest f)) "0"))))))))
                 tl)
       2))
-(defun box-transform-matrix (cs box-x box-y bw bh)
+(defun tf-z-depth (tl fs)
+  "The net z-translation (px) contributed by translateZ/translate3d in transform list
+TL — the depth a perspective projects.  Ignores rotations' z (only pure z-shifts are
+handled affinely)."
+  (let ((z 0.0))
+    (dolist (f tl z)
+      (let ((fn (first f)) (a (rest f)))
+        (cond ((string= fn "translatez") (incf z (tf-len (first a) fs 0.0)))
+              ((and (string= fn "translate3d") (third a)) (incf z (tf-len (third a) fs 0.0))))))))
+(defun tf-effective-perspective (tl persp fs)
+  "The perspective distance in effect for transform list TL: an explicit perspective()
+FUNCTION in TL takes precedence, else the ancestor-established PERSP (px or NIL)."
+  (or (dolist (f tl nil)
+        (when (string= (first f) "perspective")
+          (let ((p (tf-len (or (second f) "0") fs 0.0))) (return (and (plusp p) p)))))
+      persp))
+(defun tf-perspective-scale (tl persp fs)
+  "The uniform scale P/(P-z) a perspective P applies to a box pushed to depth z by
+translateZ (CSS Transforms 2 §perspective), or NIL when no perspective/depth is in
+play (or the box is at/behind the viewer)."
+  (let ((z (tf-z-depth tl fs)) (p (tf-effective-perspective tl persp fs)))
+    (when (and p (/= z 0.0) (> p z) (plusp p))
+      (/ p (- p z)))))
+(defun box-backfacing-p (cs)
+  "True when CS's element faces away from the viewer (its back is toward us) — a single
+rotateX/rotateY (or rotate3d about x/y) past edge-on, i.e. net cos of the rotation < 0.
+Used with backface-visibility:hidden to cull the box (CSS Transforms 2 §backface)."
+  (let ((tl (css:cstyle-effective-transform cs)))
+    (and tl (not (equal tl '("none")))
+         (some (lambda (f)
+                 (let ((fn (first f)) (a (rest f)))
+                   (cond ((member fn '("rotatex" "rotatey") :test #'string=)
+                          (minusp (cos (tf-angle (first a)))))
+                         ((string= fn "rotate3d")
+                          ;; off-Z axis with a rotation flipping the normal
+                          (and (or (/= 0 (tf-num (or (first a) "0")))
+                                   (/= 0 (tf-num (or (second a) "0"))))
+                               (minusp (cos (tf-angle (or (fourth a) "0"))))))
+                         (t nil))))
+               tl))))
+(defun box-transform-matrix (cs box-x box-y bw bh &optional persp)
   "The absolute affine matrix for CS's transform on a border box at (BOX-X,BOX-Y) of
-size BW x BH, taken around its transform-origin — or NIL when there is no transform."
+size BW x BH, taken around its transform-origin — or NIL when there is no transform.
+PERSP is the ancestor-established perspective distance (px), under which a translateZ
+scales the box (CSS Transforms 2 §perspective)."
   (let ((tl (css:cstyle-effective-transform cs)))
     (when (and tl (not (equal tl '("none"))) (not (compound-3d-p tl)))
-      (let ((fs (css:cstyle-font-size cs)))
+      (let* ((fs (css:cstyle-font-size cs))
+             (pscale (tf-perspective-scale tl persp fs)))
         (multiple-value-bind (ox oy) (tf-origin-xy (css:cstyle-transform-origin cs) fs bw bh)
           (let* ((oax (+ box-x ox)) (oay (+ box-y oy))
                  (mc (reduce (lambda (acc f) (mat* acc (tf-fn-matrix (first f) (rest f) fs bw bh)))
-                             tl :initial-value '(1.0 0.0 0.0 1.0 0.0 0.0))))
+                             tl :initial-value '(1.0 0.0 0.0 1.0 0.0 0.0)))
+                 ;; a perspective depth folds in as a uniform scale about the origin
+                 (mc (if pscale (mat* (list (float pscale 1.0) 0.0 0.0 (float pscale 1.0) 0.0 0.0) mc) mc)))
             (mat* (mat* (list 1.0 0.0 0.0 1.0 oax oay) mc)
                   (list 1.0 0.0 0.0 1.0 (- oax) (- oay)))))))))
 (defun tf-aabb (m x y w h)
@@ -2480,20 +2525,25 @@ content and must be rasterised instead so a non-uniform fill maps correctly."
     (declare (ignore e f))
     (and (< (abs b) 1.0d-4) (< (abs c) 1.0d-4)
          (> a 1.0d-4) (> d 1.0d-4))))
-(defun apply-transforms (box)
+(defun apply-transforms (box &optional persp)
   "Post-layout pass: apply each element's CSS transform to its box.  Children are
 processed first so an ancestor's translation shifts an already-transformed subtree
-(effective = ancestor . descendant, CSS Transforms 1 §3)."
+(effective = ancestor . descendant, CSS Transforms 1 §3).  PERSP is the perspective
+distance established by the nearest ancestor (CSS Transforms 2 §perspective), under
+which a child's translateZ scales its box."
   (when (typep box 'lbox)
-    (dolist (c (lbox-children box)) (when (typep c 'lbox) (apply-transforms c)))
-    (let ((cs (lbox-style box)))
+    (let* ((cs (lbox-style box))
+           ;; perspective on THIS element applies to its transformed CHILDREN
+           (child-persp (or (and cs (css:cstyle-perspective cs)) persp)))
+      (dolist (c (lbox-children box)) (when (typep c 'lbox) (apply-transforms c child-persp)))
       (when (and cs (css:cstyle-effective-transform cs))
         (let* ((tl (css:cstyle-effective-transform cs)) (fs (css:cstyle-font-size cs))
-               (bw (lbox-w box)) (bh (lbox-h box)))
+               (bw (lbox-w box)) (bh (lbox-h box))
+               (pscale (tf-perspective-scale tl persp fs)))
           (multiple-value-bind (tx ty) (tf-pure-translate tl fs bw bh)
-            (if tx
+            (if (and tx (not pscale))
                 (shift-box box (round tx) (round ty))       ; exact; moves text frags too
-                (let ((m (box-transform-matrix cs (lbox-x box) (lbox-y box) bw bh)))
+                (let ((m (box-transform-matrix cs (lbox-x box) (lbox-y box) bw bh persp)))
                   ;; Only an axis-aligned map (scale, projected 3D) collapses to a box
                   ;; resize — adjust it to the transformed AABB here.  A rotate/skew/
                   ;; general matrix can't: it is rasterised at paint time (see
@@ -5807,7 +5857,11 @@ mix(backdrop, blend(backdrop, source), coverage*ALPHA)."
   ;; then inverse-mapped); everything else — untransformed, pure-translate, axis
   ;; scale — paints byte-identically through %PAINT-BOX-CONTENT.  An opacity < 1
   ;; renders the subtree to offscreen buffers and composites it as one group.
-  (when lb
+  (when (and lb (let ((cs (lbox-style lb)))
+                  ;; CSS Transforms 2 §backface-visibility: a back-facing element
+                  ;; (rotated past edge-on) with backface-visibility:hidden is culled.
+                  (not (and cs (string= (css:cstyle-backface-visibility cs) "hidden")
+                            (box-backfacing-p cs)))))
     (let* ((m (box-raster-transform-matrix lb))
            (cs (lbox-style lb))
            (op (and cs (let ((o (css:cstyle-opacity cs)))

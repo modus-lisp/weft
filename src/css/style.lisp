@@ -28,6 +28,9 @@
   ;; border-collapse (inherited): separate | collapse.  A collapsed table (and its
   ;; internal table elements) ignore border-radius (CSS Backgrounds 3 §5.5).
   (border-collapse "separate")
+  ;; empty-cells (inherited, CSS 2.1 §17.6.1.1): show | hide.  In the separated-borders
+  ;; model a `hide` cell with no in-flow content paints no background or borders.
+  (empty-cells "show")
   ;; CSS 2.1 §17.6.1 border-spacing (inherited): the (h . v) px gap between adjacent
   ;; cell borders and around the table edge in the separated-borders model.  The CSS
   ;; initial is 0; HTML tables default to 2px (set per-table in UA-STYLE, and by the
@@ -217,6 +220,7 @@
             (cstyle-quotes cs) (cstyle-quotes parent-cs)
             (cstyle-caption-side cs) (cstyle-caption-side parent-cs)
             (cstyle-border-collapse cs) (cstyle-border-collapse parent-cs)
+            (cstyle-empty-cells cs) (cstyle-empty-cells parent-cs)
             (cstyle-border-spacing cs) (cstyle-border-spacing parent-cs)
             (cstyle-list-style cs) (cstyle-list-style parent-cs)
             (cstyle-accent-color cs) (cstyle-accent-color parent-cs)
@@ -2233,6 +2237,9 @@ values (so a single-layer background is unaffected)."
         ((string= prop "padding-right") (setf (cstyle-padding-right cs) (pad-len value fs)))
         ((string= prop "padding-bottom") (setf (cstyle-padding-bottom cs) (pad-len value fs)))
         ((string= prop "padding-left") (setf (cstyle-padding-left cs) (pad-len value fs)))
+        ((string= prop "empty-cells")
+         (let ((v (string-downcase (string-trim '(#\Space) value))))
+           (when (member v '("show" "hide") :test #'string=) (setf (cstyle-empty-cells cs) v))))
         ((string= prop "border-collapse")
          (let ((v (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) value))))
            (when (member v '("separate" "collapse") :test #'string=) (setf (cstyle-border-collapse cs) v))))

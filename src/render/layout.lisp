@@ -107,6 +107,27 @@ no-op passthrough when the cache is unbound (measurement outside a layout pass).
 (defun block-level-p (styles node)
   (and (eq (h:dnode-kind node) :element)
        (let ((cs (st styles node))) (and cs (member (cdisplay cs) *block-displays* :test #'string=)))))
+(defun cell-content-empty-p (node)
+  "True when a table cell NODE has no in-flow content (CSS 2.1 §17.6.1.1): no child
+elements, and its text is only collapsible whitespace (a non-breaking space counts as
+content).  Used by empty-cells:hide."
+  (notany (lambda (c)
+            (case (h:dnode-kind c)
+              (:element t)
+              (:text (let ((d (h:dnode-data c)))
+                       (and d (some (lambda (ch) (not (member ch '(#\Space #\Tab #\Newline #\Return #\Page)
+                                                                  :test #'char=)))
+                                    d))))
+              (t nil)))
+          (h:dnode-children node)))
+(defun cell-hidden-empty-p (lb cs)
+  "True when box LB is a separated-model table cell that empty-cells:hide should not
+paint (empty content) — suppresses its own background/border/image only."
+  (and cs (string= (cdisplay cs) "table-cell")
+       (string= (css:cstyle-empty-cells cs) "hide")
+       (not (string= (css:cstyle-border-collapse cs) "collapse"))
+       (lbox-node lb) (eq (h:dnode-kind (lbox-node lb)) :element)
+       (cell-content-empty-p (lbox-node lb))))
 (defun table-box-p (styles node)
   "True when NODE is a display:table (or inline-table) box — one whose intrinsic
 width is its COLUMN model, not its flattened inline content."
@@ -5665,7 +5686,7 @@ mix(backdrop, blend(backdrop, source), coverage*ALPHA)."
               (hoist (and cs (lbox-hoist-neg lb cs)))
               (kids (if hoist (remove-if (lambda (c) (member c hoist)) (lbox-children lb))
                         (lbox-children lb))))
-        (let ((vis (box-visible-p cs)))
+        (let ((vis (and (box-visible-p cs) (not (cell-hidden-empty-p lb cs)))))
          ;; visibility:hidden/collapse suppresses only THIS box's own rendering
          ;; (background, border, image, marker, outline); its layout space and its
          ;; descendants are unaffected, and a descendant may re-assert

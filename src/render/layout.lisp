@@ -8,7 +8,7 @@
 ;;;; canvas and saved as PNG.
 (in-package #:weft.render)
 
-(defstruct lbox x y w h style node kind children marker img vpaint baseline rel)   ; kind :block | :line; img = decoded IMG; vpaint = (cv x y w h) replaced-content painter; baseline = px offset from a :line box's top to its shared baseline (CSS 2.1 10.8); rel = (dx . dy) inline relative-positioning visual shift for an atomic (§9.4.3)
+(defstruct lbox x y w h style node kind children marker img vpaint baseline rel collapse)   ; kind :block | :line; img = decoded IMG; vpaint = (cv x y w h) replaced-content painter; baseline = px offset from a :line box's top to its shared baseline (CSS 2.1 10.8); rel = (dx . dy) inline relative-positioning visual shift for an atomic (§9.4.3); collapse = (bt br bb bl) resolved collapsed-border widths for a border-collapse table cell (half a shared internal border, full an outer one, CSS 2.1 §17.6.2) — read by PAD-BOX/PAINT-BORDERS in place of the cell's own uniform border when set
 (defstruct frag x w text style node (dx 0) (dy 0))         ; a positioned styled text run on a line; node = source DOM element (for hit-testing); dx/dy = inline relative-positioning visual shift (§9.4.3)
 
 ;;; Cumulative inline relative-positioning offset (CSS 2.1 §9.4.3) in effect while
@@ -1366,8 +1366,11 @@ those borders still occupy layout space (e.g. Acid2's smile `solid transparent`)
 (defun pad-box (lb cs)
   "Padding box (px py pw ph) of LB — the border-box minus borders.  This is the
 containing block that absolutely-positioned descendants resolve against."
-  (let ((bl (used-border cs :l)) (br (used-border cs :r))
-        (bt (used-border cs :t)) (bb (used-border cs :b)))
+  (let* ((c (lbox-collapse lb))                 ; collapsed per-edge widths (§17.6.2), if any
+         (bt (if c (first c) (used-border cs :t)))
+         (br (if c (second c) (used-border cs :r)))
+         (bb (if c (third c) (used-border cs :b)))
+         (bl (if c (fourth c) (used-border cs :l))))
     (list (+ (lbox-x lb) bl) (+ (lbox-y lb) bt)
           (max 0 (- (lbox-w lb) bl br)) (max 0 (- (lbox-h lb) bt bb)))))
 
@@ -3526,6 +3529,10 @@ cell-lboxes content-height)."
     (multiple-value-bind (maxs mins specs ncols) (table-column-model node styles content-w)
       (let* ((sp (multiple-value-list (table-spacing base-cs)))
              (hs (first sp)) (vs (second sp))  ; horizontal / vertical border-spacing
+             ;; border-collapse:collapse (CSS 2.1 §17.6.2): after the grid is laid out,
+             ;; a post-pass butts adjacent cells on the shared border's midline (the two
+             ;; painted half-widths overlap into one line) and paints it once.
+             (collapse-p (and base-cs (string= (css:cstyle-border-collapse base-cs) "collapse")))
              (rspecs (loop for i below ncols collect (resolve-spec (aref specs i) content-w)))
              ;; columns fit within the content width minus the (ncols+1) horizontal gaps.
              (colw (fit-columns rspecs
@@ -3545,6 +3552,7 @@ cell-lboxes content-height)."
               ;; rowspanning cell from a previous row (CSS 2.1 §17.5.1 cell grid).
               (occ (make-array (max 1 ncols) :initial-element 0))
               (spans '())    ; (lb startidx nrows natural-h) — cells to grow in pass 2
+              (hcells '())   ; (lb startcol colspan) — real cells, for the collapse rewrite
               (ridx 0))
           (dolist (row rows)
             (let ((cells (row-cells row styles node)) (rowh 0) (rowboxes '()) (col 0))
@@ -3562,6 +3570,7 @@ cell-lboxes content-height)."
                     (declare (ignore adv))
                     (when lb
                       (push lb rowboxes)
+                      (when collapse-p (push (list lb col span) hcells))
                       (if (> rspan 1)
                           ;; a rowspanning cell's height spans several rows: defer its
                           ;; sizing to pass 2 and block its columns for the rows below.
@@ -3689,6 +3698,53 @@ cell-lboxes content-height)."
                                      gboxes)))))
                        group-band)
               (when gboxes (setf boxes (nconc gboxes boxes)))))
+          ;; COLLAPSE REWRITE (CSS 2.1 §17.6.2, horizontal axis): fold each interior
+          ;; vertical grid line's two abutting cell borders into ONE shared line.  A
+          ;; shared internal border is painted half by each neighbour (LBOX-COLLAPSE
+          ;; carries the resolved per-edge widths — half interior, full at the table
+          ;; edge); the cells butt on that line's midline, so the two half-widths
+          ;; overlap into a single B-wide line and the table shrinks by B per interior
+          ;; column line.  Top/bottom keep the cell's own (full) width — this pass is
+          ;; horizontal-only, so multi-row tables are vertically unchanged.  Scoped
+          ;; strictly behind the collapse flag: separated tables never enter here.
+          (when (and collapse-p hcells (plusp ncols))
+            ;; common case (equal borders): one shared width B per line = the (uniform)
+            ;; cell border; conflict resolution (§17.6.2 wider-wins) degenerates to the
+            ;; max cell border here, correct when the borders are equal.
+            (let ((b (reduce #'max hcells
+                             :key (lambda (hc) (let ((s (lbox-style (first hc))))
+                                                 (max (used-border s :l) (used-border s :r))))
+                             :initial-value 0.0)))
+              (when (plusp b)
+                ;; new left edge of each column line: the table's outer borders stay
+                ;; full and sit inside the table box; each column keeps its padding-box
+                ;; width (colw minus its two full borders) with a half-border each side
+                ;; of every interior line.
+                (let ((newedge (make-array (1+ ncols))))
+                  (setf (aref newedge 0) (float (round cx)))
+                  (loop for i below ncols do
+                    (setf (aref newedge (1+ i))
+                          (+ (aref newedge i)
+                             (max 0 (- (nth i colw) (* 2 b)))          ; padding-box width
+                             (if (= i 0) b (/ b 2.0))                  ; effective left border
+                             (if (= i (1- ncols)) b (/ b 2.0)))))      ; effective right border
+                  (dolist (hc hcells)
+                    (destructuring-bind (lb scol span) hc
+                      (let* ((cs (lbox-style lb))
+                             (leftcol (min ncols scol))
+                             (rightcol (min ncols (+ scol span)))
+                             (nx (aref newedge leftcol))
+                             (nx1 (aref newedge rightcol))
+                             (bl (if (= leftcol 0) b (/ b 2.0)))       ; full outer / half interior
+                             (br (if (= rightcol ncols) b (/ b 2.0)))
+                             (ubt (used-border cs :t)) (ubb (used-border cs :b))
+                             ;; shift the cell's content so its padding box meets the new
+                             ;; (collapsed) left border, then pin the border box.
+                             (shift (- (round (+ nx bl)) (round (+ (lbox-x lb) (used-border cs :l))))))
+                        (shift-box lb shift 0)
+                        (setf (lbox-x lb) (round nx)
+                              (lbox-w lb) (max 1 (- (round nx1) (round nx)))
+                              (lbox-collapse lb) (list ubt br ubb bl)))))))))
           (values boxes (- y cy))))))))
 
 (defun pref-inline-width (node styles cs content-w)
@@ -4913,8 +4969,9 @@ colors differ, each edge is drawn as a mitered trapezoid whose outer side is
 the full box edge and whose inner side is inset by the adjacent edges' widths,
 so adjacent borders meet on the 45-degree corner diagonal.  For a small/0-size
 box with thick borders this yields the classic triangles (e.g. CSS triangles)."
-  (let* ((bt (border-edge-width cs :t)) (br (border-edge-width cs :r))
-         (bb (border-edge-width cs :b)) (bl (border-edge-width cs :l))
+  (let* ((c (lbox-collapse lb))                 ; collapsed per-edge widths (§17.6.2), if any
+         (bt (if c (first c) (border-edge-width cs :t))) (br (if c (second c) (border-edge-width cs :r)))
+         (bb (if c (third c) (border-edge-width cs :b))) (bl (if c (fourth c) (border-edge-width cs :l)))
          (x0 (lbox-x lb)) (y0 (lbox-y lb)) (w (lbox-w lb)) (h (lbox-h lb))
          (x1 (+ x0 w)) (y1 (+ y0 h))
          (ct (border-edge-color cs :t)) (crr (border-edge-color cs :r))

@@ -240,6 +240,8 @@
           ((string= tag "tfoot") (setf (cstyle-display cs) "table-footer-group"))
           ((string= tag "tbody") (setf (cstyle-display cs) "table-row-group"))
           ((string= tag "caption") (setf (cstyle-display cs) "table-caption"))
+          ((string= tag "col") (setf (cstyle-display cs) "table-column"))
+          ((string= tag "colgroup") (setf (cstyle-display cs) "table-column-group"))
           ;; <center> is a block whose block-level children are horizontally centered
           ;; (applied as margin:auto in the cascade) AND whose inline-level content is
           ;; centered on the line: the UA rule is text-align:-webkit-center, which

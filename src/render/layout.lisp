@@ -3342,6 +3342,35 @@ a (:percent P) form.  A box-sizing:border-box width is already border-box."
          (+ (second sp) (* table-w (/ (third sp) 100.0))))
         (t nil)))
 
+(defun table-col-elt-specs (node styles ncols)
+  "Per-column specified widths declared by <colgroup>/<col> elements (CSS 2.1 §17.3):
+a vector of NCOLS specs (NIL | px | (:percent P)).  A col's `span` attribute (or an
+empty colgroup's) covers that many columns; a colgroup with col children defers to
+them."
+  (let ((specs (make-array ncols :initial-element nil)) (idx 0))
+    (labels ((spanv (c) (let ((s (cdr (assoc "span" (h:dnode-attrs c) :test #'string-equal))))
+                          (max 1 (or (and s (ignore-errors (parse-integer s :junk-allowed t))) 1))))
+             (wspec (cs) (let ((w (and cs (css:cstyle-width cs))))
+                           (cond ((numberp w) w)
+                                 ((and (consp w) (eq (car w) :percent)) (list :percent (second w)))
+                                 (t nil))))
+             (assign (cs span)
+               (let ((sp (wspec cs)))
+                 (dotimes (i span)
+                   (when (< idx ncols)
+                     (when sp (setf (aref specs idx) sp))
+                     (incf idx))))))
+      (dolist (c (child-elements node))
+        (let ((d (cdisplay (st styles c))))
+          (cond ((string= d "table-column") (assign (st styles c) (spanv c)))
+                ((string= d "table-column-group")
+                 (let ((cols (remove-if-not (lambda (k) (string= (cdisplay (st styles k)) "table-column"))
+                                            (child-elements c))))
+                   (if cols
+                       (dolist (col cols) (assign (st styles col) (spanv col)))
+                       (assign (st styles c) (spanv c)))))))))
+    specs))
+
 (defun table-column-model (node styles avail)
   "Analyse a display:table NODE's cells into per-column requirements.  Returns
  (values MAXS MINS SPECS NCOLS): parallel simple-vectors of border-box
@@ -3387,6 +3416,17 @@ column, colspans distributed across the columns they span (CSS 2.1 17.5.2)."
                     (let ((add (/ (- cmax cur-max) k))) (dolist (i cols) (incf (aref maxs i) add))))
                   (when (> cmin cur-min)
                     (let ((add (/ (- cmin cur-min) k))) (dolist (i cols) (incf (aref mins i) add))))))))))
+      ;; fold in <col>/<colgroup> specified widths (CSS 2.1 §17.3): a column's own
+      ;; col-width acts like a cell width spec on that column, and a fixed px col
+      ;; width raises the column's min/max so empty cells still take that width.
+      (let ((colspecs (table-col-elt-specs node styles ncols)))
+        (dotimes (i ncols)
+          (let ((sp (aref colspecs i)))
+            (when sp
+              (setf (aref specs i) (spec-combine sp (aref specs i)))
+              (when (numberp sp)
+                (setf (aref maxs i) (max (aref maxs i) sp)
+                      (aref mins i) (max (aref mins i) sp)))))))
       (values maxs mins specs ncols))))
 
 (defun table-spacing (cs)

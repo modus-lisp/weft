@@ -463,6 +463,13 @@ remainder (CSS 2.1 §5.12.2).  Returns the possibly-modified WORDS list."
     (or (a "src") (%srcset-url (a "srcset")) (a "data-src") (%srcset-url (a "data-srcset"))
         (%noscript-fallback-src node))))
 
+(defun img-loading-lazy-p (node)
+  "True for an <img loading=lazy> — its fetch is deferred until its box lays out
+within the viewport + look-ahead (HTML §lazy-loading).  `loading` defaults to
+`eager`; only an explicit case-insensitive `lazy` defers."
+  (let ((v (and node (cdr (assoc "loading" (h:dnode-attrs node) :test #'string-equal)))))
+    (and v (string-equal (string-trim '(#\Space #\Tab #\Newline #\Return) v) "lazy"))))
+
 (defun replaced-ratio (cs iw ih)
   "The width/height ratio a replaced element sizes by: its explicit CSS aspect-ratio
 if set (CSS Sizing 4), else the intrinsic ratio IW/IH, else NIL."
@@ -494,6 +501,12 @@ alt-text placeholder."
                     ((null src) nil)
                     ((and (>= (length src) 5) (string-equal (subseq src 0 5) "data:"))
                      (ignore-errors (decode-image src)))
+                    ;; loading=lazy: DEFER the network fetch (HTML §lazy-loading).  The
+                    ;; box is sized here from its width/height/aspect-ratio WITHOUT the
+                    ;; pixels; a post-layout pass (FETCH-INVIEW-LAZY-IMAGES) fetches and
+                    ;; fills it only if it lays out within the viewport + look-ahead —
+                    ;; so below-fold thumbnails don't burn the image budget off-screen.
+                    ((img-loading-lazy-p node) nil)
                     ;; a network <img src> — fetched, decoded and cached through
                     ;; *IMAGE-LOADER* (NIL when running offline: stays a placeholder).
                     (t (fetch-image src))))
@@ -4230,6 +4243,71 @@ enclosing scroll container (else the viewport VP-RECT) and its containing block.
                    (when (typep c 'lbox) (walk c sr cr)))))))
     (walk root vp-rect vp-rect)))
 
+;;; ---- deferred loading=lazy image fetch (HTML §lazy-loading) -------------
+(defparameter *lazy-image-lookahead* 1500.0
+  "Extra px below the viewport within which a deferred loading=lazy <img> is still
+fetched by the post-layout in-view pass.  A browser loads lazy images a scroll
+distance ahead of the fold; below viewport+this margin they stay deferred (their
+box already sized from width/height/aspect-ratio, painted as an empty placeholder).")
+
+(defvar *fetch-inview-lazy* t
+  "When true (the default, and the standalone behaviour), layout's post-pass fetches
+each in-view deferred loading=lazy <img> itself.  A host that first collects the
+in-view set (INVIEW-LAZY-IMAGE-URLS) and warms it concurrently binds this NIL for
+that probe layout, so the slow fetches don't serialise on the layout thread, then T
+for the final layout that fills the boxes from the now-warm cache.")
+
+(defun map-inview-lazy-imgs (root fold fn)
+  "Call FN with each deferred loading=lazy <img> box in ROOT whose document top is
+within FOLD + *LAZY-IMAGE-LOOKAHEAD* and whose content bitmap is still empty — the
+in-view band that should load, per HTML §lazy-loading.  FOLD NIL (no viewport, a
+pure reader render) puts the whole document in-band (no deferral)."
+  (let ((limit (if fold (+ fold *lazy-image-lookahead*) most-positive-fixnum)))
+    (labels ((walk (lb)
+               (when (typep lb 'lbox)
+                 (let ((node (lbox-node lb)))
+                   (when (and node (string-equal (h:dnode-name node) "img")
+                              (img-loading-lazy-p node)
+                              (<= (lbox-y lb) limit))
+                     ;; the img's decoded bitmap lives on its (single) content child;
+                     ;; only act while it is still empty (never re-touch an eager fill).
+                     (let ((c (find-if #'lbox-p (lbox-children lb))))
+                       (when (and c (null (lbox-img c))) (funcall fn lb c)))))
+                 (dolist (c (lbox-children lb)) (walk c)))))
+      (walk root))))
+
+(defun inview-lazy-image-urls (root &optional fold)
+  "The network (non-data:) src URLs of the in-view deferred loading=lazy <img>s in
+ROOT — the set a host warms concurrently before the final paint, so their fetches
+aren't serialised on the layout thread.  Already-cached URLs are kept (warming one
+is a near-free cache hit): their presence is also the host's signal that a fill
+pass is still owed, e.g. on a revisit where *IMAGE-STORE* already holds them."
+  (let ((urls '()))
+    (map-inview-lazy-imgs root fold
+      (lambda (lb c) (declare (ignore c))
+        (let ((src (img-source-url (lbox-node lb))))
+          (when (and src (plusp (length src))
+                     (not (and (>= (length src) 5) (string-equal (subseq src 0 5) "data:"))))
+            (pushnew src urls :test #'string=)))))
+    (nreverse urls)))
+
+(defun fetch-inview-lazy-images (root fold)
+  "Post-layout pass over the laid-out tree ROOT: fill each in-view deferred
+loading=lazy <img> (see MAP-INVIEW-LAZY-IMGS) — decode/fetch it now and set its
+content box's bitmap, so paint shows it.  FETCH-IMAGE is cache-first, so once a host
+has warmed the in-view set (INVIEW-LAZY-IMAGE-URLS) these are cache hits; standalone
+it fetches them itself.  Images below the in-view band stay deferred (placeholder),
+the correct unscrolled-view behaviour that stops weft eagerly fetching every
+off-screen thumbnail."
+  (map-inview-lazy-imgs root fold
+    (lambda (lb c)
+      (let* ((src (img-source-url (lbox-node lb)))
+             (img (and src (plusp (length src))
+                       (if (and (>= (length src) 5) (string-equal (subseq src 0 5) "data:"))
+                           (ignore-errors (decode-image src))
+                           (fetch-image src)))))
+        (when (and img (img-rgba img)) (setf (lbox-img c) img))))))
+
 ;;; ---- @container query resolution (CSS Containment 3) --------------------
 (defun cq-container-size (lb cs)
   "Logical content-box size of a laid-out query container LB with style CS.
@@ -4342,6 +4420,13 @@ container sizes stabilise.  Returns (values ROOT ADV STYLES)."
           ;; each sticky box is confined to its scroll container's scrollport (at
           ;; offset 0) and its containing block (CSS Position 3 §3.3).
           (when root (resolve-sticky root (list 0 0 width vph)))
+          ;; loading=lazy images were skipped by the layout fetch (sized from their
+          ;; width/height/aspect-ratio only); now that each box has a document Y, fetch
+          ;; and fill the ones within the viewport + look-ahead and leave the rest
+          ;; deferred (HTML §lazy-loading).  The fold is the true viewport height even
+          ;; in reader mode (ABS-VH), where the layout height is left indefinite.
+          (when (and root *fetch-inview-lazy*)
+            (fetch-inview-lazy-images root (or abs-vh viewport-height)))
           ;; CSS transforms are a post-layout visual/geometry effect — applied last,
           ;; over the final (scrolled, positioned) tree, matching viewport-space
           ;; getBoundingClientRect (CSS Transforms 1 §3).

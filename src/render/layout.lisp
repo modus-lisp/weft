@@ -3195,12 +3195,29 @@ NON-baseline cell set the height — a block/replaced element (HN's display:bloc
 logo) OR a cell that wrapped to several lines (the nav at mobile width).  With no single
 baseline to drop onto, the browser centers every cell's content in the row.  A block
 cell (no text baseline of its own) is likewise centered."
-  (when (and (not (cell-lbox-valign-top-p lb)) (lbox-children lb))
-    (let* ((content-h (cell-inline-content-height lb))
+  (when (lbox-children lb)
+    (let* ((cs (lbox-style lb))
+           (va (and cs (css:cstyle-vertical-align cs)))
+           ;; explicit CSS vertical-align on the cell (CSS 2.1 §17.5.3) wins over the
+           ;; baseline/center heuristics; legacy valign="top" also maps to top.
+           (vkw (cond ((cell-lbox-valign-top-p lb) "top")
+                      ((and (consp va) (member (first va) '("top" "middle" "bottom") :test #'string=))
+                       (first va))
+                      (t nil)))
+           (content-h (cell-inline-content-height lb))
+           ;; explicit vertical-align centres/bottoms within the cell's CONTENT box, and
+           ;; the content already sits at the padding-top offset, so measure against the
+           ;; padding-deducted height (else the shift double-counts the vertical padding).
+           (padt (if cs (css::resolve-pad (css:cstyle-padding-top cs) nil) 0))
+           (padb (if cs (css::resolve-pad (css:cstyle-padding-bottom cs) nil) 0))
+           (avail (- rowh padt padb))
            ;; round the shift to a whole pixel: a fractional centering offset lands the
            ;; cell content on a half-pixel and its 1px borders round unevenly (HN's
            ;; logo showed 2 white pixels above, 1 below).
-           (shift (cond (center-mode (round (- rowh content-h) 2))          ; center everything
+           (shift (cond ((equal vkw "top") 0)
+                        ((equal vkw "middle") (round (- avail content-h) 2))
+                        ((equal vkw "bottom") (round (- avail content-h)))
+                        (center-mode (round (- rowh content-h) 2))          ; center everything
                         ((cell-has-text-p lb) (max 0 (round (- (or baseline-ref rowh) content-h))))
                         (t (round (- rowh content-h) 2)))))                 ; block cell: center
       (when (> shift 0)

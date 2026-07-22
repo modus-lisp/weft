@@ -234,7 +234,11 @@
                                        (cstyle-text-align cs) "left"))
           ((string= tag "tr") (setf (cstyle-display cs) "table-row"))
           ((member tag '("td" "th") :test #'string=) (setf (cstyle-display cs) "table-cell"))
-          ((member tag '("thead" "tbody" "tfoot") :test #'string=) (setf (cstyle-display cs) "table-row-group"))
+          ;; thead/tfoot get their own display types so header rows render first and
+          ;; footer rows last regardless of source order (CSS 2.1 §17.2.1).
+          ((string= tag "thead") (setf (cstyle-display cs) "table-header-group"))
+          ((string= tag "tfoot") (setf (cstyle-display cs) "table-footer-group"))
+          ((string= tag "tbody") (setf (cstyle-display cs) "table-row-group"))
           ((string= tag "caption") (setf (cstyle-display cs) "table-caption"))
           ;; <center> is a block whose block-level children are horizontally centered
           ;; (applied as margin:auto in the cascade) AND whose inline-level content is

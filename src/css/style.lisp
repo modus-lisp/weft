@@ -552,21 +552,29 @@ opacity carries no lengths, so a percentage resolves against a basis of 1
         (t (let ((n (num tt))) (and n (clamp01 n))))))))
 
 (defun line-height-multiplier (value font-size)
-  "Parse a line-height VALUE into a multiplier of FONT-SIZE (weft stores
-line-height as a number that LAYOUT multiplies by font-size, or the keyword
-:NORMAL which LAYOUT resolves from the font's real metrics).  A bare <number>
-IS the multiplier; `normal` -> :NORMAL; a <percentage> -> its fraction; a <length>
--> length/font-size (CSS 2.1 10.8.1).  Returns NIL when unparseable."
+  "Parse a line-height VALUE into weft's stored line-height representation.  Per
+CSS 2.1 10.8.1 the COMPUTED (and thus inherited) value differs by type:
+  * `normal`   -> the keyword :NORMAL (LAYOUT resolves it from font metrics);
+  * <number>   -> the number itself, a font-size MULTIPLIER that inherits as the
+                  factor (each descendant multiplies by its OWN font-size);
+  * <length>   -> the absolute length, which inherits UNCHANGED — stored as
+                  (:ABS . px) so a descendant with a different font-size keeps it;
+  * <percentage> -> font-size x fraction resolved to an absolute length at this
+                  element, which then inherits unchanged — also (:ABS . px).
+A length/percentage stored as a bare multiplier was the bug: it re-multiplied by a
+descendant's font-size (e.g. body{line-height:20px} then <pre> at 13px -> 16px).
+Returns NIL when unparseable."
   (let ((tt (string-downcase (string-trim '(#\Space) value))))
     (cond ((string= tt "normal") :normal)
           ((and (plusp (length tt)) (char= (char tt (1- (length tt))) #\%))
            (let ((n (ignore-errors (read-from-string (subseq tt 0 (1- (length tt)))))))
-             (when (realp n) (/ (float n) 100.0))))
+             (when (and (realp n) (plusp font-size))
+               (cons :abs (* (/ (float n) 100.0) font-size)))))
           (t (let ((n (ignore-errors (let ((*read-eval* nil)) (read-from-string tt)))))
                (if (realp n)
                    (float n)
                    (let ((px (resolve-len tt font-size)))
-                     (when (and (numberp px) (plusp font-size)) (/ px font-size)))))))))
+                     (when (numberp px) (cons :abs (float px))))))))))
 
 (defun parse-size (text font-size auto-ok)
   "Parse a width/height value -> px number | :auto | (:percent N) |

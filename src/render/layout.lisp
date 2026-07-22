@@ -730,7 +730,9 @@ explicit <number>/<length>/<percentage> multiplier is used as-is; `normal`
 (stored as the keyword :NORMAL) resolves to the font's own metric factor —
 (ascent+|descent|+line-gap)/upem from FACE — instead of a flat 1.2."
   (let ((lh (css:cstyle-line-height cs)) (fs (css:cstyle-font-size cs)))
-    (* fs (if (eq lh :normal) (face-normal-lh-factor face) lh))))
+    (cond ((and (consp lh) (eq (car lh) :abs)) (cdr lh))   ; absolute <length>/<percentage>
+          ((eq lh :normal) (* fs (face-normal-lh-factor face)))
+          (t (* fs lh)))))                                  ; <number> multiplier
 
 (defun font-ascent-px (cs)
   "Ascent of CS's font in px (baseline to top of the em box)."

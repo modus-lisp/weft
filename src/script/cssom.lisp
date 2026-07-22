@@ -1424,7 +1424,12 @@
                                     (if (integerp z) (princ-to-string z) (px z))))
       ((string= dashed "font-weight") (princ-to-string (s css:cstyle-font-weight)))
       ((string= dashed "font-size") (px (s css:cstyle-font-size)))
-      ((string= dashed "line-height") (px (s css:cstyle-line-height)))
+      ((string= dashed "line-height")
+       (let ((lh (s css:cstyle-line-height)))
+         (cond ((eq lh :normal) "normal")
+               ((and (consp lh) (eq (car lh) :abs)) (px (cdr lh)))
+               ((realp lh) (px (* (s css:cstyle-font-size) lh)))   ; <number>: used px
+               (t (px lh)))))
       ((string= dashed "color") (rgb-str (s css:cstyle-color)))
       ((string= dashed "visibility") (s css:cstyle-visibility))
       ((string= dashed "background-color")

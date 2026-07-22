@@ -5622,6 +5622,9 @@ pass 2*PX (CSS Filter Effects 1 §blur)."
   (let ((n (* sw sh)))
     (flet ((cl (v) (the (unsigned-byte 8) (min 255 (max 0 (round v))))))
       (dolist (f filters)
+        (when (eq (car f) :drop-shadow)
+          (%apply-drop-shadow f cr cg cb ca sw sh))
+        (unless (eq (car f) :drop-shadow)
         (let ((op (car f)) (amt (float (cdr f) 1.0)))
           (case op
             (:blur (%blur-rgba cr cg cb ca sw sh amt))
@@ -5644,7 +5647,38 @@ pass 2*PX (CSS Filter Effects 1 §blur)."
                        (aref cg i) (iv (aref cg i))
                        (aref cb i) (iv (aref cb i))))))
             ((:grayscale :sepia :saturate)
-             (%apply-matrix (%filter-matrix op amt) cr cg cb n))))))))
+             (%apply-matrix (%filter-matrix op amt) cr cg cb n)))))))))
+
+(defun %apply-drop-shadow (f cr cg cb ca sw sh)
+  "filter:drop-shadow (CSS Filter Effects 1): build a shadow from the alpha channel CA
+offset by (dx,dy), blurred, tinted the shadow colour, then composite the source
+(CR/CG/CB/CA) OVER the shadow, writing the result back into CR/CG/CB/CA."
+  (destructuring-bind (dx dy blur r g b a) (cdr f)
+    (let* ((n (* sw sh)) (idx (round dx)) (idy (round dy))
+           (sr (make-array n :element-type '(unsigned-byte 8) :initial-element (min 255 (max 0 (round r)))))
+           (sg (make-array n :element-type '(unsigned-byte 8) :initial-element (min 255 (max 0 (round g)))))
+           (sb (make-array n :element-type '(unsigned-byte 8) :initial-element (min 255 (max 0 (round b)))))
+           (sa (make-array n :element-type '(unsigned-byte 8) :initial-element 0)))
+      ;; shadow alpha = source alpha shifted by (dx,dy), scaled by the colour's alpha
+      (dotimes (y sh)
+        (dotimes (x sw)
+          (let ((srcx (- x idx)) (srcy (- y idy)))
+            (when (and (>= srcx 0) (< srcx sw) (>= srcy 0) (< srcy sh))
+              (setf (aref sa (+ (* y sw) x))
+                    (min 255 (max 0 (round (* (aref ca (+ (* srcy sw) srcx)) a)))))))))
+      (when (> blur 0.01) (%blur-rgba sr sg sb sa sw sh blur))
+      ;; source OVER shadow
+      (dotimes (i n)
+        (let* ((fa (/ (aref ca i) 255.0)) (sha (/ (aref sa i) 255.0))
+               (outa (+ fa (* sha (- 1.0 fa)))))
+          (if (<= outa 0.0)
+              (setf (aref cr i) 0 (aref cg i) 0 (aref cb i) 0 (aref ca i) 0)
+              (flet ((comp (fc sc)
+                       (min 255 (max 0 (round (/ (+ (* fc fa) (* sc sha (- 1.0 fa))) outa))))))
+                (setf (aref cr i) (comp (aref cr i) (aref sr i))
+                      (aref cg i) (comp (aref cg i) (aref sg i))
+                      (aref cb i) (comp (aref cb i) (aref sb i))
+                      (aref ca i) (min 255 (max 0 (round (* 255.0 outa))))))))))))
 
 (defun paint-filtered (cv lb filters &optional (alpha 1.0))
   "CSS Filter Effects 1 §filter: render LB's subtree upright into two offscreen buffers
@@ -5652,9 +5686,16 @@ pass 2*PX (CSS Filter Effects 1 §blur)."
 chain (per-pixel colour LUTs/matrices; blur spatially), then composite over CV at group
 ALPHA.  Honours the ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
   (multiple-value-bind (sx0 sy0 sx1 sy1) (subtree-paint-bounds lb)
-    (let ((pad (1+ (reduce #'max (mapcar (lambda (f) (if (eq (car f) :blur)
-                                                         (ceiling (* 3 (cdr f))) 0))
-                                         filters) :initial-value 0))))
+    (let ((pad (1+ (reduce #'max
+                           (mapcar (lambda (f)
+                                     (cond ((eq (car f) :blur) (ceiling (* 3 (cdr f))))
+                                           ((eq (car f) :drop-shadow)
+                                            (destructuring-bind (dx dy bl r g b a) (cdr f)
+                                              (declare (ignore r g b a))
+                                              (+ (ceiling (max (abs dx) (abs dy))) (ceiling (* 3 bl)))))
+                                           (t 0)))
+                                   filters)
+                           :initial-value 0))))
       (decf sx0 pad) (decf sy0 pad) (incf sx1 pad) (incf sy1 pad)
       (let ((sw (- sx1 sx0)) (sh (- sy1 sy0)))
         (when (and (plusp sw) (plusp sh) (<= (* sw sh) 16000000))

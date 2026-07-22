@@ -64,7 +64,28 @@
     ((member name '("brightness" "contrast" "saturate") :test #'string=)
      (let ((a (%filter-amount arg 1.0)))
        (when a (cons (intern (string-upcase name) :keyword) (max 0.0 a)))))
+    ((string= name "drop-shadow") (%parse-drop-shadow arg))
     (t nil)))
+
+(defun %parse-drop-shadow (arg)
+  "Parse drop-shadow(offx offy [blur] [color]) -> (:drop-shadow dx dy blur r g b a),
+with A the shadow-colour alpha as a 0..1 fraction (CSS Filter Effects 1 §drop-shadow).
+A missing colour defaults to currentColor, approximated as black."
+  (let ((toks (ws-split-top (css-trim arg))) (color nil) (lens '()) (fs 16.0))
+    (dolist (tok toks)
+      (cond ((and (null color) (gcolor-token-p tok)) (setf color (gcolor tok)))
+            (t (let ((px (resolve-len tok fs)))
+                 (if (numberp px) (push px lens)
+                     (return-from %parse-drop-shadow nil))))))
+    (setf lens (nreverse lens))
+    (when (and (>= (length lens) 2) (<= (length lens) 3))
+      (let* ((c (if (and color (listp color)) color '(0 0 0)))
+             (araw (if (>= (length c) 4) (fourth c) 255))
+             (a (if (> araw 1.0) (/ araw 255.0) araw)))
+        (list :drop-shadow (float (first lens) 1.0) (float (second lens) 1.0)
+              (max 0.0 (float (or (third lens) 0.0) 1.0))
+              (float (first c) 1.0) (float (second c) 1.0) (float (third c) 1.0)
+              (float a 1.0))))))
 
 ;;; ---- clip-path (CSS Masking 1 §clip-path, basic shapes) -----------------
 

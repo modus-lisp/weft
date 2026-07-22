@@ -13,8 +13,28 @@
   ;; CSS Containment 3 §container queries: NIL for an unconditional rule, else a
   ;; list of enclosing @container query specs (each (NAME . COND-AST), innermost
   ;; last), ALL of which must evaluate true for the rule's declarations to apply.
-  container)
+  container
+  ;; CSS Cascade 5 §layers: the cascade layer this rule belongs to.  During parse
+  ;; this holds the layer NAME (string) or NIL (unlayered); after parse it is
+  ;; rewritten to an integer RANK (0-based, layer declaration order) or NIL.
+  layer)
 (defstruct css-decl prop value important)
+
+(defvar *cur-layer* nil
+  "Name of the cascade layer currently being collected (a string), or NIL when the
+rules being parsed are unlayered.  Stamped onto each CSS-RULE via CSS-RULE-LAYER.")
+(defvar *layer-order* nil
+  "Cascade layer names in first-declaration order (CSS Cascade 5 §6.4.1): earlier =
+lower priority for normal declarations.  Bound fresh per PARSE-STYLESHEET.")
+(defvar *anon-layer-counter* 0)
+
+(defun register-layer (name)
+  "Register cascade layer NAME (appending if new) and return it."
+  (unless (member name *layer-order* :test #'equal)
+    (setf *layer-order* (append *layer-order* (list name))))
+  name)
+(defun anon-layer-name ()
+  (format nil "%anon-layer-~d" (incf *anon-layer-counter*)))
 
 (defvar *container-cq* nil
   "Dynamic list of enclosing @container query specs stamped onto every CSS-RULE
@@ -759,7 +779,8 @@ is syntactically invalid — in either NIL case the guarded block is dropped."
 
 (defun parse-stylesheet (css)
   "Parse a CSS string into a list of CSS-RULEs."
-  (let* ((toks (css-tokenize css)) (n (length toks)) (i 0) (rules '()))
+  (let* ((toks (css-tokenize css)) (n (length toks)) (i 0) (rules '())
+         (*layer-order* nil) (*cur-layer* nil) (*anon-layer-counter* 0))
     (labels ((emit-rule (sel bstart bend)
                ;; CSS Nesting L1: parse a qualified rule's block [BSTART,BEND) whose
                ;; parent selector is SEL.  Direct declarations form a rule with SEL
@@ -826,7 +847,7 @@ is syntactically invalid — in either NIL case the guarded block is dropped."
                  ;; within each group via the nreverse below).
                  (when direct
                    (push (make-css-rule :selector sel :decls (nreverse direct)
-                                        :container *container-cq*)
+                                        :container *container-cq* :layer *cur-layer*)
                          rules))
                  (dolist (nr (nreverse nested))
                    (let ((*container-cq* (if (fourth nr)
@@ -852,12 +873,19 @@ is syntactically invalid — in either NIL case the guarded block is dropped."
                                  ((string= kw "media")
                                   (when (media-matches-p (toks-text toks (1+ i) j))
                                     (collect-rules (1+ j) close)))
-                                 ;; @layer wraps ordinary rules — flatten them in.
-                                 ;; Tailwind v4 puts EVERY utility inside `@layer utilities`
-                                 ;; (with the responsive variants in a nested @media), so
-                                 ;; skipping @layer dropped the whole framework.
+                                 ;; @layer wraps ordinary rules — flatten them in but
+                                 ;; stamp each with its layer so the cascade can order
+                                 ;; layers (CSS Cascade 5).  A named block registers/
+                                 ;; extends that layer; an anonymous block is its own.
+                                 ;; (Tailwind v4 puts EVERY utility inside `@layer
+                                 ;; utilities`, so the rules must still be collected.)
                                  ((string= kw "layer")
-                                  (collect-rules (1+ j) close))
+                                  (let* ((prelude (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                                               (toks-text toks (1+ i) j)))
+                                         (name (register-layer (if (plusp (length prelude)) prelude
+                                                                   (anon-layer-name))))
+                                         (*cur-layer* name))
+                                    (collect-rules (1+ j) close)))
                                  ;; @supports: flatten only when the condition holds
                                  ;; (CSS Conditional Rules 3 §3); an unmet or invalid
                                  ;; condition drops the guarded block.
@@ -887,7 +915,15 @@ is syntactically invalid — in either NIL case the guarded block is dropped."
                                  ;; @keyframes / @page — skip their blocks.
                                  (t nil))
                                (setf i (1+ close))))
-                            (t (setf i (if (< j end) (1+ j) end))))))
+                            (t
+                             ;; a statement at-rule (no block), e.g. `@layer a, b;`
+                             ;; — register the named layers in declaration order so a
+                             ;; later `@layer a {…}` picks up the pre-established rank.
+                             (when (string= kw "layer")
+                               (dolist (nm (uiop:split-string (toks-text toks (1+ i) j) :separator ","))
+                                 (let ((tn (string-trim '(#\Space #\Tab #\Newline #\Return) nm)))
+                                   (when (plusp (length tn)) (register-layer tn)))))
+                             (setf i (if (< j end) (1+ j) end))))))
                        (t
                         ;; qualified rule: prelude up to '{'
                         (let ((pstart i) (j i))
@@ -904,7 +940,23 @@ is syntactically invalid — in either NIL case the guarded block is dropped."
                                 (setf i (1+ close)))
                               (setf i end))))))))))
       (collect-rules 0 n))
+    ;; rewrite each rule's layer NAME to its integer RANK (declaration order); an
+    ;; unlayered rule stays NIL.  With no @layer in the sheet every rank is NIL, so
+    ;; the cascade is byte-identical to the pre-layer behaviour.
+    (let ((order *layer-order*))
+      (when order
+        (dolist (r rules)
+          (let ((nm (css-rule-layer r)))
+            (setf (css-rule-layer r) (and nm (position nm order :test #'equal)))))))
     (nreverse rules)))
+
+(defun stylesheet-layer-count (stylesheet)
+  "The number of distinct cascade layers referenced by STYLESHEET (0 when none)."
+  (let ((mx -1))
+    (dolist (r stylesheet)
+      (let ((l (and (css-rule-p r) (css-rule-layer r))))
+        (when (integerp l) (setf mx (max mx l)))))
+    (1+ mx)))
 
 (defun decl-uses-container-unit-p (value)
   "True when a declaration VALUE references a container-query length unit

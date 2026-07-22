@@ -3159,6 +3159,7 @@ of CSS-RULEs).  Returns a hash-table element->CSTYLE.  When CONTAINER-SIZES (a
 hash element->size-plist) is supplied, @container rules are evaluated against the
 measured containers; otherwise their declarations are held back (not-yet-resolved)."
   (let ((styles (make-hash-table :test 'equal))
+        (maxrank (stylesheet-layer-count stylesheet))      ; # of cascade layers (0 when none)
         (*el-classes-cache* (make-hash-table :test 'eq))   ; split each element's classes once this pass
         (*ancestor-bloom* (make-hash-table :test 'eq))     ; ancestor identifiers per element, for descendant/child skipping
         ;; pre-parse selectors once, tagging rules with (match-cx pseudo spec order decls).
@@ -3174,11 +3175,24 @@ measured containers; otherwise their declarations are held back (not-yet-resolve
                        append (loop for cx in (parse-selector-list (css-rule-selector r))
                                     collect (multiple-value-bind (pe mcx) (cx-pseudo-element cx)
                                               (list mcx pe (specificity cx) order (css-rule-decls r)
-                                                    (css-rule-container r))))))))
-    (labels ((sort-matched (matched)
-               (stable-sort (nreverse matched)
-                            (lambda (x y) (or (spec< (first x) (first y))
-                                              (and (equal (first x) (first y)) (< (second x) (second y)))))))
+                                                    (css-rule-container r) (css-rule-layer r))))))))
+    (labels ((layer-comp (lrank important)
+               ;; the layer priority component (lower = applied earlier = loses).
+               ;; NORMAL: layer0<layer1<…<unlayered.  IMPORTANT: reversed — unlayered
+               ;; is lowest, then last layer … first layer (CSS Cascade 5 §6.4.1).
+               (if important
+                   (if (integerp lrank) (- maxrank lrank) -1)
+                   (if (integerp lrank) lrank maxrank)))
+             (cascade< (x y important)
+               ;; true when X has LOWER cascade priority than Y (so a later apply of Y
+               ;; wins): compare layer, then specificity, then source order.
+               (let ((lx (layer-comp (fifth x) important)) (ly (layer-comp (fifth y) important)))
+                 (cond ((/= lx ly) (< lx ly))
+                       ((spec< (first x) (first y)) t)
+                       ((equal (first x) (first y)) (< (second x) (second y)))
+                       (t nil))))
+             (sort-matched (matched &optional (important nil))
+               (stable-sort (nreverse matched) (lambda (x y) (cascade< x y important))))
              (pseudo-style (parent-cs matched vars)
                "Build a CSTYLE for a ::before/::after box, or NIL if no content."
                (when matched
@@ -3257,14 +3271,14 @@ content gate — the fragment styles a slice of the element's own text."
                    (let ((matched '()) (m-before '()) (m-after '()) (m-first-letter '()) (m-first-line '()))
                      (map-candidate-rules
                       (lambda (ru)
-                        (destructuring-bind (cx pe spec order decls cq) ru
+                        (destructuring-bind (cx pe spec order decls cq lrank) ru
                           (when (match-cx cx n)
                             (case pe
-                              (:before (push (list spec order decls cq) m-before))
-                              (:after  (push (list spec order decls cq) m-after))
-                              (:first-letter (push (list spec order decls cq) m-first-letter))
-                              (:first-line   (push (list spec order decls cq) m-first-line))
-                              (t       (push (list spec order decls cq) matched))))))
+                              (:before (push (list spec order decls cq lrank) m-before))
+                              (:after  (push (list spec order decls cq lrank) m-after))
+                              (:first-letter (push (list spec order decls cq lrank) m-first-letter))
+                              (:first-line   (push (list spec order decls cq lrank) m-first-line))
+                              (t       (push (list spec order decls cq lrank) matched))))))
                       rindex n tag)
                      ;; @container gating (CSS Containment 3): a rule stamped with a
                      ;; container query applies only when CONTAINER-SIZES is known and
@@ -3281,7 +3295,13 @@ content gate — the fragment styles a slice of the element's own text."
                              m-after (remove-if-not #'cq-keep m-after)
                              m-first-letter (remove-if-not #'cq-keep m-first-letter)
                              m-first-line (remove-if-not #'cq-keep m-first-line)))
-                     (let* ((sorted (sort-matched matched))
+                     (let* ((sorted (sort-matched (copy-list matched) nil))
+                            ;; !important reverses cascade-layer order, so the important
+                            ;; author pass walks a separately-sorted list.  With no
+                            ;; @layer in the sheet both orders coincide (byte-identical).
+                            (sorted-important (if (> maxrank 0)
+                                                  (sort-matched (copy-list matched) t)
+                                                  sorted))
                             (inline (el-attr n "style"))
                             (inline-pvs (and inline (parse-inline inline)))
                             ;; the nearest ancestor query container's measured size,
@@ -3325,8 +3345,8 @@ content gate — the fragment styles a slice of the element's own text."
                        ;; is what lets a low-specificity `!important` beat a
                        ;; higher-specificity normal rule (Acid3's `* + * > * > p
                        ;; { border: 1px solid !important }` over `.buckets p`).
-                       (flet ((apply-author (important)
-                                (dolist (m sorted)
+                       (flet ((apply-author (lst important)
+                                (dolist (m lst)
                                   (dolist (d (third m))
                                     (when (and (not (custom-prop-p (css-decl-prop d)))
                                                (eq (not (null (css-decl-important d))) important))
@@ -3337,9 +3357,9 @@ content gate — the fragment styles a slice of the element's own text."
                                     (when (and (not (custom-prop-p (first pv)))
                                                (eq (not (null (third pv))) important))
                                       (apply-decl cs (first pv) (resolve-vars (second pv) vars) parent-cs)))))
-                           (apply-author nil)                    ; author normal
+                           (apply-author sorted nil)             ; author normal (by layer/spec)
                            (apply-inline nil)                    ; inline normal (beats author normal)
-                           (apply-author t)                      ; author !important (beats all normal)
+                           (apply-author sorted-important t)     ; author !important (reversed layers)
                            (apply-inline t)))                    ; inline !important (beats author !important)
                        ;; legacy <center>: horizontally center its block-level children
                        ;; (the -webkit-center behavior) unless the author set a margin.

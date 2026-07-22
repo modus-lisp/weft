@@ -2846,13 +2846,33 @@ column distributes grow/shrink into; NIL means auto (size to content)."
                                             ((string= ac "space-around") (/ extra nlines))
                                             ((string= ac "space-evenly") (/ extra (1+ nlines)))
                                             (t 0)))
+                             ;; align-content:stretch (also the normal/unset default)
+                             ;; grows each flex line's cross size equally to fill the
+                             ;; leftover block space (CSS Flexbox §8.2); stretched items
+                             ;; then fill the taller line.
+                             (per (if (and (or (null ac) (member ac '("stretch" "normal") :test #'string=))
+                                           (> extra 0) (> nlines 0))
+                                      (/ extra nlines) 0))
                              (all '()) (y (+ cy lead)))
                         (dolist (pair laid)
                           (destructuring-bind (boxes . line-h) pair
-                            (let ((dy (round (- y cy))))
-                              (unless (zerop dy) (dolist (b boxes) (shift-box b 0 dy))))
-                            (setf all (nconc all boxes))
-                            (incf y (+ line-h cross-gap between))))
+                            (let ((lh (+ line-h per))
+                                  (dy (round (- y cy))))
+                              (unless (zerop dy) (dolist (b boxes) (shift-box b 0 dy)))
+                              (when (> per 0)
+                                (dolist (b boxes)     ; grow stretched auto-cross items to the taller line
+                                  (let* ((s (lbox-style b))
+                                         (a (let ((as (css:cstyle-align-self s)))
+                                              (if (and as (not (string= as "auto"))) as align))))
+                                    (when (and (equal a "stretch")
+                                               (member (css:cstyle-height s) '(nil :auto))
+                                               (not (css:cstyle-margin-top-auto s))
+                                               (not (css:cstyle-margin-bottom-auto s)))
+                                      (let ((mt (max 0 (css:cstyle-margin-top s)))
+                                            (mb (max 0 (css:cstyle-margin-bottom s))))
+                                        (setf (lbox-h b) (max (lbox-h b) (round (- lh mt mb)))))))))
+                              (setf all (nconc all boxes))
+                              (incf y (+ lh cross-gap between)))))
                         (values all (max total (if (numberp avail-h) avail-h 0))))))
                   ;; ---- single-line row (nowrap) ----
                   ;; pass AVAIL-H so a definite-height container stretches its items to fill it

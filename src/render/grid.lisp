@@ -11,6 +11,17 @@
 ;;;; position each item in its cell honoring self-alignment.
 (in-package #:weft.render)
 
+;;; CSS Grid 2 §subgrid: when a nested grid declares grid-template-columns:subgrid,
+;;; it adopts its parent's column tracks over the area it spans instead of defining
+;;; its own.  The parent binds this to (WIDTHS . GAP) — the resolved px widths of the
+;;; spanned columns and the parent's column gap — around laying the subgrid item out;
+;;; the subgrid's own LAYOUT-GRID consumes it as fixed tracks.  NIL = ordinary grid.
+(defvar *subgrid-cols* nil)
+
+(defun subgrid-axis-p (str)
+  "True when a grid-template-columns/rows value is the `subgrid` keyword."
+  (and str (string-equal (string-trim '(#\Space #\Tab #\Newline #\Return) str) "subgrid")))
+
 ;;; ---- track-list parsing -------------------------------------------------
 ;;; A track spec is one of:
 ;;;   (:fixed px) (:percent n) (:fr n) (:auto) (:min-content) (:max-content)
@@ -388,6 +399,8 @@ and unknown values pack tightly from ORIGIN (weft does not grow tracks for stret
   "Lay out a CSS Grid container.  Same contract as LAYOUT-FLEX: returns
 (values child-lboxes content-height); CX/CY are the content-box origin, CONTENT-W
 its width, AVAIL-H its definite content height (px) when known else NIL."
+  (let ((%subgrid-cols *subgrid-cols*)   ; tracks this grid adopts from a subgrid parent
+        (*subgrid-cols* nil))            ; isolate: descendant/measured grids don't inherit
   (let* ((fs (css:cstyle-font-size base-cs))
          ;; percentage gaps resolve against the container content size in that axis
          ;; (CSS Box Alignment §8.3); an indefinite row basis yields 0.
@@ -398,8 +411,13 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
          ;; With NO explicit grid-template-columns every column is implicit and is
          ;; sized by grid-auto-columns (CSS Grid §7.5); fall back to that single track
          ;; rather than a bare (:auto) so grid-auto-flow:column honours auto-columns.
-         (col-specs (or (grid-parse-track-list (css:cstyle-grid-template-columns base-cs) fs content-w cgap)
-                        (list (or auto-col '(:auto)))))
+         ;; grid-template-columns:subgrid — adopt the parent grid's spanned column
+         ;; tracks (fixed px) and its column gap (CSS Grid 2 §subgrid).
+         (subgrid-cols-p (and %subgrid-cols (subgrid-axis-p (css:cstyle-grid-template-columns base-cs))))
+         (cgap (if subgrid-cols-p (cdr %subgrid-cols) cgap))
+         (col-specs (cond (subgrid-cols-p (mapcar (lambda (w) (list :fixed (float w))) (car %subgrid-cols)))
+                          ((grid-parse-track-list (css:cstyle-grid-template-columns base-cs) fs content-w cgap))
+                          (t (list (or auto-col '(:auto))))))
          (row-specs (grid-parse-track-list (css:cstyle-grid-template-rows base-cs) fs
                                            (and (numberp avail-h) avail-h) rgap))
          (col-flow (let ((f (css:cstyle-grid-auto-flow base-cs))) (and f (string= f "column"))))
@@ -474,7 +492,13 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
                      (hoff (cond ((string= just "center") (/ (- span-w mbox-w) 2))
                                  ((string= just "end") (- span-w mbox-w))
                                  (t 0)))
-                     (x (+ cx (aref colx c) hoff)))
+                     (x (+ cx (aref colx c) hoff))
+                     ;; a subgrid child adopts THIS grid's spanned column tracks + gap
+                     (*subgrid-cols* (if (subgrid-axis-p (css:cstyle-grid-template-columns cs))
+                                         (cons (loop for k from c below (min ncols (+ c cspan))
+                                                     collect (aref colw k))
+                                               cgap)
+                                         nil)))
                 (multiple-value-bind (lb adv) (layout-node it styles (round x) (round cy) (round mbox-w))
                   (declare (ignore adv))
                   (push (list lb (if lb (lbox-h lb) 0) r c rspan cspan (grid-align cs base-cs) span-w mt mb)
@@ -563,4 +587,4 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
                         (push lb boxes)))))
                 (values (nreverse boxes)
                         (+ (loop for r below nrows sum (aref rbase r))
-                           (* rgap (max 0 (1- nrows))))))))))))))
+                           (* rgap (max 0 (1- nrows)))))))))))))))

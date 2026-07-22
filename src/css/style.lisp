@@ -2025,6 +2025,15 @@ values (so a single-layer background is unaffected)."
            ;; recompute the combined value: non-visible when EITHER axis clips.
            (flet ((vis (o) (member o '("visible" nil) :test #'equal)))
              (let ((x (cstyle-overflow-x cs)) (y (cstyle-overflow-y cs)))
+               ;; CSS Overflow 3 §3: `visible`/`clip` is not possible on only one axis
+               ;; when the other axis is a scrolling value — the visible axis computes
+               ;; to `auto` (and `clip` to `hidden`).  So a box with one clipping axis
+               ;; clips the other too.
+               ;; (weft draws no scrollbars, so the promoted `auto` clips like `hidden`).
+               (when (and (vis x) (not (vis y)) (not (equal y "clip")))
+                 (setf x "hidden" (cstyle-overflow-x cs) "hidden"))
+               (when (and (vis y) (not (vis x)) (not (equal x "clip")))
+                 (setf y "hidden" (cstyle-overflow-y cs) "hidden"))
                (setf (cstyle-overflow cs)
                      (cond ((and (vis x) (vis y)) "visible")
                            ((not (vis y)) y)

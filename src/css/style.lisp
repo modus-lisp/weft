@@ -314,6 +314,24 @@ ex/ch use the right per-face metric (WPT's Ahem: x-height 0.8em, char advance 1.
                               (string-equal (string-trim '(#\Space #\" #\') f) "Ahem")))
              fam)))
 
+(defun viewport-unit-axis (unit)
+  "Map a viewport-length UNIT string to its resolving axis keyword (:w/:h/:min/:max),
+or NIL when UNIT is not a viewport unit.  The small/large/dynamic variants
+(svw/lvw/dvw…) resolve identically to the classic v* at a fixed viewport (CSS
+Values 4 §5.1.3); vi/vb map to the inline/block axes under the assumed horizontal
+writing mode (vi=vw, vb=vh)."
+  (let* ((u unit)
+         ;; strip a leading s/l/d viewport-size-variant prefix.
+         (u (if (and (>= (length u) 3)
+                     (member (char u 0) '(#\s #\l #\d))
+                     (char= (char u 1) #\v))
+                (subseq u 1) u)))
+    (cond ((member u '("vw" "vi") :test #'string=) :w)
+          ((member u '("vh" "vb") :test #'string=) :h)
+          ((string= u "vmin") :min)
+          ((string= u "vmax") :max)
+          (t nil))))
+
 (defun resolve-len (text font-size &optional (auto-ok nil))
   "Resolve a length string to px (float), or :auto, or NIL if unparseable."
   (let ((tt (string-downcase (string-trim '(#\Space) text))))
@@ -350,11 +368,17 @@ ex/ch use the right per-face metric (WPT's Ahem: x-height 0.8em, char advance 1.
                        ((string= unit "q")  (* num 120/127))    ; 96/101.6 (quarter-mm)
                        ((string= unit "pt") (* num 4/3))        ; 96/72
                        ((string= unit "pc") (* num 16))         ; 12pt
-                       ;; viewport units (resolve against the viewport when known)
-                       ((and (string= unit "vw") *viewport-w*) (* num (/ *viewport-w* 100.0)))
-                       ((and (string= unit "vh") *viewport-h*) (* num (/ *viewport-h* 100.0)))
-                       ((and (string= unit "vmin") *viewport-w* *viewport-h*) (* num (/ (min *viewport-w* *viewport-h*) 100.0)))
-                       ((and (string= unit "vmax") *viewport-w* *viewport-h*) (* num (/ (max *viewport-w* *viewport-h*) 100.0)))
+                       ;; viewport units (resolve against the viewport when known).
+                       ;; The small/large/dynamic variants (svw/lvw/dvw…) equal the
+                       ;; classic v* at a fixed viewport with no dynamic UA chrome
+                       ;; (CSS Values 4 §5.1.3); vi/vb are the inline/block axes —
+                       ;; in the assumed horizontal writing mode vi=vw, vb=vh.
+                       ((and (viewport-unit-axis unit) *viewport-w* *viewport-h*)
+                        (* num (/ (ecase (viewport-unit-axis unit)
+                                    (:w *viewport-w*) (:h *viewport-h*)
+                                    (:min (min *viewport-w* *viewport-h*))
+                                    (:max (max *viewport-w* *viewport-h*)))
+                                  100.0)))
                        ;; font-relative units: ch is the "0" advance, ex the x-height —
                        ;; both ~0.5em for typical fonts (we approximate rather than
                        ;; measure the face at cascade time).  `65ch` (a common prose

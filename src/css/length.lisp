@@ -58,7 +58,11 @@
                   ;; has unit: check against valid CSS absolute/relative units
                   (if (member unit-str
                               '("px" "em" "rem" "ex" "ch"
-                                "vw" "vh" "vmin" "vmax"
+                                "vw" "vh" "vmin" "vmax" "vi" "vb"
+                                "svw" "svh" "svmin" "svmax" "svi" "svb"
+                                "lvw" "lvh" "lvmin" "lvmax" "lvi" "lvb"
+                                "dvw" "dvh" "dvmin" "dvmax" "dvi" "dvb"
+                                "cqw" "cqh" "cqi" "cqb" "cqmin" "cqmax"
                                 "cm" "mm" "in" "pt" "pc" "q")
                               :test #'string=)
                       (list (float value 0d0) unit-str)

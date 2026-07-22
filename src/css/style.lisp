@@ -166,6 +166,10 @@
   ;; length is px (float) or (:pct . N) resolved against the border box at paint.
   ;; NIL = none.  Not inherited; layout-neutral, paint-only.
   (clip-path nil)
+  ;; CSS Masking 1 §mask: a single mask BG-LAYER (image + size/repeat/position) whose
+  ;; per-pixel ALPHA (mask-mode:alpha / -webkit-mask) multiplies the element+subtree
+  ;; coverage in paint.  NIL = no mask.  Not inherited; layout-neutral, paint-only.
+  (mask nil)
   ;; CSS Backgrounds & Borders 3 §6 border-image: when BORDER-IMAGE-SOURCE is set
   ;; (a parsed gradient list or a url string), the 9-sliced image replaces the normal
   ;; border paint.  SLICE = (top right bottom left fill-p), each offset (VAL . :px|:pct);
@@ -1640,6 +1644,42 @@ values (so a single-layer background is unaffected)."
                        (t nil)))))   ; normal / unknown -> ordinary compositing
         ((string= prop "clip-path")
          (setf (cstyle-clip-path cs) (parse-clip-path value fs)))
+        ;; CSS Masking 1 §mask (+ the -webkit-mask alias): a single mask layer whose
+        ;; alpha multiplies the element's coverage.  The longhands accumulate onto one
+        ;; BG-LAYER; the shorthand sets its image (+ any repeat/position tokens).
+        ((let ((p (if (and (> (length prop) 8) (string= (subseq prop 0 8) "-webkit-"))
+                      (subseq prop 8) prop)))
+           (member p '("mask" "mask-image" "mask-size" "mask-repeat" "mask-position")
+                   :test #'string=))
+         (let* ((p (if (and (> (length prop) 8) (string= (subseq prop 0 8) "-webkit-"))
+                       (subseq prop 8) prop))
+                (v (string-trim '(#\Space #\Tab #\Newline #\Return) value))
+                (low (string-downcase v)))
+           (labels ((ensure () (or (cstyle-mask cs)
+                                   (setf (cstyle-mask cs) (make-bg-layer :image nil)))))
+             (cond
+               ((member low '("none" "initial" "unset" "inherit" "") :test #'string=)
+                (when (member p '("mask" "mask-image") :test #'string=)
+                  (setf (cstyle-mask cs) nil)))
+               ((member p '("mask" "mask-image") :test #'string=)
+                (let* ((grad (parse-gradient v fs))
+                       (url (extract-css-url v))
+                       (ly (ensure)))
+                  (cond (grad (setf (bg-layer-image ly) (cons :gradient grad)))
+                        (url (setf (bg-layer-image ly) (cons :url url))))
+                  ;; shorthand: pull a trailing repeat / no-repeat keyword
+                  (when (string= p "mask")
+                    (let ((r (find-if (lambda (tk) (member tk '("repeat" "repeat-x" "repeat-y" "no-repeat") :test #'string=))
+                                      (split-ws low))))
+                      (when r (setf (bg-layer-repeat ly) r))))))
+               ((string= p "mask-size")
+                (setf (bg-layer-size (ensure)) (parse-bg-size v fs)))
+               ((string= p "mask-repeat")
+                (let ((r (first (split-ws low))))
+                  (when r (setf (bg-layer-repeat (ensure)) r))))
+               ((string= p "mask-position")
+                (let ((pos (parse-value "background-position" low)))
+                  (when (listp pos) (setf (bg-layer-position (ensure)) pos))))))))
         ((string= prop "content") (setf (cstyle-content cs) (parse-content value)))
         ((string= prop "quotes") (setf (cstyle-quotes cs) (parse-quotes value parent-cs)))
         ((string= prop "counter-reset")

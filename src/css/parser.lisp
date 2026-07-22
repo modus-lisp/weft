@@ -828,7 +828,24 @@ is syntactically invalid — in either NIL case the guarded block is dropped."
       (collect-rules 0 n))
     (nreverse rules)))
 
+(defun decl-uses-container-unit-p (value)
+  "True when a declaration VALUE references a container-query length unit
+(cqw/cqh/cqi/cqb/cqmin/cqmax), so it needs the post-layout container-size pass even
+without an @container rule (CSS Containment 3 §container units)."
+  (let ((v (string-downcase value)))
+    (flet ((has (u) (let ((p (search u v)))
+                      ;; the unit must follow a digit and not be a longer ident tail
+                      (and p (plusp p) (digit-char-p (char v (1- p)))
+                           (or (= (+ p (length u)) (length v))
+                               (not (alpha-char-p (char v (+ p (length u))))))))))
+      (or (has "cqw") (has "cqh") (has "cqi") (has "cqb") (has "cqmin") (has "cqmax")))))
+
 (defun sheet-has-container-queries-p (stylesheet)
-  "True when any rule in STYLESHEET was captured inside an @container block — the
-signal that a post-layout container-query resolution pass is needed."
-  (some #'css-rule-container stylesheet))
+  "True when any rule was captured inside an @container block, or any declaration
+uses a container-query unit — the signal that a post-layout container-query
+resolution pass is needed."
+  (some (lambda (r) (or (css-rule-container r)
+                        (and (not (font-face-rule-p r))
+                             (some (lambda (d) (decl-uses-container-unit-p (css-decl-value d)))
+                                   (css-rule-decls r)))))
+        stylesheet))

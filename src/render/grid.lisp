@@ -18,9 +18,34 @@
 ;;; the subgrid's own LAYOUT-GRID consumes it as fixed tracks.  NIL = ordinary grid.
 (defvar *subgrid-cols* nil)
 
+;;; The row-axis analogue: the parent binds (HEIGHTS . GAP) — the resolved px
+;;; heights of the spanned rows and the parent's row gap — around laying a
+;;; grid-template-rows:subgrid item out.  Only DEFINITE (fixed/percent-with-
+;;; definite-container) parent row tracks can be pre-resolved before item layout,
+;;; so a subgrid over auto/fr parent rows falls back to an ordinary grid.
+(defvar *subgrid-rows* nil)
+
 (defun subgrid-axis-p (str)
   "True when a grid-template-columns/rows value is the `subgrid` keyword."
   (and str (string-equal (string-trim '(#\Space #\Tab #\Newline #\Return) str) "subgrid")))
+
+(defun grid-definite-row-size (r row-specs auto-row avail-h)
+  "The DEFINITE px size of parent row R (fixed, or percent against a definite
+   AVAIL-H), else NIL — used to pre-resolve tracks for a subgrid-rows child."
+  (let ((spec (or (nth r row-specs) auto-row '(:auto))))
+    (case (car spec)
+      (:fixed (float (second spec)))
+      (:percent (and (numberp avail-h) (* avail-h (/ (second spec) 100.0))))
+      (t nil))))
+
+(defun grid-subgrid-rows-for (cs r rspan row-specs auto-row avail-h rgap)
+  "For a cell whose style CS declares grid-template-rows:subgrid and spans parent
+   rows R..R+RSPAN-1, return (HEIGHTS . RGAP) when every spanned parent row is
+   definite, else NIL (fall back to an ordinary grid)."
+  (when (subgrid-axis-p (css:cstyle-grid-template-rows cs))
+    (let ((sizes (loop for k from r below (+ r (max 1 rspan))
+                       collect (grid-definite-row-size k row-specs auto-row avail-h))))
+      (when (every #'numberp sizes) (cons sizes rgap)))))
 
 ;;; ---- track-list parsing -------------------------------------------------
 ;;; A track spec is one of:
@@ -400,7 +425,9 @@ and unknown values pack tightly from ORIGIN (weft does not grow tracks for stret
 (values child-lboxes content-height); CX/CY are the content-box origin, CONTENT-W
 its width, AVAIL-H its definite content height (px) when known else NIL."
   (let ((%subgrid-cols *subgrid-cols*)   ; tracks this grid adopts from a subgrid parent
-        (*subgrid-cols* nil))            ; isolate: descendant/measured grids don't inherit
+        (%subgrid-rows *subgrid-rows*)
+        (*subgrid-cols* nil)             ; isolate: descendant/measured grids don't inherit
+        (*subgrid-rows* nil))
   (let* ((fs (css:cstyle-font-size base-cs))
          ;; percentage gaps resolve against the container content size in that axis
          ;; (CSS Box Alignment §8.3); an indefinite row basis yields 0.
@@ -418,8 +445,14 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
          (col-specs (cond (subgrid-cols-p (mapcar (lambda (w) (list :fixed (float w))) (car %subgrid-cols)))
                           ((grid-parse-track-list (css:cstyle-grid-template-columns base-cs) fs content-w cgap))
                           (t (list (or auto-col '(:auto))))))
-         (row-specs (grid-parse-track-list (css:cstyle-grid-template-rows base-cs) fs
-                                           (and (numberp avail-h) avail-h) rgap))
+         ;; grid-template-rows:subgrid — adopt the parent grid's spanned row tracks
+         ;; (definite px) and its row gap (CSS Grid 2 §subgrid).
+         (subgrid-rows-p (and %subgrid-rows (subgrid-axis-p (css:cstyle-grid-template-rows base-cs))))
+         (rgap (if subgrid-rows-p (cdr %subgrid-rows) rgap))
+         (row-specs (if subgrid-rows-p
+                        (mapcar (lambda (h) (list :fixed (float h))) (car %subgrid-rows))
+                        (grid-parse-track-list (css:cstyle-grid-template-rows base-cs) fs
+                                               (and (numberp avail-h) avail-h) rgap)))
          (col-flow (let ((f (css:cstyle-grid-auto-flow base-cs))) (and f (string= f "column"))))
          (col-names (grid-line-name-map (css:cstyle-grid-template-columns base-cs) fs))
          (row-names (grid-line-name-map (css:cstyle-grid-template-rows base-cs) fs))
@@ -498,7 +531,10 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
                                          (cons (loop for k from c below (min ncols (+ c cspan))
                                                      collect (aref colw k))
                                                cgap)
-                                         nil)))
+                                         nil))
+                     ;; a subgrid child adopts THIS grid's spanned row tracks + gap
+                     ;; when they are definite (fixed/percent) — resolved up front.
+                     (*subgrid-rows* (grid-subgrid-rows-for cs r rspan row-specs auto-row avail-h rgap)))
                 (multiple-value-bind (lb adv) (layout-node it styles (round x) (round cy) (round mbox-w))
                   (declare (ignore adv))
                   (push (list lb (if lb (lbox-h lb) 0) r c rspan cspan (grid-align cs base-cs) span-w mt mb)

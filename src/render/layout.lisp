@@ -5500,6 +5500,67 @@ ancestor's *CLIP*/*ROUND-CLIP* via BLEND-PUT."
                               (blend-put cv dx dy (cc ar) (cc ag) (cc ab)
                                          (min 255 (max 0 (round (* 255.0 cov alpha))))))))))))))))))))
 
+;;; ---- mask (CSS Masking 1 §mask, alpha masking) --------------------------
+
+(defun mask-alpha-buffer (lb cs sw sh sx0 sy0)
+  "Render CS's mask layer over black+white into SW×SH offscreen buffers with the box
+shifted into the (sx0,sy0) frame, and recover the mask's per-pixel ALPHA (0-255,
+mask-mode:alpha) into a fresh array — or NIL when CS carries no mask image."
+  (let ((layer (css:cstyle-mask cs)))
+    (when (and layer (css:bg-layer-image layer))
+      (let ((offa (make-canvas sw sh '(0 0 0)))
+            (offb (make-canvas sw sh '(255 255 255)))
+            (out (make-array (* sw sh) :element-type '(unsigned-byte 8))))
+        (shift-box lb (- sx0) (- sy0))
+        (let ((*clip* nil) (*round-clip* nil))
+          (paint-one-bg-layer offa lb cs layer nil)
+          (paint-one-bg-layer offb lb cs layer nil))
+        (shift-box lb sx0 sy0)
+        (let ((pa (canvas-pixels offa)) (pb (canvas-pixels offb)))
+          (dotimes (i (* sw sh))
+            (let* ((j (* 3 i))
+                   (cov (- 1.0 (/ (+ (- (aref pb j) (aref pa j))
+                                     (- (aref pb (+ j 1)) (aref pa (+ j 1)))
+                                     (- (aref pb (+ j 2)) (aref pa (+ j 2))))
+                                  765.0))))
+              (setf (aref out i) (min 255 (max 0 (round (* 255.0 cov))))))))
+        out))))
+
+(defun paint-masked (cv lb alpha)
+  "CSS Masking 1 §mask (alpha mask): render LB's subtree upright over black+white,
+recover per-pixel colour + coverage, multiply coverage by the mask layer's alpha,
+and composite over CV at group ALPHA — so mask-transparent regions of the mask hide
+the element.  Honours the ancestor clip via BLEND-PUT."
+  (multiple-value-bind (sx0 sy0 sx1 sy1) (subtree-paint-bounds lb)
+    (decf sx0) (decf sy0) (incf sx1) (incf sy1)
+    (let ((sw (- sx1 sx0)) (sh (- sy1 sy0)))
+      (when (and (plusp sw) (plusp sh) (<= (* sw sh) 16000000))
+        (let ((mbuf (mask-alpha-buffer lb (lbox-style lb) sw sh sx0 sy0))
+              (offa (make-canvas sw sh '(0 0 0)))
+              (offb (make-canvas sw sh '(255 255 255))))
+          (shift-box lb (- sx0) (- sy0))
+          (let ((*clip* nil) (*round-clip* nil))
+            (%paint-box-content offa lb)
+            (%paint-box-content offb lb))
+          (shift-box lb sx0 sy0)
+          (let ((pa (canvas-pixels offa)) (pb (canvas-pixels offb)))
+            (dotimes (sy sh)
+              (let ((dy (+ sy0 sy)))
+                (when (and (>= dy 0) (< dy (canvas-height cv)))
+                  (dotimes (sx sw)
+                    (let ((dx (+ sx0 sx)))
+                      (when (and (>= dx 0) (< dx (canvas-width cv)))
+                        (let* ((idx (+ (* sy sw) sx)) (i (* 3 idx))
+                               (ar (aref pa i)) (ag (aref pa (+ i 1))) (ab (aref pa (+ i 2)))
+                               (br (aref pb i)) (bg (aref pb (+ i 1))) (bb (aref pb (+ i 2)))
+                               (cov (- 1.0 (/ (+ (- br ar) (- bg ag) (- bb ab)) 765.0)))
+                               (ma (if mbuf (/ (aref mbuf idx) 255.0) 1.0))
+                               (eff (* cov ma)))
+                          (when (> eff 0.004)
+                            (flet ((cc (v) (min 255 (max 0 (round (/ v cov))))))
+                              (blend-put cv dx dy (cc ar) (cc ag) (cc ab)
+                                         (min 255 (max 0 (round (* 255.0 eff alpha))))))))))))))))))))
+
 ;;; ---- filter (CSS Filter Effects 1 §filter) ------------------------------
 
 (defun %filter-matrix (op amt)
@@ -5707,9 +5768,11 @@ mix(backdrop, blend(backdrop, source), coverage*ALPHA)."
            ;; clip-path (CSS Masking 1): a per-pixel clip region on this box + subtree,
            ;; layered onto *ROUND-CLIP* around the whole paint (own box AND descendants).
            (clip (and cs (css:cstyle-clip-path cs)))
-           (crg (and clip (clip-path-region lb clip))))
+           (crg (and clip (clip-path-region lb clip)))
+           (mask (and cs (css:cstyle-mask cs) (css:bg-layer-image (css:cstyle-mask cs)))))
       (flet ((body ()
-               (cond (fil (paint-filtered cv lb fil (or op 1.0)))
+               (cond (mask (paint-masked cv lb (or op 1.0)))
+                     (fil (paint-filtered cv lb fil (or op 1.0)))
                      (blend (paint-blended cv lb blend (or op 1.0)))
                      (op (if m (paint-transformed cv lb m op) (paint-opacity cv lb op)))
                      (m (paint-transformed cv lb m))

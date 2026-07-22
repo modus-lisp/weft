@@ -274,6 +274,11 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                       ;; children — an empty box, not the "FAIL" text between its tags.
                       ((string= (h:dnode-name n) "iframe")
                        (atom! (replaced-box n cs content-w) n))
+                      ;; form controls (input/button/textarea/select): native widgets
+                      ;; drawn by the UA (weft has no form styling) — sized from
+                      ;; type/size/value, painted during paint (see FORM-CONTROL-BOX).
+                      ((form-control-p n)
+                       (let ((lb (form-control-box n cs))) (when lb (atom! lb n))))
                       ((and cs (string= (cdisplay cs) "inline-block"))
                        (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
                          (declare (ignore adv))
@@ -707,6 +712,122 @@ The subtree is rendered through stencil+gesso during paint."
         (make-lbox :x 0 :y 0 :w w :h h :style cs :node node :kind :block
                    :vpaint (lambda (cv x y bw bh) (declare (ignore bw bh))
                              (paint-canvas-box cv x y node)))))))
+
+;;; ---- form controls (native widgets) ---------------------------------------
+;;; <input>, <button>, <textarea>, <select> are replaced elements the UA draws as
+;;; widgets — a bordered box + its value/label.  weft has no HTML form styling, so
+;;; without these a login form is invisible.  Sizing uses the fixed 7x13 bitmap
+;;; font (*font-w* / *font-h*); painting uses fill-rect + draw-text.  The current
+;;; value lives in the node's "value" attr (editing mutates it, see INTERACT).
+
+(defun %ctrl-attr (node name &optional default)
+  (or (cdr (assoc name (h:dnode-attrs node) :test #'string-equal)) default))
+(defun %ctrl-int (node name)
+  (let ((v (%ctrl-attr node name))) (and v (ignore-errors (parse-integer (string-trim " " v) :junk-allowed t)))))
+(defun %ctrl-text (node)
+  "Descendant text of NODE (a <button>/<textarea> label)."
+  (with-output-to-string (s)
+    (labels ((walk (n) (if (eq (h:dnode-kind n) :text)
+                           (write-string (or (h:dnode-data n) "") s)
+                           (loop for c across (h:dnode-children n) do (walk c)))))
+      (walk node))))
+(defun %ctrl-type (node)
+  (string-downcase (%ctrl-attr node "type" (if (string-equal (h:dnode-name node) "input") "text" ""))))
+(defun %ctrl-has (node name) (and (assoc name (h:dnode-attrs node) :test #'string-equal) t))
+
+(defparameter +ctrl-border+ '(130 130 130))
+(defparameter +ctrl-ink+    '(20 20 20))
+(defun %ctrl-frame (cv x y w h color)               ; a 1px rectangle outline
+  (fill-rect cv x y w 1 color) (fill-rect cv x (+ y h -1) w 1 color)
+  (fill-rect cv x y 1 h color) (fill-rect cv (+ x w -1) y 1 h color))
+(defun %ctrl-text-fit (cv text x y w color)
+  "Draw TEXT clipped to inner width W, showing its TAIL (like a scrolled input)."
+  (let* ((maxc (max 0 (floor w *font-w*)))
+         (shown (if (> (length text) maxc) (subseq text (- (length text) maxc)) text)))
+    (draw-text cv shown x y color)))
+
+(defun paint-textbox (cv x y w h value password-p)
+  (fill-rect cv x y w h '(255 255 255))
+  (%ctrl-frame cv x y w h +ctrl-border+)
+  (let ((text (if password-p (make-string (length value) :initial-element #\*) value)))
+    (%ctrl-text-fit cv text (+ x 4) (+ y (round (- h *font-h*) 2)) (- w 8) +ctrl-ink+)))
+
+(defun paint-button (cv x y w h label)
+  (fill-rect cv x y w h '(225 225 225))
+  (fill-rect cv (1+ x) (1+ y) (- w 2) 1 '(245 245 245))          ; light top edge (subtle 3D)
+  (%ctrl-frame cv x y w h '(120 120 120))
+  (draw-text cv label (max (1+ x) (+ x (round (- w (* (length label) *font-w*)) 2)))
+             (+ y (round (- h *font-h*) 2)) +ctrl-ink+))
+
+(defun paint-checkbox (cv x y checked round-p)
+  (fill-rect cv x y 13 13 '(255 255 255))
+  (%ctrl-frame cv x y 13 13 +ctrl-border+)
+  (when checked
+    (if round-p
+        (fill-rect cv (+ x 4) (+ y 4) 5 5 '(40 40 40))
+        (progn (draw-text cv "x" (+ x 3) (+ y 1) '(30 30 30))))))
+
+(defun paint-select (cv x y w h label)
+  (fill-rect cv x y w h '(240 240 240))
+  (%ctrl-frame cv x y w h +ctrl-border+)
+  (draw-text cv label (+ x 4) (+ y (round (- h *font-h*) 2)) +ctrl-ink+)
+  (let ((ax (- (+ x w) 12)) (ay (+ y (round h 2) -2)))           ; a small down triangle
+    (dotimes (i 4) (fill-rect cv (+ ax i) (+ ay i) (- 8 (* 2 i)) 1 '(80 80 80)))))
+
+(defun %select-label (node)
+  "Text of the selected <option> (or the first), for a <select>'s closed box."
+  (let (first sel)
+    (labels ((walk (n) (when (elem-p n)
+                         (when (string-equal (h:dnode-name n) "option")
+                           (unless first (setf first n))
+                           (when (%ctrl-has n "selected") (setf sel n)))
+                         (loop for c across (h:dnode-children n) do (walk c)))))
+      (walk node))
+    (string-trim '(#\Space #\Newline #\Tab) (%ctrl-text (or sel first node)))))
+
+(defun form-control-box (node cs)
+  "An atomic replaced box for a form control, sized from its type/size/value and
+   drawn as a widget during paint.  NIL for a hidden input (no box)."
+  (let* ((tag (string-downcase (h:dnode-name node)))
+         (type (%ctrl-type node))
+         (h (+ *font-h* 8)))                                     ; widget height ~ line + padding
+    (flet ((mk (w hh painter) (make-lbox :x 0 :y 0 :w (max 1 (round w)) :h (max 1 (round hh))
+                                         :style cs :node node :kind :block :vpaint painter)))
+      (cond
+        ((and (string= tag "input") (string= type "hidden")) nil)
+        ((and (string= tag "input") (member type '("checkbox" "radio") :test #'string=))
+         (let ((ck (%ctrl-has node "checked")) (rnd (string= type "radio")))
+           (mk 13 13 (lambda (cv x y bw bh) (declare (ignore bw bh)) (paint-checkbox cv x y ck rnd)))))
+        ((or (string= tag "button") (member type '("submit" "reset" "button") :test #'string=))
+         (let* ((label (let ((v (if (string= tag "button") (%ctrl-text node) (%ctrl-attr node "value"))))
+                         (if (and v (plusp (length (string-trim " " v)))) (string-trim '(#\Space #\Newline #\Tab) v)
+                             (cond ((string= type "submit") "Submit") ((string= type "reset") "Reset") (t "Button")))))
+                (w (+ 20 (* (length label) *font-w*))))
+           (mk w h (lambda (cv x y bw bh) (declare (ignore bw bh)) (paint-button cv x y (round w) (round h) label)))))
+        ((string= tag "textarea")
+         (let* ((cols (or (%ctrl-int node "cols") 20)) (rows (or (%ctrl-int node "rows") 2))
+                (w (+ 8 (* cols *font-w*))) (th (+ 8 (* rows *font-h*)))
+                (text (%ctrl-text node)))
+           (mk w th (lambda (cv x y bw bh) (declare (ignore bw bh))
+                      (fill-rect cv x y (round w) (round th) '(255 255 255))
+                      (%ctrl-frame cv x y (round w) (round th) +ctrl-border+)
+                      (draw-text cv text (+ x 4) (+ y 4) +ctrl-ink+)))))
+        ((string= tag "select")
+         (let* ((label (%select-label node)) (w (+ 34 (* (length label) *font-w*))))
+           (mk w h (lambda (cv x y bw bh) (declare (ignore bw bh)) (paint-select cv x y (round w) (round h) label)))))
+        (t                                                       ; text-like input
+         (let* ((size (or (%ctrl-int node "size") 20))
+                (w (+ 8 (* size *font-w*)))
+                (pw (string= type "password")))
+           (mk w h (lambda (cv x y bw bh) (declare (ignore bw bh))
+                     (paint-textbox cv x y (round w) (round h) (%ctrl-attr node "value" "") pw)))))))))
+
+(defun form-control-p (n)
+  "True for a form control we draw as a native widget (excludes hidden inputs)."
+  (and (eq (h:dnode-kind n) :element)
+       (let ((tag (string-downcase (h:dnode-name n))))
+         (or (member tag '("button" "textarea" "select") :test #'string=)
+             (and (string= tag "input") (not (string= (%ctrl-type n) "hidden")))))))
 
 (defun make-pseudo-node (content)
   "A synthetic inline element carrying generated CONTENT as its only text child,
@@ -6131,8 +6252,10 @@ mix(backdrop, blend(backdrop, source), coverage*ALPHA)."
          ;; Replaced vector content (inline <svg>, <canvas>): composite over the
          ;; box's background, under its borders.
          (when (and vis (lbox-vpaint lb))
-           (funcall (lbox-vpaint lb) cv (round (lbox-x lb)) (round (lbox-y lb))
-                    (round (lbox-w lb)) (round (lbox-h lb))))
+           (handler-case                            ; a replaced-content painter must not blank the page
+               (funcall (lbox-vpaint lb) cv (round (lbox-x lb)) (round (lbox-y lb))
+                        (round (lbox-w lb)) (round (lbox-h lb)))
+             (error (e) (format *error-output* "~&weft: replaced-content paint failed: ~a~%" e))))
          (when (and cs vis)
            ;; border-image (§6): when a decodable source is set, the 9-sliced image
            ;; replaces the normal border paint; otherwise fall back to the border.

@@ -171,12 +171,76 @@ not glue), so a space is inserted between two adjacent word-like tokens — e.g.
       (ignore-errors (let ((*read-default-float-format* 'double-float))
                        (let ((v (read-from-string (subseq s 0 end)))) (and (numberp v) v)))))))
 
+(defun %media-ratio (s)
+  "Parse a media ratio value like \"16/9\" or a bare number \"1.5\" to a double, or
+NIL.  A `<number>/<number>` ratio (Media Queries 4 §4.5) divides the two."
+  (when s
+    (let ((slash (position #\/ s)))
+      (if slash
+          (let ((a (%media-lead-number (subseq s 0 slash)))
+                (b (%media-lead-number (subseq s (1+ slash)))))
+            (when (and a b (plusp b)) (/ (float a 1d0) b)))
+          (%media-lead-number s)))))
+
+(defun %media-range-tokens (s)
+  "Tokenize a range-syntax media feature into identifier/number/operator tokens,
+keeping `<=`/`>=` whole (Media Queries 4 §4.1)."
+  (let ((toks '()) (i 0) (n (length s)))
+    (loop while (< i n) do
+      (let ((c (char s i)))
+        (cond ((member c '(#\Space #\Tab)) (incf i))
+              ((and (member c '(#\< #\>)) (< (1+ i) n) (char= (char s (1+ i)) #\=))
+               (push (subseq s i (+ i 2)) toks) (incf i 2))
+              ((member c '(#\< #\> #\=)) (push (string c) toks) (incf i))
+              (t (let ((start i))
+                   (loop while (and (< i n)
+                                    (not (member (char s i) '(#\Space #\Tab #\< #\> #\=))))
+                         do (incf i))
+                   (push (subseq s start i) toks))))))
+    (nreverse toks)))
+
+(defun %media-feature-value (name vw vh dpr)
+  "The numeric value of range-comparable feature NAME, or NIL."
+  (cond ((string= name "width") vw) ((string= name "height") vh)
+        ((string= name "aspect-ratio") (and (plusp vh) (/ (float vw 1d0) vh)))
+        ((string= name "resolution") (* dpr 96))
+        ((string= name "device-width") vw) ((string= name "device-height") vh)
+        (t nil)))
+
+(defun %media-range-match (feat vw vh dpr)
+  "Evaluate a range-syntax media feature, e.g. `100px <= width <= 300px` or
+`width > 600px` (Media Queries 4 §4.1).  Returns T/NIL."
+  (let* ((toks (%media-range-tokens feat))
+         (ops '("<" ">" "<=" ">=" "="))
+         (np (position-if (lambda (tk) (and (not (member tk ops :test #'string=))
+                                            (null (%media-lead-number tk))))
+                          toks)))
+    (when np
+      (let* ((name (string-downcase (nth np toks)))
+             (fv (%media-feature-value name vw vh dpr)))
+        (when fv
+          (flet ((cmp (op a b)
+                   (cond ((string= op "<") (< a b)) ((string= op "<=") (<= a b))
+                         ((string= op ">") (> a b)) ((string= op ">=") (>= a b))
+                         ((string= op "=") (= a b)) (t nil))))
+            (let ((ok t))
+              (when (>= np 2)                              ; `val op name` -> val op fv
+                (let ((v (%media-ratio (nth (- np 2) toks))) (op (nth (1- np) toks)))
+                  (when (and v (not (cmp op v fv))) (setf ok nil))))
+              (when (<= (+ np 2) (1- (length toks)))       ; `name op val` -> fv op val
+                (let ((op (nth (1+ np) toks)) (v (%media-ratio (nth (+ np 2) toks))))
+                  (when (and v (not (cmp op fv v))) (setf ok nil))))
+              ok)))))))
+
 (defun %media-feature-match (feat vw vh dpr)
   "Evaluate a single media feature FEAT (interior of parens, e.g.
 \"min-width: 690px\") against viewport width VW, height VH and device-pixel-ratio
 DPR.  Returns T/NIL.  A colour display is assumed: 8 bits per colour component,
 0 monochrome bits.  A malformed feature (no value where one is required) returns
 NIL — the caller treats that as a non-matching query."
+  ;; range syntax (uses < / > comparators, no leading min-/max-): 100px < width < 300px
+  (when (or (find #\< feat) (find #\> feat))
+    (return-from %media-feature-match (%media-range-match feat vw vh dpr)))
   (let* ((colon (position #\: feat))
          (name (string-trim " " (string-downcase (if colon (subseq feat 0 colon) feat))))
          (vraw (and colon (string-trim " " (subseq feat (1+ colon)))))
@@ -193,6 +257,19 @@ NIL — the caller treats that as a non-matching query."
       ;; matching a JS-off render.  So JS-only chrome (`@media(scripting:none){…}`
       ;; hides a copy button that needs JS) is handled as the no-script author meant.
       ((string= name "scripting") (string= (or vraw "") "none"))
+      ;; orientation (a square viewport counts as landscape, per Chrome)
+      ((string= name "orientation")
+       ;; landscape iff width strictly exceeds height; a square is portrait (per Chrome).
+       (cond ((string-equal (or vraw "") "landscape") (> vw vh))
+             ((string-equal (or vraw "") "portrait") (>= vh vw))
+             (t nil)))
+      ;; aspect-ratio (Media Queries 4 §6.1): viewport ratio vw/vh vs the given ratio
+      ((member name '("aspect-ratio" "min-aspect-ratio" "max-aspect-ratio") :test #'string=)
+       (let ((r (%media-ratio vraw)) (vr (and (plusp vh) (/ (float vw 1d0) vh))))
+         (when (and r vr)
+           (cond ((string= name "min-aspect-ratio") (>= vr r))
+                 ((string= name "max-aspect-ratio") (<= vr r))
+                 (t (= vr r))))))
       ((null val) nil)
       ((string= name "min-width")  (>= vw val))
       ((string= name "max-width")  (<= vw val))

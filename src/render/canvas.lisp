@@ -271,9 +271,14 @@ into the domain (1/radius for radial)."
            (raw (coerce (nreverse poss) 'vector))
            (pos (make-array n :initial-element nil))
            (hint (make-array (max 0 (1- n)) :initial-element nil)))
+      ;; A :px stop position is already an absolute length; PXSCALE alone maps it
+      ;; into the domain (1 for a linear gradient whose domain is the px line length,
+      ;; 1/radius for a radial gradient whose domain is 1.0).  Multiplying by DOMAIN
+      ;; too pushed every px stop off a linear gradient's line (domain=line length),
+      ;; collapsing it to its first colour.  Only a :pct stop scales by the domain.
       (flet ((tonum (p) (and p (ecase (first p)
                                  (:pct (* (second p) domain))
-                                 (:px  (* (second p) domain pxscale))
+                                 (:px  (* (second p) pxscale))
                                  (:deg (second p))))))
         (dotimes (i n) (setf (aref pos i) (tonum (aref raw i))))
         (when (> n 0)

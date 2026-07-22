@@ -1661,8 +1661,14 @@ values (so a single-layer background is unaffected)."
                          (let ((layers (split-top-commas value)))
                            (when (> (length layers) 1)
                              (let* ((last-g (car (last layers)))
-                                    (base (and (bg-group-fullbox-solid-p last-g fs)
-                                               (gradient-solid-color (parse-gradient last-g fs)))))
+                                    ;; background-color lives in the FINAL layer (CSS
+                                    ;; Backgrounds 3 §3.10): a folded full-box solid
+                                    ;; gradient OR a bare <color> token there.  A gradient
+                                    ;; over a plain colour (`linear-gradient(...), lime`)
+                                    ;; must expose lime under the transparent stops.
+                                    (base (or (and (bg-group-fullbox-solid-p last-g fs)
+                                                   (gradient-solid-color (parse-gradient last-g fs)))
+                                              (some #'resolve-color (css-background-tokens last-g)))))
                                (when base (setf (cstyle-background cs) base)))))))
                  ;; `none`/`transparent` clear any background set by an earlier rule
                  ((member tok '("none" "transparent") :test #'string=)
@@ -1746,8 +1752,15 @@ values (so a single-layer background is unaffected)."
                    (let* ((n (length groups))
                           ;; only the `background` shorthand folds a full-box solid
                           ;; bottom layer into background-color (see the fold above).
+                          ;; the final layer folds into background-color when it is a
+                          ;; full-box solid gradient OR carries no image (a bare <color>),
+                          ;; so it must not also become a (no-op / colour) image layer.
+                          (last-g (nth (1- n) groups))
                           (fold-last (and (string= prop "background")
-                                          (bg-group-fullbox-solid-p (nth (1- n) groups) fs)))
+                                          (or (bg-group-fullbox-solid-p last-g fs)
+                                              (and (not (parse-gradient last-g fs))
+                                                   (not (extract-css-url last-g))
+                                                   (some #'resolve-color (css-background-tokens last-g))))))
                           (extras '()))
                      (loop for gi from 1 below n
                            do (unless (and (= gi (1- n)) fold-last)

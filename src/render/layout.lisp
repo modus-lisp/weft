@@ -1883,6 +1883,14 @@ Returns (values lbox advance-height)."
                            (or (numberp spec-w) (numberp max-w) (and ar used-h (null spec-w)))
                            (< (+ width (if (numberp mr) mr 0)) avail-w))
                       (max 0 (- avail-w width (if (numberp mr) mr 0))))
+                     ;; direction:rtl in-flow block with a constrained width: the border
+                     ;; box hugs the container's END (right) edge, so margin-inline-start
+                     ;; (which mapped to margin-right) sits between it and that edge
+                     ;; (CSS Logical 1 / bidi).  Non-auto margins only (auto handled above).
+                     ((and (let ((d (css:cstyle-direction cs))) (and d (string-equal d "rtl")))
+                           (or (numberp spec-w) (numberp max-w) (and ar used-h (null spec-w)))
+                           (< width avail-w))
+                      (max 0 (- avail-w width (if (numberp mr) mr 0))))
                      (t ml)))
            (content-w (max 0 (- width pad-bord)))
            ;; aspect-ratio-derived content-box height: when the box has a ratio

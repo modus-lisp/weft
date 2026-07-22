@@ -42,6 +42,7 @@
            #:cstyle-column-count #:cstyle-column-width #:cstyle-column-fill
            #:cstyle-column-span #:cstyle-column-height #:cstyle-column-wrap
            #:cstyle-transform #:cstyle-transform-origin
+           #:cstyle-translate #:cstyle-rotate #:cstyle-scale #:cstyle-effective-transform
            #:cstyle-counter-reset #:cstyle-counter-increment
            #:cstyle-writing-mode #:cstyle-direction
            #:cstyle-justify-items #:cstyle-justify-self #:cstyle-align-self

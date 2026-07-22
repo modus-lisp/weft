@@ -19,6 +19,38 @@
                       (when (< i n) (incf i)))
                     (setf bad t)))))
           (if (or bad (null out)) :invalid (nreverse out))))))
+(defun parse-individual-transform (kind value)
+  "Parse a `translate`/`rotate`/`scale` individual-property VALUE (KIND :translate/
+:rotate/:scale) into the equivalent transform-function form ((fn arg…)) or NIL for
+`none`/empty (CSS Transforms 2 §3).  translate -> ((\"translate\" x [y])); scale ->
+((\"scale\" x [y])); rotate -> ((\"rotate\" angle)) — a leading x/y/z axis keyword is
+consumed and only the z (default) axis produces a 2D rotation, x/y degrade to none."
+  (let* ((v (ascii-downcase (css-trim value)))
+         (toks (remove "" (split-ws v) :test #'string=)))
+    (cond
+      ((or (null toks) (string= v "none") (string= v "initial") (string= v "unset")) nil)
+      ((eq kind :translate) (list (cons "translate" (subseq toks 0 (min 2 (length toks))))))
+      ((eq kind :scale) (list (cons "scale" (subseq toks 0 (min 2 (length toks))))))
+      ((eq kind :rotate)
+       ;; optional leading axis keyword (x/y/z); only z (or none) is a 2D rotation.
+       (let ((axis nil) (rest toks))
+         (when (member (first toks) '("x" "y" "z") :test #'string=)
+           (setf axis (first toks) rest (rest toks)))
+         (cond ((null rest) nil)
+               ((and axis (not (string= axis "z"))) nil)  ; x/y axis: no 2D effect here
+               (t (list (list "rotate" (first rest)))))))
+      (t nil))))
+
+(defun cstyle-effective-transform (cs)
+  "The effective transform-function list for CS combining the individual translate/
+rotate/scale properties with the `transform` list, in spec order (translate, rotate,
+scale, then transform) — CSS Transforms 2 §3.  NIL when none apply."
+  (let ((tr (cstyle-translate cs)) (ro (cstyle-rotate cs))
+        (sc (cstyle-scale cs)) (tf (cstyle-transform cs)))
+    (if (or tr ro sc)
+        (append tr ro sc (unless (equal tf '("none")) tf))
+        (and tf (not (equal tf '("none"))) tf))))
+
 (defun split-comma (s)
   (let ((out '()) (b (make-string-output-stream)) (any nil))
     (loop for c across s do

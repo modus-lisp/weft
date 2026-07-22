@@ -2439,7 +2439,7 @@ matrix, so the flow declines to project it (falls back to the untransformed box)
 (defun box-transform-matrix (cs box-x box-y bw bh)
   "The absolute affine matrix for CS's transform on a border box at (BOX-X,BOX-Y) of
 size BW x BH, taken around its transform-origin — or NIL when there is no transform."
-  (let ((tl (css:cstyle-transform cs)))
+  (let ((tl (css:cstyle-effective-transform cs)))
     (when (and tl (not (equal tl '("none"))) (not (compound-3d-p tl)))
       (let ((fs (css:cstyle-font-size cs)))
         (multiple-value-bind (ox oy) (tf-origin-xy (css:cstyle-transform-origin cs) fs bw bh)
@@ -2487,8 +2487,8 @@ processed first so an ancestor's translation shifts an already-transformed subtr
   (when (typep box 'lbox)
     (dolist (c (lbox-children box)) (when (typep c 'lbox) (apply-transforms c)))
     (let ((cs (lbox-style box)))
-      (when (and cs (css:cstyle-transform cs) (not (equal (css:cstyle-transform cs) '("none"))))
-        (let* ((tl (css:cstyle-transform cs)) (fs (css:cstyle-font-size cs))
+      (when (and cs (css:cstyle-effective-transform cs))
+        (let* ((tl (css:cstyle-effective-transform cs)) (fs (css:cstyle-font-size cs))
                (bw (lbox-w box)) (bh (lbox-h box)))
           (multiple-value-bind (tx ty) (tf-pure-translate tl fs bw bh)
             (if tx
@@ -5339,8 +5339,8 @@ rotate/skew/general non-axis-aligned map), else NIL.  Pure translations (already
 geometry-shifted) and axis-aligned scales (AABB-adjusted) return NIL so they keep
 their byte-identical fast paths."
   (let ((cs (lbox-style lb)))
-    (when (and cs (css:cstyle-transform cs) (not (equal (css:cstyle-transform cs) '("none"))))
-      (let ((tl (css:cstyle-transform cs)) (fs (css:cstyle-font-size cs))
+    (when (and cs (css:cstyle-effective-transform cs))
+      (let ((tl (css:cstyle-effective-transform cs)) (fs (css:cstyle-font-size cs))
             (bw (lbox-w lb)) (bh (lbox-h lb)))
         (unless (tf-pure-translate tl fs bw bh)
           (let ((m (box-transform-matrix cs (lbox-x lb) (lbox-y lb) bw bh)))

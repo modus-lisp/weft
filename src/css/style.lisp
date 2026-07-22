@@ -1366,40 +1366,43 @@ passes through unchanged; a multi-keyword form <display-outside> <display-inside
                  (inline (concatenate 'string "inline-" inside))
                  (t inside)))))))
 
-(defun logical-box-remap (prop)
-  "Map a CSS Logical 1 box property to physical one(s) for the default
-horizontal-tb LTR flow: inline = horizontal (left/right), block = vertical
-(top/bottom); *-start/-end map to left/top and right/bottom.  Returns
+(defun logical-box-remap (prop &optional rtl)
+  "Map a CSS Logical 1 box property to physical one(s) for horizontal-tb flow:
+inline = horizontal (left/right), block = vertical (top/bottom).  In LTR
+inline-start=left / inline-end=right; RTL (RTL true) flips those.  Returns
  (values MAPPED MODE): MAPPED a physical prop string (MODE :single) or a
  (P1 P2) pair with MODE :split (1-2 values split across the sides) or :dup
  (the whole value applied to both).  NIL when PROP is not a logical box prop."
-  (macrolet ((pair (a b mode) `(values (list ,a ,b) ,mode)))
-    (cond
-      ((string= prop "margin-inline")  (pair "margin-left" "margin-right" :split))
-      ((string= prop "margin-block")   (pair "margin-top" "margin-bottom" :split))
-      ((string= prop "padding-inline") (pair "padding-left" "padding-right" :split))
-      ((string= prop "padding-block")  (pair "padding-top" "padding-bottom" :split))
-      ((string= prop "inset-inline")   (pair "left" "right" :split))
-      ((string= prop "inset-block")    (pair "top" "bottom" :split))
-      ((string= prop "border-inline")  (pair "border-left" "border-right" :dup))
-      ((string= prop "border-block")   (pair "border-top" "border-bottom" :dup))
-      ((string= prop "margin-inline-start")  (values "margin-left" :single))
-      ((string= prop "margin-inline-end")    (values "margin-right" :single))
-      ((string= prop "margin-block-start")   (values "margin-top" :single))
-      ((string= prop "margin-block-end")     (values "margin-bottom" :single))
-      ((string= prop "padding-inline-start") (values "padding-left" :single))
-      ((string= prop "padding-inline-end")   (values "padding-right" :single))
-      ((string= prop "padding-block-start")  (values "padding-top" :single))
-      ((string= prop "padding-block-end")    (values "padding-bottom" :single))
-      ((string= prop "border-inline-start")  (values "border-left" :single))
-      ((string= prop "border-inline-end")    (values "border-right" :single))
-      ((string= prop "border-block-start")   (values "border-top" :single))
-      ((string= prop "border-block-end")     (values "border-bottom" :single))
-      ((string= prop "inset-inline-start")   (values "left" :single))
-      ((string= prop "inset-inline-end")     (values "right" :single))
-      ((string= prop "inset-block-start")    (values "top" :single))
-      ((string= prop "inset-block-end")      (values "bottom" :single))
-      (t nil))))
+  (let ((s (if rtl "right" "left"))     ; inline-start physical side
+        (e (if rtl "left" "right")))    ; inline-end physical side
+    (flet ((ms (base side) (concatenate 'string base side)))   ; e.g. "margin-" + "left"
+      (macrolet ((pair (a b mode) `(values (list ,a ,b) ,mode)))
+        (cond
+          ((string= prop "margin-inline")  (pair (ms "margin-" s) (ms "margin-" e) :split))
+          ((string= prop "margin-block")   (pair "margin-top" "margin-bottom" :split))
+          ((string= prop "padding-inline") (pair (ms "padding-" s) (ms "padding-" e) :split))
+          ((string= prop "padding-block")  (pair "padding-top" "padding-bottom" :split))
+          ((string= prop "inset-inline")   (pair s e :split))
+          ((string= prop "inset-block")    (pair "top" "bottom" :split))
+          ((string= prop "border-inline")  (pair "border-left" "border-right" :dup))
+          ((string= prop "border-block")   (pair "border-top" "border-bottom" :dup))
+          ((string= prop "margin-inline-start")  (values (ms "margin-" s) :single))
+          ((string= prop "margin-inline-end")    (values (ms "margin-" e) :single))
+          ((string= prop "margin-block-start")   (values "margin-top" :single))
+          ((string= prop "margin-block-end")     (values "margin-bottom" :single))
+          ((string= prop "padding-inline-start") (values (ms "padding-" s) :single))
+          ((string= prop "padding-inline-end")   (values (ms "padding-" e) :single))
+          ((string= prop "padding-block-start")  (values "padding-top" :single))
+          ((string= prop "padding-block-end")    (values "padding-bottom" :single))
+          ((string= prop "border-inline-start")  (values (ms "border-" s) :single))
+          ((string= prop "border-inline-end")    (values (ms "border-" e) :single))
+          ((string= prop "border-block-start")   (values "border-top" :single))
+          ((string= prop "border-block-end")     (values "border-bottom" :single))
+          ((string= prop "inset-inline-start")   (values s :single))
+          ((string= prop "inset-inline-end")     (values e :single))
+          ((string= prop "inset-block-start")    (values "top" :single))
+          ((string= prop "inset-block-end")      (values "bottom" :single))
+          (t nil))))))
 
 ;;;; ---- border-radius (CSS Backgrounds 3 §5.5) ------------------------------
 (defun parse-radius-comp (str fs)
@@ -1535,7 +1538,8 @@ values (so a single-layer background is unaffected)."
   (let ((*resolve-family* (cstyle-font-family cs)))
   ;; Logical box properties (margin/padding/border/inset -inline/-block[-start/end])
   ;; expand to their physical longhands before dispatch.
-  (multiple-value-bind (mapped mode) (logical-box-remap prop)
+  (multiple-value-bind (mapped mode)
+      (logical-box-remap prop (let ((d (cstyle-direction cs))) (and d (string-equal d "rtl"))))
     (when mapped
       (ecase mode
         (:single (apply-decl cs mapped value parent-cs))

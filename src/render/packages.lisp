@@ -23,6 +23,6 @@
            ;; interactive-shell support (hit-testing, box tree, viewport scroll)
            #:render-document #:box-at #:node-at #:point-in-box-p #:img-source-url
            #:img-loading-lazy-p #:*lazy-image-lookahead* #:inview-lazy-image-urls
-           #:*fetch-inview-lazy*
+           #:*fetch-inview-lazy* #:*lazy-scroll-y* #:*lazy-image-overscan*
            #:lbox #:lbox-p #:lbox-x #:lbox-y #:lbox-w #:lbox-h
            #:lbox-node #:lbox-kind #:lbox-children #:lbox-style))

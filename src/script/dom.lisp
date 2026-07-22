@@ -2044,6 +2044,33 @@ the context node when it is an element, else NIL (a document/fragment root makes
             (if (string= (h:dnode-name node) "input")
                 (setf (gethash node (context-input-values ctx)) (jstr v))
                 (progn (set-attr node "value" (jstr v)) (setf (context-dirty ctx) t)))))
+    ;; ---- reflected form-control IDL attributes (HTML §the-input-element etc.) ----
+    ;; defaultValue reflects the `value` CONTENT attribute (distinct from the current
+    ;; value, which lives in CONTEXT-INPUT-VALUES); defaultChecked reflects `checked`.
+    (defgetset ctx ep "defaultValue" (this) (or (get-attr (n this) "value") "")
+      (v) (progn (set-attr (n this) "value" (jstr v)) (setf (context-dirty ctx) t)))
+    (macrolet ((refl-str (prop attr)                       ; string IDL attr <-> content attr
+                 `(defgetset ctx ep ,prop (this) (or (get-attr (n this) ,attr) "")
+                    (v) (progn (set-attr (n this) ,attr (jstr v)) (setf (context-dirty ctx) t))))
+               (refl-bool (prop attr)                      ; boolean IDL attr (presence)
+                 `(defgetset ctx ep ,prop (this) (jbool (dom:has-attribute (n this) ,attr))
+                    (v) (progn (if (js:js-truthy v) (set-attr (n this) ,attr "") (remove-attr (n this) ,attr))
+                               (setf (context-dirty ctx) t))))
+               (refl-long (prop attr default)              ; limited-to-non-negative long, else DEFAULT
+                 `(defgetset ctx ep ,prop (this)
+                    (let ((s (get-attr (n this) ,attr)))
+                      (num (let ((k (and s (parse-integer s :junk-allowed t)))) (if (and k (>= k 0)) k ,default))))
+                    (v) (progn (set-attr (n this) ,attr (jstr v)) (setf (context-dirty ctx) t)))))
+      (refl-str "placeholder" "placeholder") (refl-str "pattern" "pattern")
+      (refl-str "step" "step") (refl-str "min" "min") (refl-str "max" "max")
+      (refl-str "accept" "accept") (refl-str "alt" "alt") (refl-str "autocomplete" "autocomplete")
+      (refl-str "inputMode" "inputmode") (refl-str "dirName" "dirname")
+      (refl-str "formAction" "formaction") (refl-str "formEnctype" "formenctype")
+      (refl-str "formMethod" "formmethod") (refl-str "formTarget" "formtarget")
+      (refl-bool "defaultChecked" "checked") (refl-bool "readOnly" "readonly")
+      (refl-bool "required" "required") (refl-bool "multiple" "multiple")
+      (refl-bool "autofocus" "autofocus") (refl-bool "formNoValidate" "formnovalidate")
+      (refl-long "maxLength" "maxlength" -1) (refl-long "minLength" "minlength" -1))
     ;; innerHTML / outerHTML / insertAdjacentHTML (DOM Parsing & Serialization §2).
     (defgetset ctx ep "innerHTML" (this) (h:serialize-html-fragment (n this))
       (v) (let* ((node (n this))

@@ -322,6 +322,31 @@ ex/ch use the right per-face metric (WPT's Ahem: x-height 0.8em, char advance 1.
                               (string-equal (string-trim '(#\Space #\" #\') f) "Ahem")))
              fam)))
 
+(defvar *cq-size* nil
+  "Nearest query-container size plist (:pw :ph :iw :bh :fs :wm) for the element whose
+declarations are currently being resolved, so cqw/cqi/cqb/cqmin/cqmax resolve against
+it (CSS Containment 3 §container units).  NIL outside a query container / before the
+post-layout cascade pass that supplies container sizes.")
+
+(defun cq-unit-axis (unit)
+  "Map a container-query length UNIT to its axis keyword (:w/:h/:i/:b/:min/:max), or
+NIL when UNIT is not a container unit."
+  (cond ((string= unit "cqw") :w) ((string= unit "cqh") :h)
+        ((string= unit "cqi") :i) ((string= unit "cqb") :b)
+        ((string= unit "cqmin") :min) ((string= unit "cqmax") :max)
+        (t nil)))
+
+(defun resolve-cq-unit (num axis size)
+  "Resolve NUM container units on AXIS against the container SIZE plist, or NIL when
+the needed axis is unavailable."
+  (flet ((iw () (getf size :iw)) (bh () (getf size :bh))
+         (pw () (getf size :pw)) (ph () (getf size :ph)))
+    (let ((base (ecase axis
+                  (:w (pw)) (:h (ph)) (:i (iw)) (:b (bh))
+                  (:min (and (iw) (bh) (min (iw) (bh))))
+                  (:max (and (iw) (bh) (max (iw) (bh)))))))
+      (and (numberp base) (* num (/ base 100.0))))))
+
 (defun viewport-unit-axis (unit)
   "Map a viewport-length UNIT string to its resolving axis keyword (:w/:h/:min/:max),
 or NIL when UNIT is not a viewport unit.  The small/large/dynamic variants
@@ -387,6 +412,10 @@ writing mode (vi=vw, vb=vh)."
                                     (:min (min *viewport-w* *viewport-h*))
                                     (:max (max *viewport-w* *viewport-h*)))
                                   100.0)))
+                       ;; container-query units resolve against the nearest query
+                       ;; container's size (CSS Containment 3 §container units).
+                       ((and (cq-unit-axis unit) *cq-size*)
+                        (or (resolve-cq-unit num (cq-unit-axis unit) *cq-size*) num))
                        ;; font-relative units: ch is the "0" advance, ex the x-height —
                        ;; both ~0.5em for typical fonts (we approximate rather than
                        ;; measure the face at cascade time).  `65ch` (a common prose
@@ -3182,6 +3211,11 @@ content gate — the fragment styles a slice of the element's own text."
                      (let* ((sorted (sort-matched matched))
                             (inline (el-attr n "style"))
                             (inline-pvs (and inline (parse-inline inline)))
+                            ;; the nearest ancestor query container's measured size,
+                            ;; so this element's cqw/cqi/… resolve against it (CSS
+                            ;; Containment 3 §container units).  cq-anc is innermost-first;
+                            ;; a descriptor is (node names type . size-plist).
+                            (*cq-size* (and cq-anc (cdddr (first cq-anc))))
                             ;; custom properties (--name) inherit; only allocate a fresh
                             ;; environment when this element actually declares one.
                             (has-custom (or (some (lambda (m) (some (lambda (d) (custom-prop-p (css-decl-prop d))) (third m))) sorted)

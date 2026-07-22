@@ -2554,6 +2554,32 @@ which a child's translateZ scales its box."
                       (setf (lbox-x box) (round nx) (lbox-y box) (round ny)
                             (lbox-w box) (round nw) (lbox-h box) (round nh))))))))))))
 
+(defun flex-item-ratio-main (cs content-w)
+  "CSS Flexbox 1 §9.2.3 (B): the content-box MAIN (width) size a row flex item
+transfers from a definite CROSS (height) size through its explicit aspect-ratio,
+else NIL.  Applies only when the item has an explicit `aspect-ratio` and a definite
+px height with an `auto`/content flex-basis and no explicit width — the item then
+reserves height*ratio of main space instead of collapsing to its (often
+out-of-flow-only) content, so a `position:absolute` fill child sizes against a real
+box.  The ratio maps the box-sizing box (border box unless `aspect-ratio: auto R`),
+matching the non-replaced block sizing above; the result is returned in the
+content-box sense item-base uses (padding+border added back separately by the line)."
+  (let ((ar (let ((r (css:cstyle-aspect-ratio cs))) (and (numberp r) (plusp r) r)))
+        (h (css:cstyle-height cs)))
+    (when (and ar (numberp h))
+      (let* ((border-box (string= (css:cstyle-box-sizing cs) "border-box"))
+             (pt (max 0 (css::resolve-pad (css:cstyle-padding-top cs) content-w)))
+             (pb (max 0 (css::resolve-pad (css:cstyle-padding-bottom cs) content-w)))
+             (bt (used-border cs :t)) (bb (used-border cs :b))
+             (pl (max 0 (css::resolve-pad (css:cstyle-padding-left cs) content-w)))
+             (pr (max 0 (css::resolve-pad (css:cstyle-padding-right cs) content-w)))
+             (bl (used-border cs :l)) (br (used-border cs :r))
+             (ch (max 0 (if border-box (- h pt pb bt bb) h)))   ; content-box height
+             (ar-border-box (and border-box (not (css:cstyle-aspect-ratio-auto cs)))))
+        (max 0 (if ar-border-box
+                   (- (* (+ ch pt pb bt bb) ar) pl pr bl br)   ; border-box W via ratio -> content box
+                   (* ch ar)))))))                              ; ratio maps the content box directly
+
 (defun item-base (item styles content-w)
   "The flex base size of ITEM: its flex-basis (a length), else its used width, else
    — flex-basis auto/content — its content (max-content) size.  flex-grow only adds
@@ -2576,8 +2602,14 @@ which a child's translateZ scales its box."
        (* content-w (/ (second w) 100.0)))
       ;; flex-basis auto with no width: the item's max-content size, measured by
       ;; the structural intrinsic pass (flex rows sum, block stacks take the widest,
-      ;; out-of-flow is skipped) rather than the crude inline-flatten estimate.
-      (t (min content-w (pref-content-width item styles content-w))))))
+      ;; out-of-flow is skipped) rather than the crude inline-flatten estimate.  An
+      ;; item with an explicit aspect-ratio and a definite height instead transfers
+      ;; that height through the ratio (CSS Flexbox §9.2.3 B), floored by its content
+      ;; measure — so an aspect-ratio thumbnail whose only content is an absolutely
+      ;; positioned fill <img> reserves height*ratio of width, not 0.
+      (t (let ((base (min content-w (pref-content-width item styles content-w)))
+               (tr (flex-item-ratio-main cs content-w)))
+           (if tr (max base tr) base))))))
 
 (defun multicol-used-count (base-cs content-w gap)
   "Used number of columns (css3-multicol §3.4, simplified) for content width

@@ -23,12 +23,27 @@ whole so their inner commas/spaces survive."
     (flet ((flush () (let ((s (get-output-stream-string buf)))
                        (when (plusp (length s)) (push s toks)))))
       (loop for ch across str do
-        (cond ((char= ch #\() (incf depth) (write-char ch buf))
-              ((char= ch #\)) (when (plusp depth) (decf depth)) (write-char ch buf))
+        (cond ((member ch '(#\( #\[)) (incf depth) (write-char ch buf))
+              ((member ch '(#\) #\])) (when (plusp depth) (decf depth)) (write-char ch buf))
               ((and (zerop depth) (member ch '(#\Space #\Tab #\Newline #\Return))) (flush))
               (t (write-char ch buf))))
       (flush))
     (nreverse toks)))
+
+(defun grid-line-name-map (str fs)
+  "Map each [line-name] in a grid-template-* track list STR to its 1-based grid line
+number (CSS Grid §7.1).  Line 1 is before the first track; a bracket token attaches
+its names to the current line, a track token advances the line by the number of
+tracks it produces.  Returns a hash-table name(string)->line(integer)."
+  (let ((map (make-hash-table :test 'equal)) (line 1))
+    (when (and str (plusp (length str)))
+      (dolist (tok (grid-split-top-level str))
+        (if (and (plusp (length tok)) (char= (char tok 0) #\[))
+            (dolist (name (grid-split-top-level
+                           (string-trim "[]" tok)))
+              (unless (gethash name map) (setf (gethash name map) line)))
+            (incf line (max 1 (length (grid-parse-track-list tok fs)))))))
+    map))
 
 (defun grid-parse-single (tok fs)
   "Parse one track keyword/length TOK into a track spec."
@@ -73,6 +88,8 @@ axis's definite content size) and GAP resolve repeat(auto-fill|auto-fit)."
       (dolist (tok (grid-split-top-level str))
         (let ((low (string-downcase tok)))
           (cond
+            ;; [line-name] tokens carry no track — collected separately (grid-line-name-map).
+            ((and (plusp (length tok)) (char= (char tok 0) #\[)) nil)
             ((and (>= (length low) 7) (string= (subseq low 0 7) "repeat("))
              ;; repeat(N, <track-list>) — count then the sub-list, expanded N times.
              ;; N may be auto-fill / auto-fit (resolved from AVAIL/GAP).
@@ -222,18 +239,20 @@ is shared among fr tracks in proportion to their flex factor (CSS Grid §11)."
 
 ;;; ---- placement ----------------------------------------------------------
 
-(defun grid-placement (str &optional ntracks)
+(defun grid-placement (str &optional ntracks names)
   "Parse a grid-column/grid-row value into (values line-start span): LINE-START is
 a 1-based grid line or NIL (auto placement), SPAN is a positive track count.  When
 NTRACKS (the axis's track count) is given, a negative line number counts back from
 the end — line -1 is the last line NTRACKS+1 (CSS Grid §8.3), so `1 / -1` spans the
-whole axis (Tailwind's col-span-full) and `5 / -1` spans column 5 to the end."
+whole axis (Tailwind's col-span-full) and `5 / -1` spans column 5 to the end.
+NAMES (a hash name->line from grid-line-name-map) resolves named line references."
   (if (or (null str) (string= str "") (string= str "auto"))
       (values nil 1)
       (let* ((slash (position #\/ str))
              (left (string-trim '(#\Space) (if slash (subseq str 0 slash) str)))
              (right (and slash (string-trim '(#\Space) (subseq str (1+ slash))))))
-        (labels ((num (s) (and s (ignore-errors (parse-integer s :junk-allowed t))))
+        (labels ((num (s) (and s (or (ignore-errors (parse-integer s :junk-allowed t))
+                                     (and names (gethash (string-trim '(#\Space) s) names)))))
                  (line (s) (let ((v (num s))) (if (and v ntracks (< v 0)) (+ ntracks 2 v) v)))
                  (spanp (s) (and s (search "span" s)))
                  (spanval (s) (let ((v (num (subseq s (+ 4 (search "span" s)))))) (if (and v (> v 0)) v 1))))
@@ -247,7 +266,7 @@ whole axis (Tailwind's col-span-full) and `5 / -1` spans column 5 to the end."
             ((num left) (values (line left) 1))
             (t (values nil 1)))))))
 
-(defun grid-place-items (items styles ncols &optional areas col-flow (nrows 1))
+(defun grid-place-items (items styles ncols &optional areas col-flow (nrows 1) col-names row-names)
   "Assign each item a cell region.  Returns a list of (item row col rspan cspan),
 0-based.  Auto-placement is row-major (grid-auto-flow:row, CSS Grid §8) by default;
 when COL-FLOW is true it is column-major (grid-auto-flow:column), filling down each
@@ -268,10 +287,10 @@ used to place items that name an area with `grid-area`."
                (area (and cs areas (css:cstyle-grid-area cs) (gethash (css:cstyle-grid-area cs) areas))))
           (multiple-value-bind (cline cspan)
               (if area (values (1+ (second area)) (fourth area))
-                  (grid-placement (and cs (css:cstyle-grid-column cs)) ncols))
+                  (grid-placement (and cs (css:cstyle-grid-column cs)) ncols col-names))
             (multiple-value-bind (rline rspan)
                 (if area (values (1+ (first area)) (third area))
-                    (grid-placement (and cs (css:cstyle-grid-row cs))))
+                    (grid-placement (and cs (css:cstyle-grid-row cs)) nil row-names))
               (setf cspan (max 1 (min cspan ncols)))
               (let* ((col-def (and cline (>= cline 1)))
                      (row-def (and rline (>= rline 1)))
@@ -367,6 +386,8 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
          (row-specs (grid-parse-track-list (css:cstyle-grid-template-rows base-cs) fs
                                            (and (numberp avail-h) avail-h) rgap))
          (col-flow (let ((f (css:cstyle-grid-auto-flow base-cs))) (and f (string= f "column"))))
+         (col-names (grid-line-name-map (css:cstyle-grid-template-columns base-cs) fs))
+         (row-names (grid-line-name-map (css:cstyle-grid-template-rows base-cs) fs))
          (nrows-tpl (max 1 (length row-specs)))
          (items (remove-if-not
                  (lambda (k) (let ((c (st styles k))) (and c (not (string= (css:cstyle-display c) "none")))))
@@ -380,7 +401,7 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
         (dolist (it items)
           (let ((cs (st styles it)))
             (when cs
-              (multiple-value-bind (cline cspan) (grid-placement (css:cstyle-grid-column cs))
+              (multiple-value-bind (cline cspan) (grid-placement (css:cstyle-grid-column cs) nil col-names)
                 (if (and cline (>= cline 1))
                     (setf need (max need (+ (1- cline) (max 1 cspan))))
                     (incf n-auto))))))
@@ -398,7 +419,7 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
     ;; so both intrinsic-width contributions and final placement see the used px.
     (dolist (it items)
       (let ((c (st styles it))) (when c (css::resolve-pct-margins c content-w))))
-    (let* ((placed (grid-place-items items styles ncols (css:cstyle-grid-template-areas base-cs) col-flow nrows-tpl))
+    (let* ((placed (grid-place-items items styles ncols (css:cstyle-grid-template-areas base-cs) col-flow nrows-tpl col-names row-names))
            ;; single-column items feed content-track sizing
            (items-by-col (make-array ncols :initial-element nil)))
       (dolist (p placed)

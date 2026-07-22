@@ -2045,6 +2045,34 @@ values (so a single-layer background is unaffected)."
         ((string= prop "grid-template-areas")
          (let ((m (parse-grid-areas value)))
            (when m (setf (cstyle-grid-template-areas cs) m))))
+        ;; `grid-template` / `grid` shorthands (CSS Grid §7.4/§7.8).  Common forms:
+        ;;   <rows> / <columns>   e.g. 40px 40px / 60px 60px
+        ;;   <rows>               (rows only, columns auto)
+        ;;   "area" <rows>? / <columns>?  (template-areas form)
+        ;; The auto-flow form of `grid` (`grid: auto-flow … / …`) is not expanded.
+        ((member prop '("grid-template" "grid") :test #'string=)
+         (let ((v (string-trim '(#\Space #\Tab #\Newline #\Return) value)))
+           (unless (member (string-downcase v) '("none" "" "auto" "initial" "unset" "inherit") :test #'string=)
+             (cond
+               ;; auto-flow form of the `grid` shorthand: leave to longhands (unhandled).
+               ((search "auto-flow" (string-downcase v)) nil)
+               ;; template-areas form: row side carries quoted area strings.
+               ((find #\" v)
+                (let* ((parts (split-slash v))
+                       (m (parse-grid-areas (first parts))))
+                  (when m (setf (cstyle-grid-template-areas cs) m))
+                  (when (cdr parts)
+                    (let ((cols (string-downcase (string-trim '(#\Space) (second parts)))))
+                      (unless (member cols '("none" "auto" "") :test #'string=)
+                        (setf (cstyle-grid-template-columns cs) cols))))))
+               (t
+                (let* ((parts (split-slash v))
+                       (rows (string-downcase (string-trim '(#\Space) (first parts))))
+                       (cols (and (cdr parts) (string-downcase (string-trim '(#\Space) (second parts))))))
+                  (unless (member rows '("none" "auto" "") :test #'string=)
+                    (setf (cstyle-grid-template-rows cs) rows))
+                  (when (and cols (not (member cols '("none" "auto" "") :test #'string=)))
+                    (setf (cstyle-grid-template-columns cs) cols))))))))
         ((string= prop "grid-area")
          ;; `grid-area: <name>` (an ident referencing grid-template-areas) sets the
          ;; area name; the line-based form (`r / c / r2 / c2`) folds into row/column.

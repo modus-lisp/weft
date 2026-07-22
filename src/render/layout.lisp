@@ -3708,6 +3708,13 @@ cell-lboxes content-height)."
               (hcells '())   ; (lb startcol colspan) — real cells, for the collapse rewrite
               (ridx 0))
           (dolist (row rows)
+           ;; visibility:collapse on a table row removes it (its height collapses to 0)
+           ;; without affecting the column widths (CSS 2.1 §17.5.5); paint nothing.
+           (let ((rvis (let ((rcs (unless (eq row node) (st styles row))))
+                         (and rcs (string= (css:cstyle-visibility rcs) "collapse")))))
+            (if rvis
+                (progn (push (list row nil 0) rowinfo) (incf ridx)
+                       (dotimes (c ncols) (when (plusp (aref occ c)) (decf (aref occ c)))))
             (let ((cells (row-cells row styles node)) (rowh 0) (rowboxes '()) (col 0))
               (dolist (cell cells)
                 ;; skip columns still occupied by a rowspanning cell above
@@ -3744,7 +3751,7 @@ cell-lboxes content-height)."
               (incf natural rowh)
               (incf ridx)
               ;; consume one row of every active rowspan occupancy
-              (dotimes (c ncols) (when (plusp (aref occ c)) (decf (aref occ c))))))
+              (dotimes (c ncols) (when (plusp (aref occ c)) (decf (aref occ c))))))))
           (setf rowinfo (nreverse rowinfo))
           ;; A rowspanning cell taller than the rows it covers grows the last row it
           ;; spans (CSS 2.1 §17.5.3); the common case (spanned rows sized by other

@@ -186,6 +186,7 @@
 (defparameter *block-tags*
   '("html" "body" "div" "p" "h1" "h2" "h3" "h4" "h5" "h6" "ul" "ol" "li"
     "section" "article" "header" "footer" "nav" "aside" "main" "figure"
+    "figcaption" "fieldset" "details" "summary"
     "blockquote" "pre" "table" "tr" "form" "hr" "address" "dl" "dt" "dd"))
 (defparameter *none-tags* '("head" "title" "meta" "link" "style" "script" "base"))
 
@@ -2988,6 +2989,17 @@ content gate — the fragment styles a slice of the element's own text."
                    (let ((hv (el-attr n "hidden")))
                      (when (and hv (not (string-equal hv "until-found")))
                        (setf (cstyle-display cs) "none")))
+                   ;; A closed <details> (no `open` attribute) renders only its first
+                   ;; <summary>; every other child is display:none (HTML rendering
+                   ;; §the-details-element).  An author `display` rule still wins.
+                   (let ((p (weft.html:dnode-parent n)))
+                     (when (and p (eq (weft.html:dnode-kind p) :element)
+                                (string-equal (weft.html:dnode-name p) "details")
+                                (not (el-attr p "open")))
+                       (let ((first-summary (find-if (lambda (c) (string-equal (weft.html:dnode-name c) "summary"))
+                                                     (element-children p))))
+                         (unless (eq n first-summary)
+                           (setf (cstyle-display cs) "none")))))
                    ;; collect matching author rules, splitting element vs pseudo-element
                    (let ((matched '()) (m-before '()) (m-after '()) (m-first-letter '()) (m-first-line '()))
                      (map-candidate-rules

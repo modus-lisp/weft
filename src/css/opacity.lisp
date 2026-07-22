@@ -121,14 +121,86 @@ Defaults to centre (50% 50%)."
           ((string= s "farthest-side") :farthest-side)
           (t (%clip-lp s fs)))))
 
+(defun %svg-path-tokens (d)
+  "Tokenize an SVG path data string D into command chars and float numbers; NIL on an
+unexpected character."
+  (let ((out '()) (i 0) (n (length d)))
+    (loop while (< i n) do
+      (let ((c (char d i)))
+        (cond ((member c '(#\Space #\Tab #\Newline #\Return #\,)) (incf i))
+              ((alpha-char-p c) (push c out) (incf i))
+              ((or (digit-char-p c) (member c '(#\- #\+ #\.)))
+               (let ((j i))
+                 (when (member (char d j) '(#\- #\+)) (incf j))
+                 (loop while (and (< j n) (or (digit-char-p (char d j)) (char= (char d j) #\.)))
+                       do (incf j))
+                 (let ((v (%filter-number (subseq d i j))))
+                   (unless v (return-from %svg-path-tokens nil))
+                   (push (float v 1.0) out))
+                 (setf i j)))
+              (t (return-from %svg-path-tokens nil)))))
+    (nreverse out)))
+
+(defun %svg-path-polygon (d)
+  "Flatten an SVG path (the straight-line M/m L/l H/h V/v Z/z subset, absolute and
+relative) to a polygon point list ((x . y) ... in px).  NIL if a curve/arc command
+ (C/S/Q/T/A) appears, so an unsupported path degrades to no clip rather than a wrong one."
+  (let ((toks (%svg-path-tokens d)))
+    (unless toks (return-from %svg-path-polygon nil))
+    (let ((pts '()) (cx 0.0) (cy 0.0) (sx 0.0) (sy 0.0) (cmd nil) (started nil))
+      (macrolet ((num () `(let ((v (pop toks)))
+                            (unless (numberp v) (return-from %svg-path-polygon nil)) v)))
+        (loop while toks do
+          (when (characterp (car toks)) (setf cmd (pop toks)))
+          (unless cmd (return-from %svg-path-polygon nil))
+          (case cmd
+            ((#\M #\m)
+             (let ((x (num)) (y (num)))
+               (if (and started (char= cmd #\m)) (setf cx (+ cx x) cy (+ cy y))
+                   (setf cx x cy y)))
+             (setf sx cx sy cy started t)
+             (push (cons cx cy) pts)
+             (setf cmd (if (char= cmd #\m) #\l #\L)))   ; extra pairs after M are L
+            ((#\L #\l)
+             (let ((x (num)) (y (num)))
+               (if (char= cmd #\l) (setf cx (+ cx x) cy (+ cy y)) (setf cx x cy y)))
+             (push (cons cx cy) pts))
+            ((#\H #\h)
+             (let ((x (num))) (setf cx (if (char= cmd #\h) (+ cx x) x)))
+             (push (cons cx cy) pts))
+            ((#\V #\v)
+             (let ((y (num))) (setf cy (if (char= cmd #\v) (+ cy y) y)))
+             (push (cons cx cy) pts))
+            ((#\Z #\z) (setf cx sx cy sy))
+            (t (return-from %svg-path-polygon nil)))))
+      (let ((pts (nreverse pts)))
+        (when (>= (length pts) 3) (list* :polygon pts))))))
+
 (defun parse-clip-path (value fs)
   "Parse a CSS clip-path basic-shape value (CSS Masking 1 §clip-path) into the
 CSTYLE-CLIP-PATH form.  Supports inset()/circle()/ellipse()/polygon(); an unknown
 value, url(), or none yields NIL (no clip)."
-  (let ((s (css-trim (ascii-downcase value))))
+  (let* ((raw (css-trim value))
+         (s (ascii-downcase raw)))
     (cond
       ((zerop (length s)) nil)
       ((member s '("none" "initial" "unset" "revert" "inherit") :test #'string=) nil)
+      ;; path( [<fill-rule>,]? <string> ) — SVG path data (case-sensitive, so parse the
+      ;; ORIGINAL value).  Only the straight-line subset is flattened to a polygon.
+      ((and (>= (length s) 5) (string= (subseq s 0 5) "path("))
+       (let ((lp (position #\( raw)) (rp (position #\) raw :from-end t)))
+         (when (and lp rp (< lp rp))
+           (let* ((inner (css-trim (subseq raw (1+ lp) rp)))
+                  (comma (position #\, inner))
+                  (inner (if (and comma
+                                  (member (css-trim (subseq inner 0 comma))
+                                          '("nonzero" "evenodd") :test #'string-equal))
+                             (css-trim (subseq inner (1+ comma))) inner))
+                  (dstr (if (and (>= (length inner) 2)
+                                 (member (char inner 0) '(#\' #\"))
+                                 (char= (char inner (1- (length inner))) (char inner 0)))
+                            (subseq inner 1 (1- (length inner))) inner)))
+             (%svg-path-polygon dstr)))))
       (t
        (let ((lp (position #\( s)) (rp (position #\) s :from-end t)))
          (unless (and lp rp (< lp rp)) (return-from parse-clip-path nil))

@@ -2156,7 +2156,10 @@ the context node when it is an element, else NIL (a document/fragment root makes
         (setf (gethash text (context-owner-docs ctx)) (node-document ctx element))
         (insert-adjacent ctx element where text)
         (setf (context-dirty ctx) t)
-        js:*undefined*))))
+        js:*undefined*))
+    ;; Disjoint form-control feature files (valueAsNumber/valueAsDate, stepUp/
+    ;; Down, selection API, validity, labels) install their IDL surface here.
+    (run-element-proto-extensions ctx ep)))
 
 ;;; ---------------------------------------------------------------------------
 ;;; CharacterData (Text, Comment)  (<- Node.prototype)

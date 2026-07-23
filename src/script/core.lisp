@@ -159,6 +159,21 @@
             (lambda (,this a) (let ((,sval (arg a 0))) (declare (ignorable ,this ,sval)) ,setter js:*undefined*)) 1)
      :enumerable t :configurable t))
 
+;;; ---- element-prototype extension hook -------------------------------------
+;;; Disjoint feature files (HTMLInputElement IDL surface: valueAsNumber,
+;;; validity, selection, …) each self-register an installer here, keyed by name
+;;; so a reload replaces rather than duplicates.  install-element-proto funcalls
+;;; them all after the built-in accessors, with the same (ctx ep) it uses itself.
+(defvar *element-proto-extensions* (make-hash-table :test 'eq)
+  "KEY (keyword) -> (lambda (ctx ep) ...) run at the end of install-element-proto.")
+
+(defun register-element-proto-extension (key fn)
+  (setf (gethash key *element-proto-extensions*) fn))
+
+(defun run-element-proto-extensions (ctx ep)
+  (maphash (lambda (k fn) (declare (ignore k)) (funcall fn ctx ep))
+           *element-proto-extensions*))
+
 ;;; ---- camelCase <-> dashed CSS property names ------------------------------
 (defun camel->dash (s)
   "whiteSpace -> white-space ; cssFloat -> css-float (special-cased by caller)."

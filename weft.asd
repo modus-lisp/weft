@@ -95,7 +95,13 @@
                                (:file "mutation")
                                (:file "canvas") (:file "svg")
                                (:file "traversal") (:file "range") (:file "xml") (:file "loader")
-                               (:file "tables") (:file "bridge") (:file "interact")))))))
+                               (:file "tables")
+                               ;; Disjoint HTMLInputElement IDL feature files
+                               ;; (self-register into the element-proto hook).
+                               (:file "forms-valueasnumber") (:file "forms-valueasdate")
+                               (:file "forms-stepupdown") (:file "forms-selection")
+                               (:file "forms-validity") (:file "forms-labels")
+                               (:file "bridge") (:file "interact")))))))
 
 (defsystem "weft/test"
   :depends-on ("weft" "weft/fetch" "weft/render")

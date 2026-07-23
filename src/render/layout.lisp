@@ -777,7 +777,7 @@ The subtree is rendered through stencil+gesso during paint."
 (defun %select-label (node)
   "Text of the selected <option> (or the first), for a <select>'s closed box."
   (let (first sel)
-    (labels ((walk (n) (when (elem-p n)
+    (labels ((walk (n) (when (eq (h:dnode-kind n) :element)
                          (when (string-equal (h:dnode-name n) "option")
                            (unless first (setf first n))
                            (when (%ctrl-has n "selected") (setf sel n)))

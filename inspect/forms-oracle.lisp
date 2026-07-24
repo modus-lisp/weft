@@ -27,6 +27,10 @@
 
 (defparameter *input-dir* "html/semantics/forms/the-input-element/")
 
+(defparameter *select-dir* "html/semantics/forms/the-select-element/")
+
+(defparameter *textarea-dir* "html/semantics/forms/the-textarea-element/")
+
 ;;; unit -> list of test-file basenames under *input-dir*.
 (defparameter *units*
   '(("valueasnumber" . ("input-valueasnumber.html" "input-valueasnumber-stepping.html"
@@ -38,7 +42,23 @@
     ("selection"     . ("selection.html"))
     ("validity"      . ("input-validity.html" "input-checkvalidity.html"
                         "input-setcustomvalidity.html" "input-validationmessage.html"))
-    ("labels"        . ("input-labels.html"))))
+    ("labels"        . ("input-labels.html"))
+    ("select"        . ("select-value.html" "select-multiple.html" "select-add.html"
+                        "select-remove.html" "select-selectedOptions.html"
+                        "select-selectedOptions-nesting.window.js"
+                        "selected-index.html" "select-named-getter.html"
+                        "common-HTMLOptionsCollection.html"
+                        "common-HTMLOptionsCollection-add.html"
+                        "common-HTMLOptionsCollection-namedItem.html"
+                        "select-validity.html" "select-add-optgroup.html"
+                        "select-toggle-multiple.html"
+                        "select-setting-value-from-js-updates-visible-state.html"
+                        "select-restore-invalid-option.html"))
+    ("textarea"      . ("value-defaultValue-textContent.html" "textarea-textLength.html"
+                        "textarea-type.html" "textarea-maxlength.html" "textarea-minlength.html"
+                        "wrap-reflect-1a.html" "wrap-reflect-1b.html"
+                        "wrap-enumerated-ascii-case-insensitive.html"
+                        "textarea-setcustomvalidity.html" "change-to-empty-value.html"))))
 
 (defun read-file-string (path)
   (with-open-file (in path :external-format :utf-8 :if-does-not-exist nil)
@@ -100,9 +120,12 @@
 (defun run (unit)
   (let ((files (cdr (assoc unit *units* :test #'string=))))
     (unless files (format t "~&unknown unit ~a~%" unit) (return-from run))
-    (let ((tp 0) (tn 0) (k 0))
+    (let ((tp 0) (tn 0) (k 0)
+          (dir (cond ((string= unit "select") *select-dir*)
+                     ((string= unit "textarea") *textarea-dir*)
+                     (t *input-dir*))))
       (dolist (f files)
-        (let ((path (merge-pathnames (concatenate 'string *input-dir* f) *wpt-root*)))
+        (let ((path (merge-pathnames (concatenate 'string dir f) *wpt-root*)))
           (if (probe-file path)
               (multiple-value-bind (p n err) (run-one path)
                 (incf tp p) (incf tn n) (incf k)

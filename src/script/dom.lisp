@@ -1302,6 +1302,12 @@ the context node when it is an element, else NIL (a document/fragment root makes
 ;;; Live checkedness is tracked in a reserved `weft-checked` attribute (so the
 ;;; CSS engine's :checked sees it) and hidden from the public attribute API.
 (defun input-type (node) (string-downcase (or (get-attr node "type") "text")))
+(defun child-text-content (node)
+  "The 'child text content': concatenation of the data of NODE's DIRECT Text-node
+   children (not descendant text).  This is a <textarea>'s default value / raw value."
+  (with-output-to-string (o)
+    (loop for c across (h:dnode-children node)
+          when (eq (h:dnode-kind c) :text) do (write-string (or (h:dnode-data c) "") o))))
 (defun checked-p (node)
   (let ((wc (get-attr node "weft-checked")))
     (if wc (string= wc "1") (dom:has-attribute node "checked"))))
@@ -2032,23 +2038,36 @@ the context node when it is an element, else NIL (a document/fragment root makes
                                  "number" "range" "search" "tel" "time" "url" "month"
                                  "week" "datetime-local") :test #'equal)
                      v "text")))
+              ((string= tag "textarea") "textarea")   ; a <textarea>'s type is always "textarea"
               (t (or raw ""))))
       (v) (progn (set-attr (n this) "type" (jstr v)) (setf (context-dirty ctx) t)))
+    ;; value: <input> and <textarea> hold the current value in CONTEXT-INPUT-VALUES
+    ;; (a <textarea>'s default = its child text content); others reflect the attr.
     (defgetset ctx ep "value" (this)
-      (let ((node (n this)))
-        (if (string= (h:dnode-name node) "input")
-            (multiple-value-bind (v present) (gethash node (context-input-values ctx))
-              (if present v (or (get-attr node "value") "")))
-            (or (get-attr node "value") "")))
-      (v) (let ((node (n this)))
-            (if (string= (h:dnode-name node) "input")
+      (let* ((node (n this)) (tag (h:dnode-name node)))
+        (cond
+          ((string= tag "input")
+           (multiple-value-bind (v present) (gethash node (context-input-values ctx))
+             (if present v (or (get-attr node "value") ""))))
+          ((string= tag "textarea")
+           (multiple-value-bind (v present) (gethash node (context-input-values ctx))
+             (if present v (child-text-content node))))
+          (t (or (get-attr node "value") ""))))
+      (v) (let* ((node (n this)) (tag (h:dnode-name node)))
+            (if (or (string= tag "input") (string= tag "textarea"))
                 (setf (gethash node (context-input-values ctx)) (jstr v))
                 (progn (set-attr node "value" (jstr v)) (setf (context-dirty ctx) t)))))
     ;; ---- reflected form-control IDL attributes (HTML §the-input-element etc.) ----
-    ;; defaultValue reflects the `value` CONTENT attribute (distinct from the current
-    ;; value, which lives in CONTEXT-INPUT-VALUES); defaultChecked reflects `checked`.
-    (defgetset ctx ep "defaultValue" (this) (or (get-attr (n this) "value") "")
-      (v) (progn (set-attr (n this) "value" (jstr v)) (setf (context-dirty ctx) t)))
+    ;; defaultValue: for <input> it reflects the `value` CONTENT attribute; for
+    ;; <textarea> it is the child text content (settable via textContent).
+    (defgetset ctx ep "defaultValue" (this)
+      (let ((node (n this)))
+        (if (string= (h:dnode-name node) "textarea")
+            (child-text-content node) (or (get-attr node "value") "")))
+      (v) (let ((node (n this)))
+            (if (string= (h:dnode-name node) "textarea")
+                (progn (set-text-content node (jstr v)) (setf (context-dirty ctx) t))
+                (progn (set-attr node "value" (jstr v)) (setf (context-dirty ctx) t)))))
     (macrolet ((refl-str (prop attr)                       ; string IDL attr <-> content attr
                  `(defgetset ctx ep ,prop (this) (or (get-attr (n this) ,attr) "")
                     (v) (progn (set-attr (n this) ,attr (jstr v)) (setf (context-dirty ctx) t))))
@@ -2060,7 +2079,12 @@ the context node when it is an element, else NIL (a document/fragment root makes
                  `(defgetset ctx ep ,prop (this)
                     (let ((s (get-attr (n this) ,attr)))
                       (num (let ((k (and s (parse-integer s :junk-allowed t)))) (if (and k (>= k 0)) k ,default))))
-                    (v) (progn (set-attr (n this) ,attr (jstr v)) (setf (context-dirty ctx) t)))))
+                    ;; setter coerces to a long (NaN/Inf -> 0), throws on negative
+                    ;; (IndexSizeError), else stores the integer (HTML reflect, non-negative).
+                    (v) (let* ((d (js:to-number v))
+                               (k (if (or (sb-ext:float-nan-p d) (sb-ext:float-infinity-p d)) 0 (truncate d))))
+                          (when (< k 0) (throw-dom ctx "IndexSizeError" 1 "value cannot be negative"))
+                          (set-attr (n this) ,attr (princ-to-string k)) (setf (context-dirty ctx) t)))))
       (refl-str "placeholder" "placeholder") (refl-str "pattern" "pattern")
       (refl-str "step" "step") (refl-str "min" "min") (refl-str "max" "max")
       (refl-str "accept" "accept") (refl-str "alt" "alt") (refl-str "autocomplete" "autocomplete")

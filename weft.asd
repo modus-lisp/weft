@@ -98,6 +98,7 @@
                                (:file "tables")
                                ;; Disjoint HTMLInputElement IDL feature files
                                ;; (self-register into the element-proto hook).
+                               (:file "forms-datetime")     ; shared date/number/step math
                                (:file "forms-valueasnumber") (:file "forms-valueasdate")
                                (:file "forms-stepupdown") (:file "forms-selection")
                                (:file "forms-validity") (:file "forms-labels")

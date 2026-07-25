@@ -44,7 +44,7 @@ for unit in "${UNITS[@]}"; do
     jobs+=("$jobid|$unit|$model")
     WD="$WAVE/$jobid"; cp -r "$SRC" "$WD"; rm -rf "$WD/.git"; find "$WD" -name '*.fasl' -delete
     ORACLE="cd $WD && XDG_CACHE_HOME=$WAVE/.cache-$jobid CL_SOURCE_REGISTRY='(:source-registry (:tree \"$WD\") :ignore-inherited-configuration)' WPT_ROOT=/home/claude/wpt sbcl --dynamic-space-size 4096 --non-interactive --load inspect/forms-oracle.lisp --eval '(weft.forms-oracle:run \"$unit\")' 2>&1 | tail -20"
-    { cat <<TASK
+    { cat "$SELF/API.md"; echo; cat <<TASK
 # Focused WPT swarm unit: <$unit> element IDL  (variant $v)
 
 Implement HTMLElement IDL for <$unit> in the weft engine (pure Common Lisp; JS on
@@ -52,24 +52,26 @@ the in-tree shuttle engine) to pass a CURATED, ACHIEVABLE set of WPT tests.
 
 ## Edit ONLY this one file
   $WD/$editfile   — a stub with (defun install-forms-$unit (ctx ep) ...).
-It runs on the SHARED element prototype, so EVERY accessor MUST gate on the tag:
-  (defgetset ctx ep "prop" (this)
-    (let ((node (n this)))
-      (if (string= (h:dnode-name node) "$unit") <getter> js:*undefined*))
-    (v) (let ((node (n this))) (when (string= (h:dnode-name node) "$unit") <setter>)))
 Prefix helpers "$unit-".  Do NOT touch any other file.
 
 ## The shared prototype is the main hazard — read this twice
 Other feature files (forms-validity.lisp, forms-selection.lisp, ...) install
-THEIR methods onto the SAME prototype object.  Whoever installs last wins.  So a
-generic name — checkValidity, willValidate, value, labels, setCustomValidity —
-that you register WITHOUT a tag guard silently deletes the sibling's working
-implementation, and returning js:*undefined* for elements that are not <$unit>
-is exactly as destructive as not defining it at all.  This is not theoretical:
-one run scored 6 -> 36 on its own unit while destroying 131 subtests in other
-units.  If a method must exist for <$unit> and already exists for others, either
-gate on the tag and CALL THROUGH to the previous function for the non-$unit
-case, or leave it alone entirely.
+THEIR accessors onto the SAME prototype object, and whoever installs last wins.
+A generic name — value, type, length, labels, checkValidity, willValidate,
+setCustomValidity — registered with the PLAIN macros deletes the sibling's
+working implementation for every element, and a tag guard whose else-branch
+returns js:*undefined* is exactly as destructive as no guard at all.  Not
+theoretical: one run scored 6 -> 36 on its own unit while destroying 131
+subtests across five others, purely from js:*undefined* else-branches.
+
+So install with the -for variants, which gate on the tag AND delegate to
+whatever was installed before.  Write only the <$unit> case; there is no
+else-branch to write.
+  (defgetset-for ctx ep "$unit" "value" (this) <getter> (v) <setter>)
+  (defget-for    ctx ep "$unit" "type"  (this) <getter>)
+  (defmethod-for ctx ep "$unit" "add" 2 (this a) <body>)
+Use the plain defmethod*/defget/defgetset only for a name nothing else could
+plausibly define.
 
 ## Oracle — run after EVERY edit
   $ORACLE

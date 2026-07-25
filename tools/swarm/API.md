@@ -18,20 +18,18 @@ wins**. Registering a generic name (`checkValidity`, `willValidate`, `value`,
 working implementation, and returning `js:*undefined*` for the elements that
 aren't yours is exactly as destructive as never defining it. Measured: one file
 took its own unit 6 -> 36 while destroying 131 subtests across five other units.
-If a METHOD already exists for other elements and you also need it, capture the
-previous function before you overwrite and **call through** for the other case:
+**So use the `-for` variants for every name you did not invent.** They take a
+tag name, run your body only for that tag, and delegate to whatever was
+installed before for every other element:
 
-    (let ((prev (js:js-get ep "checkValidity")))          ; a plain data property
-      (defmethod* ctx ep "checkValidity" 0 (this args)
-        (if (string= (h:dnode-name (require-node ctx this)) "select")
-            <your version>
-            (js:js-call prev this args))))
+    (defmethod-for ctx ep "select" "checkValidity" 0 (this args) ...)
+    (defget-for    ctx ep "select" "type" (this) ...)
+    (defgetset-for ctx ep "select" "value" (this) <getter> (v) <setter>)
 
-For an ACCESSOR this does not work — `js:js-get` would *invoke* the getter with
-the prototype as `this`. The cheap correct move for accessors is not to
-re-register a name a sibling owns at all; if you must, read the sibling's file
-and extend it there is NOT allowed either (one file only), so pick a design that
-does not collide.
+Same bodies as the plain versions, one extra argument, and no off-tag branch to
+write — drop the `(if (string= (h:dnode-name node) "select") ... js:*undefined*)`
+wrapper entirely, the macro is the gate. Use the plain `defmethod*`/`defget`/
+`defgetset` only for a name nothing else could plausibly define.
 
 The oracle scores every unit, not just yours, and prints `TOTAL` — that is the
 number that counts.

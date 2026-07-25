@@ -12,6 +12,30 @@ The last form in your file must be:
 so you are installing onto the SHARED element prototype — gate every accessor on
 the tag name or you will break other elements.
 
+Every feature file installs onto that same object and **whoever installs last
+wins**. Registering a generic name (`checkValidity`, `willValidate`, `value`,
+`labels`, `setCustomValidity`) without a tag gate deletes the sibling file's
+working implementation, and returning `js:*undefined*` for the elements that
+aren't yours is exactly as destructive as never defining it. Measured: one file
+took its own unit 6 -> 36 while destroying 131 subtests across five other units.
+If a METHOD already exists for other elements and you also need it, capture the
+previous function before you overwrite and **call through** for the other case:
+
+    (let ((prev (js:js-get ep "checkValidity")))          ; a plain data property
+      (defmethod* ctx ep "checkValidity" 0 (this args)
+        (if (string= (h:dnode-name (require-node ctx this)) "select")
+            <your version>
+            (js:js-call prev this args))))
+
+For an ACCESSOR this does not work — `js:js-get` would *invoke* the getter with
+the prototype as `this`. The cheap correct move for accessors is not to
+re-register a name a sibling owns at all; if you must, read the sibling's file
+and extend it there is NOT allowed either (one file only), so pick a design that
+does not collide.
+
+The oracle scores every unit, not just yours, and prints `TOTAL` — that is the
+number that counts.
+
 ## Installing accessors and methods    [src/script/core.lisp:134-160]
 
     (defget     ctx ep "name" (this) body...)               ; read-only accessor

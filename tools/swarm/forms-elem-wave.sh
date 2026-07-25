@@ -59,12 +59,29 @@ It runs on the SHARED element prototype, so EVERY accessor MUST gate on the tag:
     (v) (let ((node (n this))) (when (string= (h:dnode-name node) "$unit") <setter>)))
 Prefix helpers "$unit-".  Do NOT touch any other file.
 
-## Oracle — run after EVERY edit; drive "failed" to 0
+## The shared prototype is the main hazard — read this twice
+Other feature files (forms-validity.lisp, forms-selection.lisp, ...) install
+THEIR methods onto the SAME prototype object.  Whoever installs last wins.  So a
+generic name — checkValidity, willValidate, value, labels, setCustomValidity —
+that you register WITHOUT a tag guard silently deletes the sibling's working
+implementation, and returning js:*undefined* for elements that are not <$unit>
+is exactly as destructive as not defining it at all.  This is not theoretical:
+one run scored 6 -> 36 on its own unit while destroying 131 subtests in other
+units.  If a method must exist for <$unit> and already exists for others, either
+gate on the tag and CALL THROUGH to the previous function for the non-$unit
+case, or leave it alone entirely.
+
+## Oracle — run after EVERY edit
   $ORACLE
-It prints PER-FILE pass/fail plus the "UNIT $unit: P passed, F failed" line.  The
-files it lists ARE the whole job — read each failing one under
-/home/claude/wpt/html/semantics/forms/the-$unit-element/ and make it pass.  0 is
-reachable; keep going until F stops dropping.
+It prints per-file pass/fail, the "UNIT $unit: P passed, F failed" line, a
+SENTINEL line per OTHER unit, and finally:
+  TOTAL <n> passed across 8 units, best-ever <b>
+**TOTAL is your score.** A gain on $unit paid for out of a sentinel is not a
+gain, and any "REGRESSION -n" line means you have broken code you never read.
+Drive TOTAL up: get $unit's failures to 0 while every SENTINEL stays at its best.
+The files listed ARE the whole job — read each failing one under
+/home/claude/wpt/html/semantics/forms/the-$unit-element/ and make it pass.  Keep
+going while TOTAL rises.
 
 ## $(guidance "$unit")
 
@@ -89,22 +106,25 @@ printf '%s\n' "${jobs[@]}" | xargs -P "$POOL" -I{} bash -c \
   'IFS="|" read -r jid unit mdl <<<"$1"; bash "$2/forms-elem-worker.sh" "$jid" "$unit" "$3" "$mdl"' _ {} "$SELF" "$WAVE"
 
 echo "=== FORMS-ELEM WAVE COMPLETE — keep-best + merge ==="
-passnum() { sed -n 's/.* \([0-9]*\) passed,.*/\1/p' <<<"$1"; }
+# Selection AND the merge gate are on TOTAL (all units), never on the unit's own
+# tally: the whole point of the sentinels is that a local win can be net negative.
+totnum()  { sed -n 's/^TOTAL \([0-9]*\) .*/\1/p' <<<"$1"; }
 oracle_canon() { ( cd "$CANON" && WPT_ROOT=/home/claude/wpt sbcl --dynamic-space-size 4096 --non-interactive \
-  --load inspect/forms-oracle.lisp --eval "(weft.forms-oracle:run \"$1\")" 2>&1 ) | grep -E '^UNIT ' | tail -1; }
+  --load inspect/forms-oracle.lisp --eval "(weft.forms-oracle:run \"$1\")" 2>&1 ) | grep -aE '^(UNIT|TOTAL) ' | tr '\n' '|'; }
 for unit in "${UNITS[@]}"; do
   editfile="src/script/forms-$unit.lisp"; best=""; bestp=-1; bestv=""
   for v in a b c; do
-    line="$(grep -haE '^UNIT ' "$WAVE/$unit-$v.result" 2>/dev/null | tail -1)"; p="$(passnum "$line")"; [ -z "$p" ] && p=-1
+    line="$(grep -haE '^(UNIT|TOTAL) ' "$WAVE/$unit-$v.result" 2>/dev/null | tr '\n' '|')"
+    p="$(totnum "$(grep -haE '^TOTAL ' "$WAVE/$unit-$v.result" 2>/dev/null | tail -1)")"; [ -z "$p" ] && p=-1
     printf '  %-12s %s\n' "$unit-$v" "${line:-<no result>}"
     [ "$p" -gt "$bestp" ] && { bestp="$p"; best="$WAVE/$unit-$v/$editfile"; bestv="$unit-$v"; }
   done
-  before="$(oracle_canon "$unit")"; bp="$(passnum "$before")"
+  before="$(oracle_canon "$unit")"; bp="$(totnum "${before//|/$'\n'}")"
   if [ -n "$best" ] && [ -f "$best" ]; then
     cp "$CANON/$editfile" "/tmp/femerge-$unit.bak"; cp "$best" "$CANON/$editfile"
-    after="$(oracle_canon "$unit")"; ap="$(passnum "$after")"
+    after="$(oracle_canon "$unit")"; ap="$(totnum "${after//|/$'\n'}")"
     if [ -n "$ap" ] && [ "${ap:-0}" -gt "${bp:-0}" ]; then echo "  -> KEEP $bestv: $before -> $after"
-    else cp "/tmp/femerge-$unit.bak" "$CANON/$editfile"; echo "  -> REVERT $bestv (best=$bestp, $before -> ${after:-LOAD-FAIL})"; fi
+    else cp "/tmp/femerge-$unit.bak" "$CANON/$editfile"; echo "  -> REVERT $bestv (TOTAL best=$bestp, $before -> ${after:-LOAD-FAIL})"; fi
   fi
 done
 echo "=== eval.tsv ==="; cat "$WAVE/eval.tsv"

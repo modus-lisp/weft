@@ -15,14 +15,19 @@ REG="(:source-registry (:tree \"$WD\") :ignore-inherited-configuration)"
 OWNED="$WD/src/script/forms-$unit.lisp"
 export ORACLE_KEEP="$OWNED"
 
-score () {   # -> "<passed> <failed>" for the tree as it stands
+# The score is the TOTAL across every unit, not this unit's own tally: units
+# share one element prototype, so a file can win locally by clobbering a
+# sibling's method (measured: select 6->36 while costing 131 subtests elsewhere).
+# maybe-keep-best in the oracle snapshots on the same number, so the restore
+# below compares like with like.
+score () {   # -> total passed across all units, for the tree as it stands
   rm -rf "$CACHE"
   ( cd "$WD" && XDG_CACHE_HOME="$CACHE" CL_SOURCE_REGISTRY="$REG" \
     WPT_ROOT=/home/claude/wpt ORACLE_KEEP="$OWNED" \
     sbcl --dynamic-space-size 4096 --non-interactive --load inspect/forms-oracle.lisp \
       --eval "(weft.forms-oracle:run \"$unit\")" ) > "$WAVE/$jobid.result" 2>&1
-  grep -haE '^UNIT ' "$WAVE/$jobid.result" | tail -1 \
-    | sed -E 's/.*: ([0-9]+) passed, ([0-9]+) failed.*/\1 \2/'
+  grep -haE '^TOTAL ' "$WAVE/$jobid.result" | tail -1 \
+    | sed -E 's/^TOTAL ([0-9]+) .*/\1/'
 }
 
 start=$(date +%s)
@@ -32,16 +37,17 @@ timeout "${WORKER_TIMEOUT:-1800}" sbcl --non-interactive --load "$OPERANDI_ROOT/
   > "$WAVE/$jobid.log" 2>&1
 end=$(date +%s)
 
-final=$(score); fp=${final%% *}
+fp=$(score)
 best=$(cat "$OWNED.best-$unit.score" 2>/dev/null || echo "")
 if [ -n "$best" ] && [ -f "$OWNED.best-$unit" ] && [ "${fp:-0}" -lt "$best" ]; then
-  echo "$jobid: restoring best ($best passed) over final (${fp:-0})" >&2
+  echo "$jobid: restoring best (TOTAL $best) over final (TOTAL ${fp:-0})" >&2
   cp "$OWNED.best-$unit" "$OWNED"
-  final=$(score)
+  fp=$(score)
 fi
 
 cost=$(grep -aoE '[0-9.]+¢' "$WAVE/$jobid.log" | tail -1)
 iters=$(grep -aoE '[0-9]+ iters' "$WAVE/$jobid.log" | tail -1 | grep -oE '^[0-9]+')
 res=$(grep -haE '^UNIT ' "$WAVE/$jobid.result" | tail -1)
-printf '%s\t%s\t%s\t%s\t%s\n' "$jobid" "${MODEL##*/}" "$((end-start))" "${iters:-?}" "${cost:-?¢}" >> "$WAVE/eval.tsv"
-echo "$jobid: ${res:-<no result>}  [${MODEL##*/}, $((end-start))s, ${cost:-?}]"
+tot=$(grep -haE '^TOTAL ' "$WAVE/$jobid.result" | tail -1)
+printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$jobid" "${MODEL##*/}" "$((end-start))" "${iters:-?}" "${cost:-?¢}" "${fp:-?}" >> "$WAVE/eval.tsv"
+echo "$jobid: ${res:-<no result>} | ${tot:-<no total>}  [${MODEL##*/}, $((end-start))s, ${cost:-?}]"

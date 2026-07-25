@@ -166,6 +166,44 @@
 (defun best-score-path (unit)
   (format nil "~a.best-~a.score" (keep-path) unit))
 
+;;; ---- sentinel units -------------------------------------------------------
+;;; Every unit installs its behaviour onto ONE shared element prototype (see
+;;; register-element-proto-extension), so a unit's file can silently clobber a
+;;; sibling's method — and a per-unit oracle is blind to exactly that.  Measured:
+;;; a select worker scored 6 -> 36 on its own unit while taking selection 42 -> 2
+;;; and textarea 22 -> 11.  A big local win, badly net negative, and nothing in
+;;; its feedback loop could see it.  So every run also scores the OTHER units and
+;;; compares against a pinned best-ever, and the number that ratchets is the SUM.
+
+(defparameter *bests-file*
+  (merge-pathnames "forms-oracle-bests.sexp"
+                   (or *load-truename* *default-pathname-defaults*)))
+
+(defun load-bests ()
+  (handler-case
+      (with-open-file (s *bests-file* :if-does-not-exist nil)
+        (and s (let ((*read-eval* nil)) (read s nil nil))))
+    (error () nil)))
+
+(defun save-bests (alist)
+  (handler-case
+      (with-open-file (s *bests-file* :direction :output
+                                      :if-exists :supersede
+                                      :if-does-not-exist :create)
+        (format s ";;; auto-maintained by forms-oracle.lisp — best-ever passing~
+                 ~%;;; subtests per unit (unit . passed).~%~s~%"
+                (sort (copy-list alist) #'string< :key #'car)))
+    (error () nil)))
+
+(defun sentinel-units (unit)
+  "The other units to score alongside UNIT. ORACLE_SENTINELS overrides: a comma
+   list of unit names, or \"none\" to skip (faster, but blind to collateral)."
+  (let ((env (uiop:getenv "ORACLE_SENTINELS")))
+    (cond ((null env) (remove unit (mapcar #'car *units*) :test #'string=))
+          ((string-equal env "none") nil)
+          (t (remove unit (uiop:split-string env :separator ",")
+                     :test #'string=)))))
+
 (defun read-best (unit)
   (handler-case
       (with-open-file (s (best-score-path unit) :if-does-not-exist nil)
@@ -173,7 +211,9 @@
     (error () nil)))
 
 (defun maybe-keep-best (unit passed)
-  "Snapshot the owned file whenever PASSED beats the best seen. Returns a note."
+  "Snapshot the owned file whenever PASSED beats the best seen. Returns a note.
+   PASSED is the TOTAL across all scored units, not the target unit's own tally —
+   a file that wins locally by breaking a sibling must not be what we keep."
   (let ((keep (keep-path)))
     (when (and keep (probe-file keep))
       (let ((best (read-best unit)))
@@ -188,45 +228,97 @@
                 (format nil "new best (~d passed) snapshotted" passed))
             (error () nil)))))))
 
+(defun unit-dir (unit)
+  (cond ((string= unit "select") *select-dir*)
+        ((string= unit "textarea") *textarea-dir*)
+        (t *input-dir*)))
+
+(defun score-unit (unit expected &key verbose)
+  "Run UNIT's files against the loaded engine.
+   Returns (values passed pinned-total file-count missing-subtests expected)."
+  (let ((tp 0) (tn 0) (k 0) (short 0) (dir (unit-dir unit)))
+    (dolist (f (cdr (assoc unit *units* :test #'string=)))
+      (let ((path (merge-pathnames (concatenate 'string dir f) *wpt-root*)))
+        (if (probe-file path)
+            (multiple-value-bind (p n err) (run-one path)
+              (let* ((pin (max n (or (cdr (assoc f expected :test #'string=)) 0)))
+                     (missing (- pin n)))
+                (setf expected (cons (cons f pin)
+                                     (remove f expected :key #'car :test #'string=)))
+                (incf tp p) (incf tn pin) (incf k) (incf short missing)
+                (when verbose
+                  (format t "~&  ~40a ~3d/~3d~@[  [~a]~]~@[  ~a~]~%" f p pin
+                          (and err (subseq err 0 (min 50 (length err))))
+                          (when (plusp missing)
+                            (format nil "<<< ~d subtest~:p never ran — the file ~
+                                         aborted; that is ~d failures, not ~d fewer"
+                                    missing missing missing))))))
+            (when verbose (format t "~&  ~40a MISSING~%" f)))))
+    (values tp tn k short expected)))
+
 (defun run (unit)
   (let ((files (cdr (assoc unit *units* :test #'string=))))
     (unless files (format t "~&unknown unit ~a~%" unit) (return-from run))
     (when cl-user::*oracle-load-error*
       (let ((pin (reduce #'+ (load-expected) :key #'cdr :initial-value 0)))
         (format t "~&UNIT ~a: 0 passed, ~d failed   (THE ENGINE DOES NOT COMPILE)~%~
+                   ~&TOTAL 0 passed, best-ever ~d, REGRESSION -~d~%~
                    ~&Nothing ran. Fix the source error first — everything else ~
                    is noise until it compiles:~%~a~%"
-                unit (max pin 1) cl-user::*oracle-load-error*))
+                unit (max pin 1)
+                (reduce #'+ (load-bests) :key #'cdr :initial-value 0)
+                (reduce #'+ (load-bests) :key #'cdr :initial-value 0)
+                cl-user::*oracle-load-error*))
       (finish-output)
       (return-from run))
-    (let ((tp 0) (tn 0) (k 0) (short 0)
-          (expected (load-expected))
-          (dir (cond ((string= unit "select") *select-dir*)
-                     ((string= unit "textarea") *textarea-dir*)
-                     (t *input-dir*))))
-      (dolist (f files)
-        (let ((path (merge-pathnames (concatenate 'string dir f) *wpt-root*)))
-          (if (probe-file path)
-              (multiple-value-bind (p n err) (run-one path)
-                (let* ((pin (max n (or (cdr (assoc f expected :test #'string=)) 0)))
-                       (missing (- pin n)))
-                  (setf expected (cons (cons f pin)
-                                       (remove f expected :key #'car :test #'string=)))
-                  (incf tp p) (incf tn pin) (incf k) (incf short missing)
-                  (format t "~&  ~40a ~3d/~3d~@[  [~a]~]~@[  ~a~]~%" f p pin
-                          (and err (subseq err 0 (min 50 (length err))))
-                          (when (plusp missing)
-                            (format nil "<<< ~d subtest~:p never ran — the file ~
-                                         aborted; that is ~d failures, not ~d fewer"
-                                    missing missing missing)))))
-              (format t "~&  ~40a MISSING~%" f))))
-      (save-expected expected)
-      (let ((kept (maybe-keep-best unit tp)))
-        (when kept (format t "~&  [~a]~%" kept)))
+    (let* ((expected (load-expected))
+           (bests (load-bests))
+           tp tn k short)
+      (multiple-value-setq (tp tn k short expected)
+        (score-unit unit expected :verbose t))
       (format t "~&UNIT ~a: ~d passed, ~d failed   (of ~d subtests over ~d files)~%"
               unit tp (- tn tp) tn k)
       (when (plusp short)
         (format t "~&NOTE: ~d subtest~:p did not run at all because a file threw ~
                    part way through. They are scored as failures. Fix the ~
                    exception — do not let a file abort.~%" short))
+      ;; Sentinels: the other units, which share the element prototype with this
+      ;; one.  Their scores are not yours to spend.
+      (let ((sentinels (sentinel-units unit))
+            (total tp) (best-total 0) (lost 0))
+        (dolist (u sentinels)
+          (multiple-value-bind (p n kk sh e) (score-unit u expected)
+            (declare (ignore n kk sh))
+            (setf expected e)
+            (let* ((best (or (cdr (assoc u bests :test #'string=)) p))
+                   (delta (- p best)))
+              (incf total p)
+              (when (minusp delta) (incf lost (- delta)))
+              (format t "~&SENTINEL ~12a ~3d passed (best ~3d)~@[   ~a~]~%" u p best
+                      (when (minusp delta)
+                        (format nil "<<< REGRESSION ~d — you broke this unit" delta)))
+              (setf bests (cons (cons u (max p best))
+                                (remove u bests :key #'car :test #'string=))))))
+        ;; The target unit ratchets too, but only its best-ever is pinned; the
+        ;; number that decides "better" is the SUM across every unit.
+        (let ((ubest (or (cdr (assoc unit bests :test #'string=)) tp)))
+          (setf bests (cons (cons unit (max tp ubest))
+                            (remove unit bests :key #'car :test #'string=))))
+        (setf best-total (reduce #'+ bests :key #'cdr :initial-value 0))
+        (save-expected expected)
+        (save-bests bests)
+        (format t "~&TOTAL ~d passed across ~d units, best-ever ~d~@[   ~a~]~%"
+                total (1+ (length sentinels)) best-total
+                (when (plusp lost)
+                  (format nil "<<< ~d subtest~:p LOST in other units" lost)))
+        (when (plusp lost)
+          (format t "~&Every unit installs onto the SAME shared element prototype. ~
+                     A method you register unconditionally — or one that returns ~
+                     undefined for elements that are not yours — replaces the ~
+                     sibling unit's version. Guard by element/tag, or delegate to ~
+                     the function that was already installed. TOTAL is the score ~
+                     that counts; a gain on ~a paid for out of another unit is ~
+                     not a gain.~%" unit))
+        (let ((kept (maybe-keep-best unit total)))
+          (when kept (format t "~&  [~a]~%" kept))))
       (finish-output))))

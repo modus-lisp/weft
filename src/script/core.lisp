@@ -159,6 +159,103 @@
             (lambda (,this a) (let ((,sval (arg a 0))) (declare (ignorable ,this ,sval)) ,setter js:*undefined*)) 1)
      :enumerable t :configurable t))
 
+;;; ---- tag-gated installation, chaining to whatever was there ---------------
+;;; Every feature file installs onto ONE shared element prototype, so
+;;; re-registering a generic name (checkValidity, value, labels, willValidate)
+;;; replaces the sibling file's version for EVERY element, not just the one you
+;;; care about — and a wrapper that returns js:*undefined* off-tag is exactly as
+;;; destructive as never defining it.  Measured once: a <select> file took its
+;;; own oracle unit 6 -> 36 passing subtests while destroying 131 across five
+;;; other units.  These variants gate on the tag name and DELEGATE to whatever
+;;; was installed before for every other element, so both files keep working.
+;;; Prefer them to defmethod*/defget/defgetset for any name you did not invent.
+
+(defun element-tag-p (ctx this tag)
+  "True when THIS wraps an element whose tag name is TAG (a lowercase string)."
+  (let ((node (node-of ctx this)))
+    (and node (string= (h:dnode-name node) tag))))
+
+(defun previous-method (target name)
+  "The callable currently installed as data property NAME on TARGET, else NIL."
+  (let ((d (js:js-get-own-property target name)))
+    (when (and d (not (js::prop-accessor d)))
+      (let ((v (js::prop-value d))) (and (js:js-callable-p v) v)))))
+
+(defun previous-accessor (target name)
+  "(values getter setter) for accessor NAME on TARGET; NILs when absent."
+  (let ((d (js:js-get-own-property target name)))
+    (if (and d (js::prop-accessor d))
+        (values (js::prop-get d) (js::prop-set d))
+        (values nil nil))))
+
+(eval-when (:compile-toplevel :load-toplevel :execute)
+  (defun tagged-body (body)
+    "Split BODY into (values declarations forms).  The tag gate puts the body in
+     an evaluated position (one branch of an IF), where a leading DECLARE is a
+     hard error, so the declarations are lifted into a LOCALLY around it.  IGNORE
+     becomes IGNORABLE: the fall-through branch still reads the arguments the
+     body asked to ignore."
+    (flet ((soften (decl)
+             (cons 'declare
+                   (mapcar (lambda (spec)
+                             (if (and (consp spec) (eq (car spec) 'ignore))
+                                 (cons 'ignorable (cdr spec))
+                                 spec))
+                           (cdr decl)))))
+      (let ((decls '()))
+        (loop while (and body (consp (car body)) (eq (caar body) 'declare))
+              do (push (soften (pop body)) decls))
+        (values (nreverse decls) body)))))
+
+(defmacro defmethod-for (ctx target tag name len (this args) &body body)
+  "Install method NAME for elements tagged TAG; other elements fall through to
+   the method that was already installed (or undefined if there was none)."
+  (multiple-value-bind (decls forms) (tagged-body body)
+    (let ((prev (gensym "PREV")))
+      `(let ((,prev (previous-method ,target ,name)))
+         (defmethod* ,ctx ,target ,name ,len (,this ,args)
+           (if (element-tag-p ,ctx ,this ,tag)
+               (locally ,@decls ,@forms)
+               (if ,prev (js:js-call ,prev ,this ,args) js:*undefined*)))))))
+
+(defmacro defget-for (ctx target tag name (this) &body body)
+  "Install read-only accessor NAME for elements tagged TAG; others fall through."
+  (multiple-value-bind (decls forms) (tagged-body body)
+    (let ((pg (gensym "PG")) (ps (gensym "PS")))
+      `(multiple-value-bind (,pg ,ps) (previous-accessor ,target ,name)
+         (js:put-accessor ,target ,name
+           :get (js:native-function (context-realm ,ctx)
+                                    (concatenate 'string "get " ,name)
+                  (lambda (,this ig) (declare (ignore ig) (ignorable ,this))
+                    (if (element-tag-p ,ctx ,this ,tag)
+                        (locally ,@decls ,@forms)
+                        (if ,pg (js:js-call ,pg ,this '()) js:*undefined*)))
+                  0)
+           :set ,ps :enumerable t :configurable t)))))
+
+(defmacro defgetset-for (ctx target tag name (this) getter (sval) setter)
+  "Install a get/set accessor NAME for elements tagged TAG; others fall through
+   to the accessor that was already installed."
+  (let ((pg (gensym "PG")) (ps (gensym "PS")) (a (gensym "A")))
+    `(multiple-value-bind (,pg ,ps) (previous-accessor ,target ,name)
+       (js:put-accessor ,target ,name
+         :get (js:native-function (context-realm ,ctx)
+                                  (concatenate 'string "get " ,name)
+                (lambda (,this ig) (declare (ignore ig) (ignorable ,this))
+                  (if (element-tag-p ,ctx ,this ,tag)
+                      ,getter
+                      (if ,pg (js:js-call ,pg ,this '()) js:*undefined*)))
+                0)
+         :set (js:native-function (context-realm ,ctx)
+                                  (concatenate 'string "set " ,name)
+                (lambda (,this ,a)
+                  (if (element-tag-p ,ctx ,this ,tag)
+                      (let ((,sval (arg ,a 0))) (declare (ignorable ,this ,sval)) ,setter)
+                      (when ,ps (js:js-call ,ps ,this (list (arg ,a 0)))))
+                  js:*undefined*)
+                1)
+         :enumerable t :configurable t))))
+
 ;;; ---- element-prototype extension hook -------------------------------------
 ;;; Disjoint feature files (HTMLInputElement IDL surface: valueAsNumber,
 ;;; validity, selection, …) each self-register an installer here, keyed by name

@@ -30,10 +30,19 @@ score () {   # -> total passed across all units, for the tree as it stands
     | sed -E 's/^TOTAL ([0-9]+) .*/\1/'
 }
 
+# operandi's 24k default context budget is sized for a small LOCAL model and
+# makes these workers THRASH: the unit file plus a couple of WPT test files
+# already exceed it, so compaction evicts what the agent just learned and it
+# re-reads instead of writing.  Measured at the default: 23 compactions and ZERO
+# Write calls in 40 minutes, across all six workers.  Both deepseek-v4 models
+# carry a 1,048,576-token window, so 24k was 2.4% of what we were paying for.
+export OPERANDI_CONTEXT_BUDGET="${OPERANDI_CONTEXT_BUDGET:-200000}"
+export OPERANDI_MAX_ITERS="${OPERANDI_MAX_ITERS:-150}"
+
 start=$(date +%s)
 timeout "${WORKER_TIMEOUT:-1800}" sbcl --non-interactive --load "$OPERANDI_ROOT/bin/operandi.lisp" -- \
   --openrouter "$MODEL" --no-tools Fan,Task,Spawn \
-  "Read $WAVE/$jobid.task.md and carry it out fully and autonomously: edit the one file and loop the oracle, driving the failing-subtest count as low as you can. Keep going while it drops. No questions." \
+  "Read $WAVE/$jobid.task.md and carry it out fully and autonomously: edit the one file and loop the oracle, driving TOTAL as high as you can. Write code early and often — do not spend the run reading. Keep going while TOTAL rises. No questions." \
   > "$WAVE/$jobid.log" 2>&1
 end=$(date +%s)
 

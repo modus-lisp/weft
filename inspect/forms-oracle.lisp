@@ -117,10 +117,40 @@
                 (values 0 1 "no-subtests")))))
     (error (e) (values 0 1 (princ-to-string e)))))
 
+;;; ---- pinned denominators --------------------------------------------------
+;;; A file that throws PART WAY through registers only the subtests it reached,
+;;; so its total shrinks.  Scored naively that makes "failed" go DOWN when you
+;;; break a file — the cheapest way to improve the number is to crash the test,
+;;; and an agent optimising the printed tally will find that gradient.  So the
+;;; denominator is pinned: the most subtests this file has EVER registered here,
+;;; persisted next to the oracle.  Subtests that go missing are counted failed.
+;;; Monotonic, so a file that legitimately gets FURTHER (registering more) just
+;;; raises its own bar.
+
+(defparameter *expected-file*
+  (merge-pathnames "forms-oracle-expected.sexp"
+                   (or *load-truename* *default-pathname-defaults*)))
+
+(defun load-expected ()
+  (handler-case
+      (with-open-file (s *expected-file* :if-does-not-exist nil)
+        (and s (let ((*read-eval* nil)) (read s nil nil))))
+    (error () nil)))
+
+(defun save-expected (alist)
+  (handler-case
+      (with-open-file (s *expected-file* :direction :output
+                                         :if-exists :supersede
+                                         :if-does-not-exist :create)
+        (format s ";;; auto-maintained by forms-oracle.lisp — pinned subtest~
+                 ~%;;; denominators (file . most-subtests-ever-seen).~%~s~%" alist))
+    (error () nil)))
+
 (defun run (unit)
   (let ((files (cdr (assoc unit *units* :test #'string=))))
     (unless files (format t "~&unknown unit ~a~%" unit) (return-from run))
-    (let ((tp 0) (tn 0) (k 0)
+    (let ((tp 0) (tn 0) (k 0) (short 0)
+          (expected (load-expected))
           (dir (cond ((string= unit "select") *select-dir*)
                      ((string= unit "textarea") *textarea-dir*)
                      (t *input-dir*))))
@@ -128,10 +158,23 @@
         (let ((path (merge-pathnames (concatenate 'string dir f) *wpt-root*)))
           (if (probe-file path)
               (multiple-value-bind (p n err) (run-one path)
-                (incf tp p) (incf tn n) (incf k)
-                (format t "~&  ~40a ~3d/~3d~@[  [~a]~]~%" f p n
-                        (and err (subseq err 0 (min 50 (length err))))))
+                (let* ((pin (max n (or (cdr (assoc f expected :test #'string=)) 0)))
+                       (missing (- pin n)))
+                  (setf expected (cons (cons f pin)
+                                       (remove f expected :key #'car :test #'string=)))
+                  (incf tp p) (incf tn pin) (incf k) (incf short missing)
+                  (format t "~&  ~40a ~3d/~3d~@[  [~a]~]~@[  ~a~]~%" f p pin
+                          (and err (subseq err 0 (min 50 (length err))))
+                          (when (plusp missing)
+                            (format nil "<<< ~d subtest~:p never ran — the file ~
+                                         aborted; that is ~d failures, not ~d fewer"
+                                    missing missing missing)))))
               (format t "~&  ~40a MISSING~%" f))))
+      (save-expected expected)
       (format t "~&UNIT ~a: ~d passed, ~d failed   (of ~d subtests over ~d files)~%"
               unit tp (- tn tp) tn k)
+      (when (plusp short)
+        (format t "~&NOTE: ~d subtest~:p did not run at all because a file threw ~
+                   part way through. They are scored as failures. Fix the ~
+                   exception — do not let a file abort.~%" short))
       (finish-output))))

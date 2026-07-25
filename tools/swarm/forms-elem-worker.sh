@@ -39,24 +39,50 @@ score () {   # -> total passed across all units, for the tree as it stands
 export OPERANDI_CONTEXT_BUDGET="${OPERANDI_CONTEXT_BUDGET:-200000}"
 export OPERANDI_MAX_ITERS="${OPERANDI_MAX_ITERS:-150}"
 
-start=$(date +%s)
-timeout "${WORKER_TIMEOUT:-1800}" sbcl --non-interactive --load "$OPERANDI_ROOT/bin/operandi.lisp" -- \
-  --openrouter "$MODEL" --no-tools Fan,Task,Spawn \
-  "Read $WAVE/$jobid.task.md and carry it out fully and autonomously: edit the one file and loop the oracle, driving TOTAL as high as you can. Write code early and often — do not spend the run reading. Keep going while TOTAL rises. No questions." \
-  > "$WAVE/$jobid.log" 2>&1
+# ---- rounds ----------------------------------------------------------------
+# One agent invocation is not one worker.  Both ways a single invocation can end
+# are premature:  the textarea arms STOPPED VOLUNTARILY at 25/29 having used 27
+# of 150 iterations, and the select arms were still climbing when the timeout
+# cut them off.  So run rounds until the budget is gone or TOTAL stops moving,
+# each round a FRESH context — which costs nothing now that the oracle prints
+# the failing subtest names, so a new agent re-orients from one command instead
+# of from the whole conversation it no longer has.
+BUDGET="${WORKER_BUDGET:-5400}"          # total wall clock for this worker
+ROUND_MAX="${WORKER_TIMEOUT:-1800}"      # per-round cap
+deadline=$(( $(date +%s) + BUDGET ))
+start=$(date +%s); round=0; dry=0
+prev=$(score)
+echo "$jobid: start TOTAL ${prev:-?}" >&2
+
+while [ $dry -lt 2 ]; do
+  left=$(( deadline - $(date +%s) ))
+  [ "$left" -lt 420 ] && { echo "$jobid: out of budget after $round round(s)" >&2; break; }
+  [ "$left" -gt "$ROUND_MAX" ] && left=$ROUND_MAX
+  round=$((round+1))
+  timeout "$left" sbcl --non-interactive --load "$OPERANDI_ROOT/bin/operandi.lisp" -- \
+    --openrouter "$MODEL" --no-tools Fan,Task,Spawn \
+    "Read $WAVE/$jobid.task.md and carry it out fully and autonomously. The tree already scores TOTAL ${prev:-?}; your job is to raise it. Run the oracle FIRST — it names every failing subtest and the assertion that failed, so you do not need to guess which ones are broken. Fix them in the one file you own, re-run, repeat. Write code early and often; do not spend the round reading. No questions." \
+    >> "$WAVE/$jobid.log" 2>&1
+  cur=$(score)
+  # Keep whichever file scores best; the oracle snapshots on every improvement.
+  best=$(cat "$OWNED.best-$unit.score" 2>/dev/null || echo "")
+  if [ -n "$best" ] && [ -f "$OWNED.best-$unit" ] && [ "${cur:-0}" -lt "$best" ]; then
+    cp "$OWNED.best-$unit" "$OWNED"; cur=$(score)
+    echo "$jobid: round $round restored best (TOTAL $best)" >&2
+  fi
+  if [ "${cur:-0}" -gt "${prev:-0}" ]; then dry=0; else dry=$((dry+1)); fi
+  echo "$jobid: round $round TOTAL ${prev:-?} -> ${cur:-?} (dry=$dry)" >&2
+  prev=$cur
+done
 end=$(date +%s)
+fp=$prev
 
-fp=$(score)
-best=$(cat "$OWNED.best-$unit.score" 2>/dev/null || echo "")
-if [ -n "$best" ] && [ -f "$OWNED.best-$unit" ] && [ "${fp:-0}" -lt "$best" ]; then
-  echo "$jobid: restoring best (TOTAL $best) over final (TOTAL ${fp:-0})" >&2
-  cp "$OWNED.best-$unit" "$OWNED"
-  fp=$(score)
-fi
-
-cost=$(grep -aoE '[0-9.]+¢' "$WAVE/$jobid.log" | tail -1)
-iters=$(grep -aoE '[0-9]+ iters' "$WAVE/$jobid.log" | tail -1 | grep -oE '^[0-9]+')
+# operandi prints its usage line ONCE per invocation, on exit (bin/operandi.lisp:
+# "[N iters, X¢, ...]"), so summing the ¢ figures across the log = the worker's
+# total.  Caveat: a round killed by `timeout` never reaches that print, so its
+# spend is invisible here and the sum under-reports.
+cost=$(grep -aoE '[0-9.]+¢' "$WAVE/$jobid.log" | awk '{gsub(/¢/,"");s+=$1} END{printf "%.3f¢", s}')
 res=$(grep -haE '^UNIT ' "$WAVE/$jobid.result" | tail -1)
 tot=$(grep -haE '^TOTAL ' "$WAVE/$jobid.result" | tail -1)
-printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$jobid" "${MODEL##*/}" "$((end-start))" "${iters:-?}" "${cost:-?¢}" "${fp:-?}" >> "$WAVE/eval.tsv"
-echo "$jobid: ${res:-<no result>} | ${tot:-<no total>}  [${MODEL##*/}, $((end-start))s, ${cost:-?}]"
+printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$jobid" "${MODEL##*/}" "$((end-start))" "${round} rounds" "${cost:-?¢}" "${fp:-?}" >> "$WAVE/eval.tsv"
+echo "$jobid: ${res:-<no result>} | ${tot:-<no total>}  [${MODEL##*/}, $((end-start))s, $round rounds, ${cost:-?}]"

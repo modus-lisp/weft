@@ -96,6 +96,25 @@
 (defparameter +dump+
   "(function(){var a=window.__wpt||[];var p=0;for(var i=0;i<a.length;i++){if(a[i][1]===0)p++;}return p+' '+a.length;})()")
 
+;;; The harness already knows the NAME and the assertion MESSAGE of every failing
+;;; subtest — the old oracle collected them and threw them away, printing only
+;;; "3/8" and leaving the agent to reverse-engineer which three by re-reading the
+;;; WPT source.  That is most of a worker's budget spent rediscovering something
+;;; we had in hand.  Emit them, US-separated so no JSON parser is needed.
+(defparameter +fails+
+  "(function(){var a=window.__wpt||[],o=[];for(var i=0;i<a.length;i++){if(a[i][1]!==0){
+     var m=String(a[i][2]||'').replace(/\\s+/g,' ');
+     o.push(a[i][0]+' :: '+(m.length>160?m.slice(0,160)+'…':m));}}
+     return o.join('\\u001f');})()")
+
+(defun split-us (s)
+  "Split a US (U+001F) separated string into a list."
+  (when (and (stringp s) (plusp (length s)))
+    (loop with start = 0
+          for pos = (position (code-char 31) s :start start)
+          collect (subseq s start pos)
+          while pos do (setf start (1+ pos)))))
+
 (defun parse-two-ints (s)
   (when (stringp s)
     (let ((sp (position #\Space s)))
@@ -104,8 +123,9 @@
               (n (parse-integer s :start (1+ sp) :junk-allowed t)))
           (when (and p n) (values p n)))))))
 
-;;; Run one file; return (values passed total error-string).  A file that errors
-;;; before any subtest registers counts as 1 failed (so a hard crash isn't free).
+;;; Run one file; return (values passed total error-string failure-descriptions).
+;;; A file that errors before any subtest registers counts as 1 failed (so a hard
+;;; crash isn't free).
 (defun run-one (html-path)
   (handler-case
       (let* ((html (read-file-string html-path))
@@ -122,9 +142,11 @@
         (let ((out (js:eval-script realm +dump+)))
           (multiple-value-bind (p n) (parse-two-ints out)
             (if (and n (plusp n))
-                (values p n nil)
-                (values 0 1 "no-subtests")))))
-    (error (e) (values 0 1 (princ-to-string e)))))
+                (values p n nil
+                        (and (< p n)
+                             (ignore-errors (split-us (js:eval-script realm +fails+)))))
+                (values 0 1 "no-subtests" nil)))))
+    (error (e) (values 0 1 (princ-to-string e) nil))))
 
 ;;; ---- pinned denominators --------------------------------------------------
 ;;; A file that throws PART WAY through registers only the subtests it reached,
@@ -228,6 +250,10 @@
                 (format nil "new best (~d passed) snapshotted" passed))
             (error () nil)))))))
 
+(defparameter *max-fails-shown* 8
+  "Failing subtests printed per file.  Bounded so one badly-broken file can't
+   push the tally and the sentinel lines out of the agent's tool-result window.")
+
 (defun unit-dir (unit)
   (cond ((string= unit "select") *select-dir*)
         ((string= unit "textarea") *textarea-dir*)
@@ -240,7 +266,7 @@
     (dolist (f (cdr (assoc unit *units* :test #'string=)))
       (let ((path (merge-pathnames (concatenate 'string dir f) *wpt-root*)))
         (if (probe-file path)
-            (multiple-value-bind (p n err) (run-one path)
+            (multiple-value-bind (p n err fails) (run-one path)
               (let* ((pin (max n (or (cdr (assoc f expected :test #'string=)) 0)))
                      (missing (- pin n)))
                 (setf expected (cons (cons f pin)
@@ -252,7 +278,13 @@
                           (when (plusp missing)
                             (format nil "<<< ~d subtest~:p never ran — the file ~
                                          aborted; that is ~d failures, not ~d fewer"
-                                    missing missing missing))))))
+                                    missing missing missing)))
+                  ;; The actual gradient: which subtests failed, and why.
+                  (loop for d in fails repeat *max-fails-shown*
+                        do (format t "~&        FAIL ~a~%" d))
+                  (when (> (length fails) *max-fails-shown*)
+                    (format t "~&        ... and ~d more failing subtest~:p in this file~%"
+                            (- (length fails) *max-fails-shown*))))))
             (when verbose (format t "~&  ~40a MISSING~%" f)))))
     (values tp tn k short expected)))
 

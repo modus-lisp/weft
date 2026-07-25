@@ -13,8 +13,17 @@
 ;;;;   sbcl --non-interactive --eval '(asdf:load-system "weft/script")' \
 ;;;;        --load inspect/forms-oracle.lisp --eval '(weft.forms-oracle:run "valueasnumber")'
 (require :asdf)
-(handler-bind ((warning #'muffle-warning))
-  (asdf:load-system "weft/script"))
+;;; A broken edit (unbalanced parens, a bad form) makes LOAD-SYSTEM signal, and
+;;; under --disable-debugger that kills the process with a backtrace and no
+;;; tally at all — the worst possible feedback, since it looks nothing like a
+;;; score.  Catch it and report it as what it is: everything failing, with the
+;;; compiler's complaint on the UNIT line.
+;;; (Set before IN-PACKAGE, so it must be named in a package that exists now.)
+(defvar cl-user::*oracle-load-error* nil)
+(handler-case
+    (handler-bind ((warning #'muffle-warning))
+      (asdf:load-system "weft/script"))
+  (error (e) (setf cl-user::*oracle-load-error* (princ-to-string e))))
 
 (defpackage #:weft.forms-oracle
   (:use #:cl) (:local-nicknames (#:s #:weft.script) (#:js #:shuttle))
@@ -146,9 +155,50 @@
                  ~%;;; denominators (file . most-subtests-ever-seen).~%~s~%" alist))
     (error () nil)))
 
+;;; ---- keep-best ratchet ----------------------------------------------------
+;;; A worker that runs out of budget mid-repair ends on a file that may not even
+;;; compile, so the whole run scores zero however good its best moment was.  If
+;;; ORACLE_KEEP names the file the unit owns, every improvement is snapshotted
+;;; beside it; the harness can restore that snapshot when the run ends worse.
+
+(defun keep-path () (uiop:getenv "ORACLE_KEEP"))
+
+(defun best-score-path (unit)
+  (format nil "~a.best-~a.score" (keep-path) unit))
+
+(defun read-best (unit)
+  (handler-case
+      (with-open-file (s (best-score-path unit) :if-does-not-exist nil)
+        (and s (read s nil nil)))
+    (error () nil)))
+
+(defun maybe-keep-best (unit passed)
+  "Snapshot the owned file whenever PASSED beats the best seen. Returns a note."
+  (let ((keep (keep-path)))
+    (when (and keep (probe-file keep))
+      (let ((best (read-best unit)))
+        (when (or (null best) (> passed best))
+          (handler-case
+              (progn
+                (uiop:copy-file keep (format nil "~a.best-~a" keep unit))
+                (with-open-file (s (best-score-path unit) :direction :output
+                                                          :if-exists :supersede
+                                                          :if-does-not-exist :create)
+                  (prin1 passed s))
+                (format nil "new best (~d passed) snapshotted" passed))
+            (error () nil)))))))
+
 (defun run (unit)
   (let ((files (cdr (assoc unit *units* :test #'string=))))
     (unless files (format t "~&unknown unit ~a~%" unit) (return-from run))
+    (when cl-user::*oracle-load-error*
+      (let ((pin (reduce #'+ (load-expected) :key #'cdr :initial-value 0)))
+        (format t "~&UNIT ~a: 0 passed, ~d failed   (THE ENGINE DOES NOT COMPILE)~%~
+                   ~&Nothing ran. Fix the source error first — everything else ~
+                   is noise until it compiles:~%~a~%"
+                unit (max pin 1) cl-user::*oracle-load-error*))
+      (finish-output)
+      (return-from run))
     (let ((tp 0) (tn 0) (k 0) (short 0)
           (expected (load-expected))
           (dir (cond ((string= unit "select") *select-dir*)
@@ -171,6 +221,8 @@
                                     missing missing missing)))))
               (format t "~&  ~40a MISSING~%" f))))
       (save-expected expected)
+      (let ((kept (maybe-keep-best unit tp)))
+        (when kept (format t "~&  [~a]~%" kept)))
       (format t "~&UNIT ~a: ~d passed, ~d failed   (of ~d subtests over ~d files)~%"
               unit tp (- tn tp) tn k)
       (when (plusp short)

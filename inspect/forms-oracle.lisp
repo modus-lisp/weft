@@ -235,8 +235,13 @@
       (with-open-file (s *expected-file* :direction :output
                                          :if-exists :supersede
                                          :if-does-not-exist :create)
+        ;; Sorted, or the file churns on every run: entries come out in the order
+        ;; the units were scored, so running the oracle for a different unit
+        ;; rewrites the same data in a new order and dirties the tree — which is
+        ;; exactly what makes `wave' refuse to start.
         (format s ";;; auto-maintained by forms-oracle.lisp — pinned subtest~
-                 ~%;;; denominators (file . most-subtests-ever-seen).~%~s~%" alist))
+                 ~%;;; denominators (file . most-subtests-ever-seen).~%~s~%"
+                (sort (copy-alist alist) #'string< :key #'car)))
     (error () nil)))
 
 ;;; ---- keep-best ratchet ----------------------------------------------------

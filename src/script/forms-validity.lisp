@@ -31,7 +31,7 @@
             (vp "valid" (not custom-error-p)))
           obj))
       ;; checkValidity — returns true if no constraints are violated
-      (defmethod* ctx ep "checkValidity" 0 (this a)
+      (defmethod-for ctx ep "input" "checkValidity" 0 (this a)
         (declare (ignore a))
         (let* ((node (n this))
                (custom-msg (gethash node validity-custom-errors))

@@ -2181,9 +2181,10 @@ the context node when it is an element, else NIL (a document/fragment root makes
         (insert-adjacent ctx element where text)
         (setf (context-dirty ctx) t)
         js:*undefined*))
-    ;; Disjoint form-control feature files (valueAsNumber/valueAsDate, stepUp/
-    ;; Down, selection API, validity, labels) install their IDL surface here.
-    (run-element-proto-extensions ctx ep)))
+    ;; Disjoint form-control feature files install their IDL surface here.
+    ;; NOTE: run-element-proto-extensions is called in bridge.lisp:make-context
+    ;; AFTER install-child-node-methods, so extensions don't get overwritten.
+    ))
 
 ;;; ---------------------------------------------------------------------------
 ;;; CharacterData (Text, Comment)  (<- Node.prototype)

@@ -16,11 +16,9 @@
   (declare (ignorable ctx ep))
   (macrolet ((n (this) `(require-node ctx ,this)))
     ;; willValidate — true for submit buttons, false for reset/button
-    (defget ctx ep "willValidate" (this)
+    (defget-for ctx ep "button" "willValidate" (this)
       (let ((node (n this)))
-        (if (string= (h:dnode-name node) "button")
-            (let ((type (button-type node)))
-              (if (string= type "submit") js:*true* js:*false*))
-            js:*undefined*)))))
+        (let ((type (button-type node)))
+          (if (string= type "submit") js:*true* js:*false*))))))
 
 (register-element-proto-extension :button #'install-forms-button)

@@ -565,6 +565,10 @@
     (install-child-node-methods ctx ep)
     (install-child-node-methods ctx cp)
     (install-child-node-methods ctx dtp)
+    ;; Feature-file extensions (forms-select, forms-validity, etc.) install
+    ;; AFTER ChildNode methods so their methods (e.g. select.remove(n)) are not
+    ;; overwritten by ChildNode's arity-0 remove.
+    (run-element-proto-extensions ctx ep)
     (install-on-handlers ctx ep)
     (install-on-handlers ctx dp)
     (install-table-interfaces ctx ep)

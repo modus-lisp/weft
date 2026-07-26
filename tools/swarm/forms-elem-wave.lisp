@@ -51,8 +51,17 @@
 ;;; disjoint (constraint validation / text selection / <form>), and where a
 ;;; subsystem is worth two attempts they get DIFFERENT unit names, so both can
 ;;; merge on their own merits instead of one being discarded as a duplicate.
-(defparameter *units* '("checkvalidity" "reportvalidity"
-                        "fieldselection" "selectevent" "formelement")
+;;; Wave 9.  A narrower wave than 8 on purpose: SWEEP says the forms corpus has
+;;; one large block of headroom left (the input value mode, 348 subtests in
+;;; three files that were outside the aperture entirely), and every one of its
+;;; 322 failures has the SAME root cause.  So this wave is not a breadth bet,
+;;; it is a controlled one — three arms on identical work at two tiers, plus a
+;;; fourth named at the sibling unit to see whether it defects to the dense one
+;;; the way four of five did in wave 7.
+(defparameter *units* '(("typechange" "a" . :flash)
+                        ("typechange" "b" . :flash)
+                        ("typechange" "p" . :pro)
+                        ("valuemode"  "a" . :flash))
   "Units to work this wave.  An entry may also be (unit variant . tier) for an
 extra arm on a unit that deserves one — e.g. (\"option\" \"p\" . :pro).")
 
@@ -258,7 +267,19 @@ sends you looking in the wrong place."
     ("formelement"
      "HTMLFormElement IDL — elements, the named/indexed getters, reflections, requestSubmit"
      "src/script/forms-form.lisp"
-     "form")))
+     "form")
+    ;; ---- wave 9 ------------------------------------------------------------
+    ;; Two units, one subsystem, one pre-wired file — so they WILL collide.
+    ;; That is deliberate: rebase-merge exists to settle exactly this, and a
+    ;; wave that never tests it is not testing the thing wave 8 built.
+    ("typechange"
+     "the input value sanitization algorithm, and re-running it when `type' changes"
+     "src/script/forms-valuemode.lisp"
+     "input")
+    ("valuemode"
+     "the four input VALUE MODES (value/default/default-on/filename) and the dirty value flag"
+     "src/script/forms-valuemode.lisp"
+     "input")))
 
 (defun unit-headline (unit)
   (let ((e (assoc unit *unit-subjects* :test #'string=)))

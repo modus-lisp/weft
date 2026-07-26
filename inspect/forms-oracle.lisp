@@ -184,6 +184,24 @@
                          "defaultSelection.html"
                          "textarea-setRangeText-utf16-code-unit-crash.html"))
     ("selectevent"    . ("select-event.html"))
+    ;; ---- wave 9 ------------------------------------------------------------
+    ;; The input element's VALUE MODE, which SWEEP found sitting entirely
+    ;; outside the aperture: 348 subtests in three files no unit named, the
+    ;; largest unlooked-at block left in the forms corpus.  `type-change-state'
+    ;; alone is 380 subtests because it is the full (old type x new type) cross
+    ;; product — a small spec rule multiplied out, which is why it is worth a
+    ;; wave rather than a hand fix.
+    ;;
+    ;; Deliberately NOT here: input-type-change-submit.html (0/20).  It submits
+    ;; a form into an iframe and reads the result, so it is unreachable for
+    ;; reasons that have nothing to do with value mode; parked in a denominator
+    ;; it would just aim arms at a wall.  Unscorable != failing.
+    ("typechange"     . ("type-change-state.html"
+                         "type-change-state-weekmonth.html"))
+    ;; The four modes themselves (value/default/default-on/filename) plus the
+    ;; dirty value flag, which is what CLONE.HTML actually measures: a cloned
+    ;; control keeps its DEFAULT value, not its current one.
+    ("valuemode"      . ("valueMode.html" "clone.html"))
     ("formelement"    . ("form-autocomplete.html" "form-requestsubmit.html"
                          "form-nameditem.html" "form-indexed-element.html"
                          "form-indexed-element-shadow.html"

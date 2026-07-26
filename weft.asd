@@ -110,6 +110,9 @@
                                ;; Cross-element subsystems: the constraint
                                ;; validation API is one API over seven elements,
                                ;; and <form> has a surface of its own.
+                               ;; Before forms-constraints: the constraint code
+                               ;; calls this file's sanitizer directly.
+                               (:file "forms-valuemode")
                                (:file "forms-constraints") (:file "forms-form")
                                (:file "bridge") (:file "interact")))))))
 

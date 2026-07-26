@@ -49,7 +49,10 @@
     ("meter"    . "html/semantics/forms/the-meter-element/")
     ("progress" . "html/semantics/forms/the-progress-element/")
     ("option"   . "html/semantics/forms/the-option-element/")
-    ("fieldset" . "html/semantics/forms/the-fieldset-element/")))
+    ("fieldset" . "html/semantics/forms/the-fieldset-element/")
+    ("forminfra" . "html/semantics/forms/form-control-infrastructure/")
+    ("label"    . "html/semantics/forms/the-label-element/")
+    ("button"   . "html/semantics/forms/the-button-element/")))
 
 ;;; unit -> list of test-file basenames under the unit's directory.
 (defparameter *units*
@@ -94,7 +97,23 @@
     ("fieldset"      . ("HTMLFieldSetElement.html" "disabled-001.html" "disabled-003.html"
                         "fieldset-checkvalidity.html" "fieldset-willvalidate.html"
                         "fieldset-setcustomvalidity.html" "fieldset-validationmessage.html"
-                        "fieldset-validity.html" "fieldset-intrinsic-size.html"))))
+                        "fieldset-validity.html" "fieldset-intrinsic-size.html"))
+    ;; form_attribute.html alone is 98 addressable subtests — the densest single
+    ;; file in the whole forms tree.  It is the `form' content attribute: a
+    ;; control may name any form by id and become its owner, overriding the
+    ;; ancestor <form>.  Association logic, not spec arithmetic.
+    ("forminfra"     . ("form_attribute.html" "form.html" "form_owner_and_table.html"
+                        "form_owner_and_table_2.html" "form_owner_and_table_3.html"))
+    ;; Skips the click/focus-driven files (forward-focus, proxy-*, clicking-*):
+    ;; those need real event dispatch and score 0 for reasons no IDL work fixes.
+    ("label"         . ("labelable-elements.html" "label-attributes.sub.html"
+                        "label-inside-anchor.html"))
+    ("button"        . ("button-validation.html" "button-events.html"
+                        "button-type.html" "button-type-enumerated-ascii-case-insensitive.html"
+                        "button-labels.html" "button-checkvalidity.html"
+                        "button-setcustomvalidity.html" "button-validationmessage.html"
+                        "button-validity.html" "button-willvalidate.html"
+                        "button-willvalidate-readonly-attribute.html"))))
 
 (defun read-file-string (path)
   (with-open-file (in path :external-format :utf-8 :if-does-not-exist nil)

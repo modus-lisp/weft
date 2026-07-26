@@ -42,7 +42,7 @@
 (defparameter *variants* '(("a" . :flash))
   "Variants run per unit when a unit is named as a bare string in *UNITS*.")
 
-(defparameter *units* '("meter" "progress" "option" "fieldset" "select")
+(defparameter *units* '("forminfra" "label" "option" "select" "button")
   "Units to work this wave.  An entry may also be (unit variant . tier) for an
 extra arm on a unit that deserves one — e.g. (\"option\" \"p\" . :pro).")
 
@@ -249,6 +249,44 @@ its first <legend> child.  That rule also drives willValidate/checkValidity,
 which is why they are currently 0.  A new src/script/forms-fieldset.lisp
 registered with register-element-proto-extension is the natural home; add it to
 weft.asd.")
+    ((string= unit "forminfra")
+     "Form-control infrastructure — 3 of 120, and 98 of the misses are in ONE
+file, form_attribute.html.  This is the `form' CONTENT ATTRIBUTE, and we honour
+it nowhere.  Today the form owner is computed ad hoc as \"nearest ancestor
+<form>\" in at least three places — forms-fieldset.lisp (fieldset-form-owner),
+forms-select.lisp (the option \"form\" getter) and dom.lisp around line 2022.
+The spec rule is: if a listed form-associated element has a `form' attribute,
+its owner is the element in the same tree whose id matches, IF that element is a
+<form> — and if nothing matches, it has NO owner even when nested inside a
+<form>.  Only when the attribute is absent does the nearest-ancestor rule apply.
+The association is LIVE: changing the attribute, moving either node, or changing
+the target form's id re-resolves it, and form.elements must agree with
+control.form in both directions.
+Listed elements are button, fieldset, input, object, output, select, textarea.
+The high-value move is one shared form-owner function that all the existing call
+sites route through, rather than a fourth private copy — put it somewhere the
+other feature files can reach it and fix the callers to use it.")
+    ((string= unit "label")
+     "HTMLLabelElement — 12 of 49.  htmlFor reflects the `for' content attribute.
+`control' is the labeled control: with a `for' attribute it is the element in
+the tree whose id matches, but ONLY if that element is labelable; with no `for'
+attribute it is the FIRST labelable descendant in tree order.  Labelable =
+button, input (except type=hidden), meter, output, progress, select, textarea.
+`form' returns the control's form owner.  src/script/forms-labels.lisp already
+implements the inverse direction (control.labels) — the labelable set and the
+matching rules should be shared with it, not duplicated.
+Ignore the click/focus behaviour: this unit's files are the IDL ones.  If a
+failing assertion needs a real click to be dispatched, leave it.")
+    ((string= unit "button")
+     "HTMLButtonElement — 19 of 28, so this is the thin unit of the wave; take
+the cheap ones and move on rather than grinding.  What is left: `type' is an
+enumerated reflection limited to submit/reset/button with submit as both the
+missing and the invalid default, matched ASCII case-insensitively; willValidate
+is false for type=button and type=reset and for a disabled button (including one
+disabled by an ancestor fieldset); plus labels, checkValidity,
+setCustomValidity and validationMessage off the shared validity machinery in
+src/script/forms-validity.lisp.  button-events.html and button-validation.html
+hold most of the remaining subtests — read their failing assertions first.")
     (t "")))
 
 (defun task-text (job)

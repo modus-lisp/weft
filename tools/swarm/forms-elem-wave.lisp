@@ -51,20 +51,30 @@
 ;;; disjoint (constraint validation / text selection / <form>), and where a
 ;;; subsystem is worth two attempts they get DIFFERENT unit names, so both can
 ;;; merge on their own merits instead of one being discarded as a duplicate.
-;;; Wave 9.  A narrower wave than 8 on purpose: SWEEP says the forms corpus has
-;;; one large block of headroom left (the input value mode, 348 subtests in
-;;; three files that were outside the aperture entirely), and every one of its
-;;; 322 failures has the SAME root cause.  So this wave is not a breadth bet,
-;;; it is a controlled one — three arms on identical work at two tiers, plus a
-;;; fourth named at the sibling unit to see whether it defects to the dense one
-;;; the way four of five did in wave 7.
-(defparameter *units* '(("typechange" "a" . :flash)
-                        ("typechange" "b" . :flash)
-                        ("typechange" "p" . :pro)
-                        ("valuemode"  "a" . :flash))
+;;; Wave 9 spent three arms on ONE unit at two tiers, as a controlled tier
+;;; comparison rather than a breadth bet, plus a fourth on the sibling unit to
+;;; see whether it would defect to the dense one the way four of five did in
+;;; wave 7.  It did — and solved a block nobody had assigned it.  Both results
+;;; held: arms follow the score, and the tier is not the lever (see *MODELS*).
+;;; Choose the next roster from SWEEP, not from the last wave's leftovers.
+(defparameter *units* '()
   "Units to work this wave.  An entry may also be (unit variant . tier) for an
-extra arm on a unit that deserves one — e.g. (\"option\" \"p\" . :pro).")
+extra arm on a unit that deserves one.  Run FLASH unless there is a reason not
+to — see *MODELS*.")
 
+;;; :PRO IS NOT THE UPGRADE IT LOOKS LIKE.  Measured twice, on purpose:
+;;;   wave 9  three arms on identical work — pro 184.8¢ for TOTAL 2611, the
+;;;           cheapest flash arm 14.9¢ for 2624.  12x the cost, 13 subtests
+;;;           BEHIND, on the same unit with the same task text.
+;;;   wave 2  a pro gate over three date/step-arithmetic units made zero
+;;;           progress, exactly as the flash arms had.
+;;; The waves are budget-bound, not intelligence-bound: every wave-9 arm exited
+;;; on the clock rather than dry, so the round count an arm gets is what moves
+;;; the score, and pro buys fewer rounds per dollar.  Where flash genuinely
+;;; cannot reach — exact multi-branch spec arithmetic — pro did not reach it
+;;; either; that work has gone to the strong tier by hand every time.
+;;; Keep the mapping so a future measurement can re-open the question, but do
+;;; not put :pro in a roster on the assumption that it is better.
 (defparameter *models* '((:flash . "deepseek/deepseek-v4-flash")
                          (:pro   . "deepseek/deepseek-v4-pro")))
 

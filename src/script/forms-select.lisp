@@ -526,6 +526,50 @@
           (v) (let ((node (n this)))
                 (when (string= (h:dnode-name node) "optgroup")
                   (set-attr node "label" (jstr v))
-                  (setf (context-dirty ctx) t))))))))
+                  (setf (context-dirty ctx) t))))
+        ;; HTMLSelectElement is itself an indexed collection: `sel[2]` is the
+        ;; third option and `sel[2] = opt` replaces it.  That cannot live on the
+        ;; prototype — the index belongs to the instance — so it goes through the
+        ;; per-element exotic hook in core.lisp.  Registered HERE, inside the
+        ;; installer, because the accessors above are LABELS closed over this
+        ;; context; the hook is keyed by tag and re-registers per context.
+        (register-element-exotic "select"
+          (lambda (ectx node obj)
+            (declare (ignore ectx obj))
+            (list
+             :get
+             (lambda (o key rcv)
+               (let ((k (js:to-property-key key))
+                     (l (select-options-list node)))
+                 (if (and (index-string-p k) (< (parse-integer k) (length l)))
+                     (wrap ctx (nth (parse-integer k) l))
+                     (js::ordinary-get o k (or rcv o)))))
+             ;; Also as a descriptor, so getOwnPropertyDescriptor / defineProperty
+             ;; agree with what `sel[0]` returns.
+             :get-own-property
+             (lambda (o key)
+               (let ((l (select-options-list node)))
+                 (if (and (index-string-p key) (< (parse-integer key) (length l)))
+                     (js::make-prop :value (wrap ctx (nth (parse-integer key) l))
+                                    :enumerable t :configurable t :writable nil)
+                     (js::props-get o key))))
+             :set
+             (lambda (o key v rcv)
+               (let ((k (js:to-property-key key)))
+                 (cond ((index-string-p k)
+                        (select-options-index-set node (parse-integer k) v)
+                        t)
+                       (t (js::ordinary-set o k v (or rcv o))))))
+             :has
+             (lambda (o key)
+               (let ((k (js:to-property-key key)))
+                 (or (and (index-string-p k)
+                          (< (parse-integer k) (length (select-options-list node))))
+                     (js::ordinary-has o k))))
+             :own-keys
+             (lambda (o)
+               (append (loop for i from 0 below (length (select-options-list node))
+                             collect (princ-to-string i))
+                       (js::ordinary-own-keys o))))))))))
 
 (register-element-proto-extension :select #'install-forms-select)

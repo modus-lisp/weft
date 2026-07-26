@@ -121,6 +121,37 @@
          (proto ctx :xmldocument))
         (t (proto ctx (proto-key-for node)))))
 
+;;; ---- per-element exotic behaviour (indexed / named access) ----------------
+;;; A few HTML interfaces are indexed collections in their own right —
+;;; `select[2]`, `form[0]` — which a PROTOTYPE cannot express: the index is a
+;;; property of the instance, not of HTMLSelectElement.prototype.  Feature files
+;;; register an installer here and WRAP hangs the internal traps it returns on
+;;; the fresh wrapper.
+;;;
+;;; Return a plist of shuttle internal traps.  A :get-own-property trap alone is
+;;; NOT enough: shuttle's ordinary-get reads the property table directly rather
+;;; than calling [[GetOwnProperty]], so the descriptor trap shows up in
+;;; Object.getOwnPropertyDescriptor and `in` but never in `sel[0]`.  Install :get
+;;; as well — and have it DELEGATE to (js::ordinary-get o key rcv) for everything
+;;; it does not claim, or the element loses its own expandos (`el.myThing = 1`)
+;;; and its prototype chain along with them.
+(defvar *element-exotics* (make-hash-table :test 'equal)
+  "lowercase tag name -> (lambda (ctx node obj) ...) -> plist of internal traps.")
+
+(defun register-element-exotic (tag fn)
+  (setf (gethash (string-downcase tag) *element-exotics*) fn))
+
+(defun apply-element-exotic (ctx node obj)
+  (when (and (plusp (hash-table-count *element-exotics*))
+             (eq (h:dnode-kind node) :element))
+    ;; dnode-name is already lowercase for HTML elements, and WRAP is hot enough
+    ;; that a per-element string-downcase would be pure allocation.
+    (let ((fn (gethash (h:dnode-name node) *element-exotics*)))
+      (when fn
+        (loop for (k v) on (funcall fn ctx node obj) by #'cddr
+              do (setf (getf (js::js-object-internal obj) k) v)))))
+  obj)
+
 (defun wrap (ctx node)
   "The JS wrapper for weft NODE, memoized (DOM object identity). NIL -> JS null."
   (cond ((null node) js:*null*)
@@ -129,7 +160,7 @@
                (let ((obj (js:make-object :proto (wrapper-proto ctx node))))
                  (setf (gethash node (context-node-objs ctx)) obj
                        (gethash obj (context-obj-nodes ctx)) node)
-                 obj)))))
+                 (apply-element-exotic ctx node obj))))))
 
 (defun require-node (ctx obj)
   (or (node-of ctx obj)

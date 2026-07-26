@@ -65,29 +65,48 @@
 (defun fdt-all-digits-p (s a b) (and (< a b) (loop for i from a below b always (digit-char-p (char s i)))))
 (defun fdt-int (s a b) (parse-integer s :start a :end b))
 
+(defun fdt-year-split (s)
+  "Index of the `-' that terminates the year component of S, or NIL.  HTML's
+   date grammar takes FOUR OR MORE ASCII digits, and with more than four the
+   first must not be zero.  Years past 9999 are not a curiosity: WPT asserts
+   that a value in year 10000 compares GREATER than a 9999 max, which a
+   fixed-width-year parser cannot express at all."
+  (let ((d (position #\- s)))
+    (and d (>= d 4) (fdt-all-digits-p s 0 d)
+         (or (= d 4) (char/= (char s 0) #\0))
+         d)))
+
 (defun fdt-parse-date (s)
   "\"YYYY-MM-DD\" -> epoch-day, or NIL if not a valid date string."
-  (let ((n (length s)))
-    (when (and (>= n 10) (= n 10) (char= (char s 4) #\-) (char= (char s 7) #\-)
-               (fdt-all-digits-p s 0 4) (fdt-all-digits-p s 5 7) (fdt-all-digits-p s 8 10))
-      (let ((y (fdt-int s 0 4)) (m (fdt-int s 5 7)) (d (fdt-int s 8 10)))
+  (let ((y-end (fdt-year-split s)))
+    (when (and y-end (= (length s) (+ y-end 6))
+               (char= (char s (+ y-end 3)) #\-)
+               (fdt-all-digits-p s (1+ y-end) (+ y-end 3))
+               (fdt-all-digits-p s (+ y-end 4) (+ y-end 6)))
+      (let ((y (fdt-int s 0 y-end))
+            (m (fdt-int s (1+ y-end) (+ y-end 3)))
+            (d (fdt-int s (+ y-end 4) (+ y-end 6))))
         (when (and (>= y 1) (<= 1 m 12) (<= 1 d (fdt-mdays y m)))
           (fdt-days-from-civil y m d))))))
 
 (defun fdt-parse-month (s)
   "\"YYYY-MM\" -> months since 1970-01, or NIL."
-  (when (and (= (length s) 7) (char= (char s 4) #\-)
-             (fdt-all-digits-p s 0 4) (fdt-all-digits-p s 5 7))
-    (let ((y (fdt-int s 0 4)) (m (fdt-int s 5 7)))
-      (when (and (>= y 1) (<= 1 m 12)) (+ (* (- y 1970) 12) (1- m))))))
+  (let ((y-end (fdt-year-split s)))
+    (when (and y-end (= (length s) (+ y-end 3))
+               (fdt-all-digits-p s (1+ y-end) (+ y-end 3)))
+      (let ((y (fdt-int s 0 y-end)) (m (fdt-int s (1+ y-end) (+ y-end 3))))
+        (when (and (>= y 1) (<= 1 m 12)) (+ (* (- y 1970) 12) (1- m)))))))
 
 (defun fdt-parse-week (s)
-  "\"YYYY-Www\" -> epoch-ms of the Monday, or NIL."
-  (when (and (= (length s) 8) (char= (char s 4) #\-) (char-equal (char s 5) #\W)
-             (fdt-all-digits-p s 0 4) (fdt-all-digits-p s 6 8))
-    (let ((y (fdt-int s 0 4)) (w (fdt-int s 6 8)))
-      (when (and (>= y 1) (<= 1 w (fdt-weeks-in-iso-year y)))
-        (* (fdt-iso-week-monday y w) 86400000)))))
+  "\"YYYY-Www\" -> epoch-ms of the Monday, or NIL.  The W is UPPERCASE only —
+   CHAR-EQUAL here accepted \"2000-w01\", which WPT asserts is invalid."
+  (let ((y-end (fdt-year-split s)))
+    (when (and y-end (= (length s) (+ y-end 4))
+               (char= (char s (1+ y-end)) #\W)
+               (fdt-all-digits-p s (+ y-end 2) (+ y-end 4)))
+      (let ((y (fdt-int s 0 y-end)) (w (fdt-int s (+ y-end 2) (+ y-end 4))))
+        (when (and (>= y 1) (<= 1 w (fdt-weeks-in-iso-year y)))
+          (* (fdt-iso-week-monday y w) 86400000))))))
 
 (defun fdt-parse-hms (s)
   "\"HH:MM\" / \"HH:MM:SS\" / \"HH:MM:SS.fff\" -> ms of day, or NIL."
@@ -113,9 +132,9 @@
 (defun fdt-parse-datetime-local (s)
   "\"YYYY-MM-DDTHH:MM[:SS[.fff]]\" -> epoch-ms (local as UTC), or NIL."
   (let ((tpos (or (position #\T s) (position #\Space s))))
-    (when (and tpos (= tpos 10))
-      (let ((day (fdt-parse-date (subseq s 0 10)))
-            (tod (fdt-parse-hms (subseq s 11))))
+    (when tpos
+      (let* ((day (fdt-parse-date (subseq s 0 tpos)))
+             (tod (and day (fdt-parse-hms (subseq s (1+ tpos))))))
         (when (and day tod) (+ (* day 86400000) tod))))))
 
 ;;; ---- formatters (number/ms -> value string) --------------------------------

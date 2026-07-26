@@ -152,11 +152,19 @@
 ;;; uncompilable pattern used to let a JS SyntaxError escape into Lisp, which
 ;;; abandons the whole <script> block (bridge.lisp) rather than failing one test.
 (defun constraints-pattern-regex (ctx pattern-str)
-  (handler-case
-      (js:js-construct (js:eval-script (context-realm ctx) "RegExp")
-                       (list (jstr (concatenate 'string "^(?:" pattern-str ")$"))
-                             (jstr "v")))
-    (error () nil)))
+  (let ((rx (js:eval-script (context-realm ctx) "RegExp")))
+    (handler-case
+        ;; The validity check compiles the RAW pattern; only then is the
+        ;; anchored form built for matching.  Validating the anchored form
+        ;; instead accepts patterns that are broken on their own: "a)(b" is a
+        ;; SyntaxError, but "^(?:a)(b)$" is a perfectly good regex that simply
+        ;; does not match, so the pattern escaped its group and imposed a
+        ;; constraint the author never wrote.
+        (progn
+          (js:js-construct rx (list (jstr pattern-str) (jstr "v")))
+          (js:js-construct rx (list (jstr (concatenate 'string "^(?:" pattern-str ")$"))
+                                    (jstr "v"))))
+      (error () nil))))
 
 (defun constraints-check-pattern-mismatch (node ctx)
   (let ((pattern-str (constraints-input-pattern node))
@@ -184,17 +192,31 @@
        (let ((n (fdt-value->number type s)))
          (and (realp n) n))))
 
-(defun constraints-check-range-overflow (node ctx)
-  (let* ((type (input-type node))
-         (maxv (constraints-limit type (constraints-input-max node)))
-         (v (constraints-limit type (constraints-input-value node ctx))))
-    (and maxv v (> v maxv))))
-
-(defun constraints-check-range-underflow (node ctx)
+;;; A REVERSED RANGE is max < min — legal for the wrapping types (<input
+;;; type=time min=23:00 max=01:00> means "overnight").  The allowed values are
+;;; then everything OUTSIDE (max, min), and a value in the excluded middle is
+;;; simultaneously suffering from an underflow AND an overflow.  Treating the
+;;; two bounds independently, as before, called every in-range overnight value
+;;; both under and over at once.
+(defun constraints-range-flags (node ctx)
+  "(values overflow-p underflow-p)."
   (let* ((type (input-type node))
          (minv (constraints-limit type (constraints-input-min node)))
+         (maxv (constraints-limit type (constraints-input-max node)))
          (v (constraints-limit type (constraints-input-value node ctx))))
-    (and minv v (< v minv))))
+    (cond
+      ((null v) (values nil nil))
+      ((and minv maxv (< maxv minv))
+       (let ((out (and (> v maxv) (< v minv))))
+         (values out out)))
+      (t (values (and maxv (> v maxv) t)
+                 (and minv (< v minv) t))))))
+
+(defun constraints-check-range-overflow (node ctx)
+  (values (constraints-range-flags node ctx)))
+
+(defun constraints-check-range-underflow (node ctx)
+  (nth-value 1 (constraints-range-flags node ctx)))
 
 ;;; HTML's step base: `min' if it parses, else the `value' CONTENT attribute if
 ;;; it parses, else the type's default.  The value-attribute fallback is the one

@@ -84,7 +84,7 @@
 (defun constraints-radio-group (ctx node)
   (let ((name (get-attr node "name")))
     (if (or (null name) (string= name ""))
-        (list node)
+        nil  ; empty name = not in a radio group
         (let ((root (tree-root node))
               (owner (element-form-owner ctx node)))
           (remove-if-not
@@ -135,13 +135,41 @@
             (string= (constraints-sanitized-value node ctx) "")))
       (t nil))))
 
+(defun constraints-valid-email-p (val)
+  "A simplistic email validation: must contain @ and a dot after it."
+  (and (find #\@ val)
+       (let ((at-pos (position #\@ val)))
+         (find #\. val :start (1+ at-pos)))))
+
 (defun constraints-check-type-mismatch (node ctx)
   (let ((type (input-type node))
         (val (constraints-input-value node ctx)))
     (when (not (string= val ""))
       (cond
         ((string= type "email")
-         (not (and (find #\@ val) (find #\. val))))
+         (let ((multiple (dom:has-attribute node "multiple")))
+           (if multiple
+               ;; When multiple is true, value is a comma-separated list of emails.
+               ;; Split on commas, trim whitespace, check each part.
+               (loop with start = 0
+                     for pos = (position #\, val :start start)
+                     for part = (string-trim '(#\space #\tab #\newline #\return)
+                                             (subseq val start pos))
+                     when (and (> (length part) 0)
+                               (not (constraints-valid-email-p part)))
+                       do (return t)
+                     ;; The termination test has to PRECEDE the advance.  On the
+                     ;; last segment POS is NIL, so (1+ POS) is a Lisp type
+                     ;; error, not a JS one — bridge.lisp abandons the whole
+                     ;; <script> on those, so it cost every remaining subtest in
+                     ;; two files (badInput 11/11 -> 2/11, typeMismatch 9 -> 5)
+                     ;; instead of failing one assert.
+                     while pos
+                     do (setf start (1+ pos))
+                     finally (return nil))
+               ;; When multiple is false, a comma makes it invalid
+               (or (find #\, val)
+                   (not (constraints-valid-email-p (string-trim '(#\space #\tab #\newline #\return) val)))))))
         ((string= type "url")
          (not (>= (length val) 4)))
         (t nil)))))
@@ -154,13 +182,13 @@
 (defun constraints-pattern-regex (ctx pattern-str)
   (let ((rx (js:eval-script (context-realm ctx) "RegExp")))
     (handler-case
-        ;; The validity check compiles the RAW pattern; only then is the
-        ;; anchored form built for matching.  Validating the anchored form
-        ;; instead accepts patterns that are broken on their own: "a)(b" is a
-        ;; SyntaxError, but "^(?:a)(b)$" is a perfectly good regex that simply
-        ;; does not match, so the pattern escaped its group and imposed a
-        ;; constraint the author never wrote.
         (progn
+          ;; The validity check compiles the RAW pattern; only then is the
+          ;; anchored form built for matching.  Validating the anchored form
+          ;; instead accepts patterns that are broken on their own: "a)(b" is a
+          ;; SyntaxError, but "^(?:a)(b)$" is a perfectly good regex that simply
+          ;; does not match, so the pattern escaped its group and imposed a
+          ;; constraint the author never wrote.
           (js:js-construct rx (list (jstr pattern-str) (jstr "v")))
           (js:js-construct rx (list (jstr (concatenate 'string "^(?:" pattern-str ")$"))
                                     (jstr "v"))))
@@ -324,6 +352,15 @@
   (declare (ignore node ctx))
   t)
 
+;;; Check if NODE has a <datalist> ancestor (which bars it from validation).
+(defun datalist-ancestor-p (node)
+  (loop for p = (h:dnode-parent node) then (h:dnode-parent p)
+        while p
+        do (when (and (eq (h:dnode-kind p) :element)
+                      (string= (h:dnode-name p) "datalist"))
+             (return t))
+        finally (return nil)))
+
 ;;; Check if a control is barred from constraint validation.
 (defun constraints-barred-p (node)
   (let ((tag (h:dnode-name node)))
@@ -334,22 +371,26 @@
        (or (dom:has-attribute node "disabled")
            (dom:has-attribute node "readonly")
            (fieldset-disabled-ancestor-p node)
+           (datalist-ancestor-p node)
            (let ((type (button-type node)))
              (not (string= type "submit")))))
       ((string= tag "input")
        (or (dom:has-attribute node "disabled")
            (dom:has-attribute node "readonly")
            (fieldset-disabled-ancestor-p node)
+           (datalist-ancestor-p node)
            (let ((type (input-type node)))
              (member type '("hidden" "reset" "button") :test #'string=))))
       ((string= tag "textarea")
        (or (dom:has-attribute node "disabled")
            (dom:has-attribute node "readonly")
-           (fieldset-disabled-ancestor-p node)))
+           (fieldset-disabled-ancestor-p node)
+           (datalist-ancestor-p node)))
       ((string= tag "select")
        (or (dom:has-attribute node "disabled")
            (dom:has-attribute node "readonly")
-           (fieldset-disabled-ancestor-p node)))
+           (fieldset-disabled-ancestor-p node)
+           (datalist-ancestor-p node)))
       (t t))))
 
 ;;; Main constraint validation check — returns (values valid-p invalid-event-fired-p)
@@ -422,8 +463,23 @@
   (macrolet ((n (this) `(require-node ctx ,this)))
     (let ((select-custom-errors (make-hash-table :test 'eq))
           (textarea-custom-errors (make-hash-table :test 'eq)))
+      ;; --- willValidate on each control tag (using constraints-barred-p,
+      ;; but for buttons, readonly does NOT affect willValidate per spec) ---
+      (defget-for ctx ep "button" "willValidate" (this)
+        (let ((node (n this)))
+          (if (or (dom:has-attribute node "disabled")
+                  (fieldset-disabled-ancestor-p node)
+                  (datalist-ancestor-p node)
+                  (let ((type (button-type node)))
+                    (not (string= type "submit"))))
+              js:*false* js:*true*)))
+      (dolist (tag '("input" "textarea" "select" "fieldset" "output" "object"))
+        (defget-for ctx ep tag "willValidate" (this)
+          (let ((node (n this)))
+            (if (constraints-barred-p node) js:*false* js:*true*))))
+
       ;; --- reportValidity on each control tag ---
-      (dolist (tag '("input" "textarea" "select" "button" "fieldset" "output"))
+      (dolist (tag '("input" "textarea" "select" "button" "fieldset" "output" "object"))
         (defmethod-for ctx ep tag "reportValidity" 0 (this a)
           (declare (ignore a))
           (let ((node (n this)))

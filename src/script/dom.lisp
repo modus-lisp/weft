@@ -630,6 +630,12 @@ replaceChildren + the query surface) plus getElementById (DOM §4.2.7)."
                               (make-attr-rec :cell clone :ns (attr-rec-ns rec)
                                              :prefix (attr-rec-prefix rec)
                                              :local (attr-rec-local rec) :owner c))))
+    (when (eq (h:dnode-kind node) :element)
+      ;; Copy the dirty-value flag from context-input-values so a clone
+      ;; retains its changed value (clone.html tests this).
+      (multiple-value-bind (v present) (gethash node (context-input-values ctx))
+        (when present
+          (setf (gethash c (context-input-values ctx)) v))))
     (when (eq (h:dnode-kind node) :document)
       (let ((ct (gethash node (context-doc-content-types ctx))))
         (when ct (setf (gethash c (context-doc-content-types ctx)) ct)))
@@ -2212,7 +2218,12 @@ the context node when it is an element, else NIL (a document/fragment root makes
               ((string= tag "textarea") "textarea")   ; a <textarea>'s type is always "textarea"
               ((string= tag "fieldset") "fieldset")
               (t (or raw ""))))
-      (v) (progn (set-attr (n this) "type" (jstr v)) (setf (context-dirty ctx) t)))
+      (v) (let* ((node (n this))
+                  (raw (jstr v)))
+            (set-attr node "type" raw)
+            (setf (context-dirty ctx) t)
+            (when (string= (h:dnode-name node) "input")
+              (valuemode-re-sanitize ctx node))))
     ;; value: <input> and <textarea> hold the current value in CONTEXT-INPUT-VALUES
     ;; (a <textarea>'s default = its child text content); others reflect the attr.
     (defgetset ctx ep "value" (this)

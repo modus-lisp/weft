@@ -67,14 +67,16 @@
     (finish-output)))
 
 (defun sh (fmt &rest args)
-  "Run a shell command line; return (values trimmed-stdout exit-code)."
+  "Run a shell command line; return (values trimmed-stdout exit-code stderr).
+Stderr is captured rather than discarded: when a git step fails, its message is
+the only thing that says why, and a gate that reports \"it failed\" without it
+sends you looking in the wrong place."
   (multiple-value-bind (out err code)
       (uiop:run-program (apply #'format nil fmt args)
                         :output '(:string :stripped t)
-                        :error-output nil
+                        :error-output '(:string :stripped t)
                         :ignore-error-status t)
-    (declare (ignore err))
-    (values out code)))
+    (values out code err)))
 
 (defun sh-ok (fmt &rest args)
   (zerop (nth-value 1 (apply #'sh fmt args))))
@@ -270,8 +272,13 @@ guess which of the files to read.
             unit (job-variant job) unit
             wd unit
             unit unit unit unit
-            (format nil "cd ~a && sbcl --dynamic-space-size 4096 --non-interactive --load inspect/forms-oracle.lisp --eval '(weft.forms-oracle:run \"~a\")' 2>&1 | tail -40"
-                    wd unit)
+            ;; Same ORACLE_BESTS/ORACLE_EXPECTED as the harness uses, so the
+            ;; agent's own oracle runs share one ratchet with ours AND keep the
+            ;; oracle's bookkeeping out of the worktree — otherwise every
+            ;; agent-run oracle rewrites forms-oracle-expected.sexp in place and
+            ;; it rides along in the worker's patch as noise.
+            (format nil "cd ~a && ORACLE_BESTS=~a ORACLE_EXPECTED=~a sbcl --dynamic-space-size 4096 --non-interactive --load inspect/forms-oracle.lisp --eval '(weft.forms-oracle:run \"~a\")' 2>&1 | tail -40"
+                    wd (jp job :bests) (jp job :expected) unit)
             unit
             (guidance unit)
             wd)))
@@ -299,14 +306,20 @@ guess which of the files to read.
                   (jp job :task) (or total "?"))
           (jp job :log)))
 
-(defun cost-of (job)
+(defun cost-of (job rounds)
   "operandi prints its usage line once per invocation, on exit; sum them.
-   A round killed by `timeout' never reaches that print, so this under-reports —
-   wave 4 read 0.000¢ across the board because every round hit the cap."
-  (let ((out (sh "grep -aoE '[0-9.]+¢' ~a 2>/dev/null | tr -d '¢' | ~
-                  awk '{s+=$1} END{printf \"%.3f\", s}'"
-                 (jp job :log))))
-    (if (and out (plusp (length out))) (format nil "~a¢" out) "?")))
+   A round killed by `timeout' never reaches that print, so a capped wave has
+   NO cost data at all.  Report that as `?' — awk's END block prints 0.000 on
+   empty input, and dressing that up as `0.000¢' reads like a measurement."
+  (let* ((n (sh "grep -acE '[0-9.]+¢' ~a 2>/dev/null" (jp job :log)))
+         (lines (or (ignore-errors (parse-integer n :junk-allowed t)) 0)))
+    (if (zerop lines)
+        "cost ?"
+        (let ((out (sh "grep -aoE '[0-9.]+¢' ~a 2>/dev/null | tr -d '¢' | ~
+                        awk '{s+=$1} END{printf \"%.3f\", s}'"
+                       (jp job :log))))
+          ;; Still partial whenever a round was killed by `timeout': say so.
+          (format nil "~a¢~:[ (~d/~d rounds)~;~]" out (= lines rounds) lines rounds)))))
 
 (defun run-worker (job)
   (let* ((deadline (+ (get-universal-time) *worker-budget*))
@@ -335,7 +348,7 @@ guess which of the files to read.
                   (job-id job) round (or total "?") (or after "?") dry)
             (setf total after)))))
     (list :job job :rounds round :seconds (- (get-universal-time) start)
-          :total (or (best-score job) 0) :cost (cost-of job))))
+          :total (or (best-score job) 0) :cost (cost-of job round))))
 
 ;;; ---- merging --------------------------------------------------------------
 
@@ -369,12 +382,22 @@ guess which of the files to read.
       (unless (probe-file patch)
         (note "  -> no patch from ~a" (job-id job))
         (return-from merge-best nil))
+      ;; An arm that never improved snapshots a zero-byte patch, and `git apply'
+      ;; calls that "No valid patches in input" with exit 128 — which the failure
+      ;; branch below would report as "does not apply cleanly", pointing at a
+      ;; conflict that does not exist.  Name the empty case for what it is.
+      (when (zerop (with-open-file (s patch) (file-length s)))
+        (note "  -> ~a made no change; nothing to merge" (job-id job))
+        (return-from merge-best nil))
       (note "  -> ~a touches: ~a" (job-id job)
             (or (sh "git -C ~a apply --numstat ~a 2>/dev/null | awk '{print $3}' | paste -sd,"
                     *src* patch)
                 "?"))
-      (if (not (sh-ok "git -C ~a apply --3way ~a" *src* patch))
-          (note "  -> ~a patch does not apply cleanly; skipped" (job-id job))
+      (multiple-value-bind (out code err) (sh "git -C ~a apply --3way ~a" *src* patch)
+        (declare (ignore out))
+        (if (not (zerop code))
+          (note "  -> ~a patch failed to apply (git exit ~d): ~a"
+                (job-id job) code (if (plusp (length err)) err "<no stderr>"))
           (let ((after (total-of (canon-score unit))))
             (cond ((and after before (> after before) (scripting-dom-ok-p *src*))
                    (note "  -> KEEP ~a: TOTAL ~a -> ~a" (job-id job) before after))
@@ -384,7 +407,7 @@ guess which of the files to read.
                    (sh "git -C ~a apply -R --3way ~a" *src* patch)
                    (note "  -> REVERT ~a: TOTAL ~a -> ~a~:[~; (scripting-dom regressed)~]"
                          (job-id job) before after
-                         (and after before (> after before))))))))))
+                         (and after before (> after before)))))))))))
 
 ;;; ---- the wave -------------------------------------------------------------
 

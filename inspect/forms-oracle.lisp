@@ -123,12 +123,39 @@
               (n (parse-integer s :start (1+ sp) :junk-allowed t)))
           (when (and p n) (values p n)))))))
 
-;;; Run one file; return (values passed total error-string failure-descriptions).
+;;; Run one file; return (values passed total error-string failure-descriptions
+;;; unscorable-reason).
 ;;; A file that errors before any subtest registers counts as 1 failed (so a hard
-;;; crash isn't free).
+;;; crash isn't free) — UNLESS it never loaded testharness.js, in which case it
+;;; is a reference test (visual comparison against a -ref.html) and CANNOT report
+;;; a subtest no matter how correct the engine is.  Pinned at a denominator of 1
+;;; those files were four permanently-unpassable failures the swarm kept aiming
+;;; at; they are excluded from numerator and denominator both.
+;;; WPT ships some tests as bare `foo.window.js`; the harness GENERATES the
+;;; document around them at serve time.  Read as HTML the script is just text,
+;;; so the file registers nothing and looked exactly like a reftest.  Generate
+;;; the same wrapper WPT does (`// META: script=` directives included) and the
+;;; subtests become reachable.
+(defun window-js-wrapper (path)
+  (let ((src (read-file-string path))
+        (extra '()))
+    (with-input-from-string (s src)
+      (loop for line = (read-line s nil)
+            while (and line (>= (length line) 2) (string= "//" (subseq line 0 2)))
+            do (let ((p (search "META: script=" line)))
+                 (when p (push (string-trim " " (subseq line (+ p 13))) extra)))))
+    (format nil "<!doctype html><meta charset=utf-8>~
+                 <script src=\"/resources/testharness.js\"></script>~
+                 <script src=\"/resources/testharnessreport.js\"></script>~
+                 ~{<script src=\"~a\"></script>~}~
+                 <script src=\"~a\"></script>"
+            (nreverse extra) (file-namestring path))))
+
 (defun run-one (html-path)
   (handler-case
-      (let* ((html (read-file-string html-path))
+      (let* ((html (if (search ".window.js" (file-namestring html-path))
+                       (window-js-wrapper html-path)
+                       (read-file-string html-path)))
              (doc (weft.html:parse-html html))
              (base (format nil "file://~a" (namestring (truename html-path))))
              (test-dir (directory-namestring (truename html-path)))
@@ -141,11 +168,13 @@
         (s:run-event-loop ctx :max-tasks 200000)
         (let ((out (js:eval-script realm +dump+)))
           (multiple-value-bind (p n) (parse-two-ints out)
-            (if (and n (plusp n))
-                (values p n nil
-                        (and (< p n)
-                             (ignore-errors (split-us (js:eval-script realm +fails+)))))
-                (values 0 1 "no-subtests" nil)))))
+            (cond ((and n (plusp n))
+                   (values p n nil
+                           (and (< p n)
+                                (ignore-errors (split-us (js:eval-script realm +fails+))))))
+                  ((not (search "testharness.js" html))
+                   (values 0 0 nil nil "reftest"))
+                  (t (values 0 1 "no-subtests" nil))))))
     (error (e) (values 0 1 (princ-to-string e) nil))))
 
 ;;; ---- pinned denominators --------------------------------------------------
@@ -287,7 +316,14 @@
     (dolist (f (cdr (assoc unit *units* :test #'string=)))
       (let ((path (merge-pathnames (concatenate 'string dir f) *wpt-root*)))
         (if (probe-file path)
-            (multiple-value-bind (p n err fails) (run-one path)
+            (multiple-value-bind (p n err fails unscorable) (run-one path)
+              (if unscorable
+                  ;; Drop it from the pinned table too, or the old denominator of
+                  ;; 1 keeps being max'd back in on every later run.
+                  (progn
+                    (setf expected (remove f expected :key #'car :test #'string=))
+                    (when verbose
+                      (format t "~&  ~40a   —/—    [unscorable — ~a]~%" f unscorable)))
               (let* ((pin (max n (or (cdr (assoc f expected :test #'string=)) 0)))
                      (missing (- pin n)))
                 (setf expected (cons (cons f pin)
@@ -305,7 +341,7 @@
                         do (format t "~&        FAIL ~a~%" d))
                   (when (> (length fails) *max-fails-shown*)
                     (format t "~&        ... and ~d more failing subtest~:p in this file~%"
-                            (- (length fails) *max-fails-shown*))))))
+                            (- (length fails) *max-fails-shown*)))))))
             (when verbose (format t "~&  ~40a MISSING~%" f)))))
     (values tp tn k short expected)))
 

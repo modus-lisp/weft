@@ -13,8 +13,7 @@
       ;; validity getter — returns a ValidityState object reflecting current state
       (defget-for ctx ep "input" "validity" (this)
         (let* ((node (n this))
-               (obj (js:make-object
-                     :proto (js:eval-script (context-realm ctx) "Object.prototype")))
+               (obj (make-validity-state ctx))
                (custom-msg (gethash node validity-custom-errors))
                (custom-error-p (and custom-msg (plusp (length custom-msg)))))
           (flet ((vp (k v) (js:put obj k (if v js:*true* js:*false*) :writable nil :enumerable t :configurable t)))

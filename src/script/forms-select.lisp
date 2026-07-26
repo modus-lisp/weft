@@ -4,6 +4,17 @@
 ;;;; tag ((string= (h:dnode-name (n this)) "select")) so it only acts on <select>.
 (in-package #:weft.script)
 
+;;; Shared with forms-option.lisp and forms-constraints.lisp: the "displays one
+;;; row" condition that gates the ask-for-a-reset auto-selection of the first
+;;; option — and through it both `option.selected' and the placeholder label
+;;; option.  Three files were deciding this independently and only this one
+;;; consulted `size'.
+(defun select-one-row-p (node)
+  (and (not (dom:has-attribute node "multiple"))
+       (let ((s (get-attr node "size")))
+         (or (null s) (string= s "")
+             (eql 1 (parse-integer s :junk-allowed t))))))
+
 (defun install-forms-select (ctx ep)
   (declare (ignorable ctx ep))
   (macrolet ((n (this) `(require-node ctx ,this))
@@ -337,6 +348,21 @@
                     "select-one")
                 js:*undefined*)))
         ;; multiple getter/setter — reflected boolean attribute
+        ;; size — reflected as an unsigned long, default 0.  It was not
+        ;; reflected at all, so `select.size = 2' left the content attribute
+        ;; absent and the select still counted as showing one row: its first
+        ;; option auto-selected and select-validity.html's size-2 group failed
+        ;; on its first assertion.
+        (defgetset-for ctx ep "select" "size" (this)
+          (let ((node (n this)))
+            (if (tag-gate this)
+                (num (let ((s (get-attr node "size")))
+                       (or (and s (parse-integer s :junk-allowed t)) 0)))
+                js:*undefined*))
+          (v) (let ((node (n this)))
+                (when (tag-gate this)
+                  (set-attr node "size" (format nil "~d" (max 0 (js-int v))))
+                  (setf (context-dirty ctx) t))))
         (defgetset-for ctx ep "select" "multiple" (this)
           (let ((node (n this)))
             (if (tag-gate this)

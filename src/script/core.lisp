@@ -96,6 +96,27 @@
 (defun proto (ctx key) (getf (context-protos ctx) key))
 (defun (setf proto) (v ctx key) (setf (getf (context-protos ctx) key) v))
 
+(defun make-validity-state (ctx)
+  "A fresh, empty ValidityState host object.  The caller puts the eleven flags;
+   what this contributes is the shared prototype carrying
+   @@toStringTag = \"ValidityState\".
+
+   That tag is what `assert_class_string' reads (Object.prototype.toString.call),
+   and every element's `validity' getter built a bare Object, so the whole
+   constraint-validation surface answered \"[object Object]\".
+   radio-valueMissing.html asserts the class string FIRST in all six of its
+   subtests, so it scored 0/6 before a single flag was looked at."
+  (let ((p (or (proto ctx :validitystate)
+               (setf (proto ctx :validitystate)
+                     (let* ((realm (context-realm ctx))
+                            (o (js:make-object
+                                :proto (js:eval-script realm "Object.prototype"))))
+                       (js:put o (js:eval-script realm "Symbol.toStringTag")
+                               "ValidityState"
+                               :writable nil :enumerable nil :configurable t)
+                       o)))))
+    (js:make-object :proto p)))
+
 ;;; ---- node <-> wrapper -----------------------------------------------------
 (defun node-of (ctx obj)
   "The weft dnode backing wrapper OBJ, or NIL (also for the window/document-less)."

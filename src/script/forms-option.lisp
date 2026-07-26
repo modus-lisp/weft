@@ -78,7 +78,11 @@
                (let ((parent (h:dnode-parent node)))
                  (and parent
                       (string= (h:dnode-name parent) "select")
-                      (not (dom:has-attribute parent "multiple"))
+                      ;; "Ask for a reset" auto-selects the first option only
+                      ;; when the select shows ONE row.  Without the size test a
+                      ;; <select size=2> reported its first option selected, and
+                      ;; select-validity.html asserts the opposite.
+                      (select-one-row-p parent)
                       (not (find-if (lambda (o) (dom:has-attribute o "selected"))
                                     (option-options-list parent)))
                       (eq (car (option-options-list parent)) node)))))

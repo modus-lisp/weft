@@ -42,8 +42,12 @@
   (multiple-value-bind (v present) (gethash node (context-input-values ctx))
     (if present v (or (get-attr node "value") ""))))
 
-(defun constraints-input-checked (node)
-  (string= (get-attr node "weft-checked") "checked"))
+;; CHECKED-P (dom.lisp) is the one true checkedness: the live `weft-checked'
+;; marker if it exists, else the `checked' content attribute.  The private copy
+;; that lived here compared weft-checked against the string "checked", which it
+;; is never set to (it holds "1"/"0"), so a parser-checked radio read as
+;; unchecked and every markup-driven radio test failed.
+(defun constraints-input-checked (node) (checked-p node))
 
 (defun constraints-input-required-p (node)
   (dom:has-attribute node "required"))
@@ -69,12 +73,56 @@
 (defun node-readonly-p (node)
   (dom:has-attribute node "readonly"))
 
+;;; A radio's constraint is a property of its GROUP, not of the element: the
+;;; group is missing a value when ANY member carries `required' and NO member is
+;;; checked, and then EVERY member reports valueMissing.  Checking the element
+;;; alone (what this did) gets the sibling cases exactly backwards — a required
+;;; radio reads as missing while its partner is checked.
+;;;
+;;; The group is the radios sharing a non-empty `name' AND a form owner, inside
+;;; one tree.  A nameless radio is a group of one.
+(defun constraints-radio-group (ctx node)
+  (let ((name (get-attr node "name")))
+    (if (or (null name) (string= name ""))
+        (list node)
+        (let ((root (tree-root node))
+              (owner (element-form-owner ctx node)))
+          (remove-if-not
+           (lambda (e)
+             (and (string= (or (input-type e) "") "radio")
+                  (equal (get-attr e "name") name)
+                  (eq (element-form-owner ctx e) owner)))
+           (dom:get-elements-by-tag-name root "input"))))))
+
+;;; HTML's VALUE SANITIZATION ALGORITHM, as far as being missing cares about it:
+;;; for the date/time and number types a string that is not a valid value for
+;;; the type is DISCARDED, not kept and complained about.  `dateInput.value =
+;;; 1234567' leaves the value the empty string, so a required date input with
+;;; garbage in it is suffering from being MISSING — the whole -weekmonth file
+;;; and half the date rows of form-validation-validity-valueMissing.html test
+;;; exactly this, and we were reporting the raw string as a present value.
+;;; "range" is excluded: its sanitizer CLAMPS to the nearest allowed value
+;;; rather than emptying, so a range control is never missing.
+(defun constraints-sanitized-value (node ctx)
+  (let ((type (input-type node))
+        (v (constraints-input-value node ctx)))
+    (if (and (fdt-supports-number-p type)
+             (not (string= type "range"))
+             (not (string= v ""))
+             (not (realp (fdt-value->number type v))))
+        ""
+        v)))
+
 ;;; valueMissing: for text-like inputs it's suppressed when disabled/readonly.
 ;;; For checkbox/radio/file it's NOT suppressed (per WPT expectations).
 (defun constraints-check-value-missing (node ctx)
   (let ((type (input-type node)))
     (cond
-      ((member type '("checkbox" "radio") :test #'string=)
+      ((string= type "radio")
+       (let ((group (constraints-radio-group ctx node)))
+         (and (some #'constraints-input-required-p group)
+              (notany #'constraints-input-checked group))))
+      ((string= type "checkbox")
        (and (constraints-input-required-p node) (not (constraints-input-checked node))))
       ((member type '("file") :test #'string=)
        (and (constraints-input-required-p node) (string= (constraints-input-value node ctx) "")))
@@ -84,7 +132,7 @@
        (and (not (node-disabled-p node))
             (not (node-readonly-p node))
             (constraints-input-required-p node)
-            (string= (constraints-input-value node ctx) "")))
+            (string= (constraints-sanitized-value node ctx) "")))
       (t nil))))
 
 (defun constraints-check-type-mismatch (node ctx)
@@ -98,77 +146,82 @@
          (not (>= (length val) 4)))
         (t nil)))))
 
+;;; HTML compiles `pattern' as ^(?:P)$ with the `v' flag, and IGNORES the
+;;; attribute entirely when that does not compile.  Both halves are load-bearing:
+;;; unanchored, "a" satisfies pattern="[0-9]" whenever any subset matches, and an
+;;; uncompilable pattern used to let a JS SyntaxError escape into Lisp, which
+;;; abandons the whole <script> block (bridge.lisp) rather than failing one test.
+(defun constraints-pattern-regex (ctx pattern-str)
+  (handler-case
+      (js:js-construct (js:eval-script (context-realm ctx) "RegExp")
+                       (list (jstr (concatenate 'string "^(?:" pattern-str ")$"))
+                             (jstr "v")))
+    (error () nil)))
+
 (defun constraints-check-pattern-mismatch (node ctx)
   (let ((pattern-str (constraints-input-pattern node))
         (val (constraints-input-value node ctx)))
     (when (and pattern-str (not (string= val "")))
-      (let* ((realm (context-realm ctx))
-             (regex (js:js-construct (js:eval-script realm "RegExp") (list (jstr pattern-str))))
-             (result (js:js-call (js:js-get regex "test") regex (list (jstr val)))))
-        (not (js:js-truthy result))))))
+      (let ((regex (constraints-pattern-regex ctx pattern-str)))
+        (when regex
+          (handler-case
+              (not (js:js-truthy (js:js-call (js:js-get regex "test") regex
+                                             (list (jstr val)))))
+            (error () nil)))))))
+
+;;; The number S denotes in TYPE's value space, or NIL when the attribute is
+;;; absent/empty, when min|max does not apply to TYPE, or when S is not a valid
+;;; value string for TYPE.  All three cases mean "no constraint".
+;;;
+;;; This replaced a raw STRING comparison for the date-ish types.  Lexicographic
+;;; order is not value order: it called the invalid "2000-99" greater than
+;;; "2000-12", and called year 10000 SMALLER than 9999.  Harmless while the
+;;; validity flags were hardcoded false; worth −20 subtests the moment they went
+;;; live.
+(defun constraints-limit (type s)
+  (and (fdt-supports-number-p type)
+       s (not (string= s ""))
+       (let ((n (fdt-value->number type s)))
+         (and (realp n) n))))
 
 (defun constraints-check-range-overflow (node ctx)
-  (let ((type (input-type node))
-        (max-str (constraints-input-max node))
-        (val (constraints-input-value node ctx)))
-    (when (and max-str (not (string= val "")))
-      (cond
-        ((member type '("date" "time" "datetime-local" "month" "week") :test #'string=)
-         (string> val max-str))
-        (t
-         (handler-case
-             (let ((max-val (read-from-string max-str))
-                   (num-val (read-from-string val)))
-               (when (and (numberp max-val) (numberp num-val))
-                 (> num-val max-val)))
-           (error () nil)))))))
+  (let* ((type (input-type node))
+         (maxv (constraints-limit type (constraints-input-max node)))
+         (v (constraints-limit type (constraints-input-value node ctx))))
+    (and maxv v (> v maxv))))
 
 (defun constraints-check-range-underflow (node ctx)
-  (let ((type (input-type node))
-        (min-str (constraints-input-min node))
-        (val (constraints-input-value node ctx)))
-    (when (and min-str (not (string= val "")))
-      (cond
-        ((member type '("date" "time" "datetime-local" "month" "week") :test #'string=)
-         (string< val min-str))
-        (t
-         (handler-case
-             (let ((min-val (read-from-string min-str))
-                   (num-val (read-from-string val)))
-               (when (and (numberp min-val) (numberp num-val))
-                 (< num-val min-val)))
-           (error () nil)))))))
+  (let* ((type (input-type node))
+         (minv (constraints-limit type (constraints-input-min node)))
+         (v (constraints-limit type (constraints-input-value node ctx))))
+    (and minv v (< v minv))))
+
+;;; HTML's step base: `min' if it parses, else the `value' CONTENT attribute if
+;;; it parses, else the type's default.  The value-attribute fallback is the one
+;;; people forget — it is why `<input type=number value=1.5>' with no min is
+;;; step-valid at 1.5 and invalid the moment the attribute changes underneath it.
+(defun constraints-step-base (type node)
+  (or (constraints-limit type (constraints-input-min node))
+      (constraints-limit type (get-attr node "value"))
+      (fdt-default-step-base type)))
 
 (defun constraints-check-step-mismatch (node ctx)
   (let* ((type (input-type node))
          (step-str (constraints-input-step node))
-         (min-str (constraints-input-min node))
-         (val (constraints-input-value node ctx)))
-    (when (and step-str (not (string= val "")) (not (string= step-str "any")))
-      (if (fdt-supports-step-p type)
-          (let* ((num-val (fdt-value->number type val))
-                 (min-val (if min-str (fdt-value->number type min-str) :nan))
-                 (step-base (if (and min-str (not (eq min-val :nan))) min-val
-                                (fdt-default-step-base type)))
-                 (step-val (handler-case (read-from-string step-str)
-                             (error () 1)))
-                 (scale (fdt-step-scale type))
-                 (step-ms (* step-val scale)))
-            (when (and (not (eq num-val :nan))
-                       (not (eq step-base :nan))
-                       (not (zerop step-ms))
-                       (numberp num-val) (numberp step-base))
-              (let ((diff (- num-val step-base)))
-                (not (zerop (rem diff step-ms))))))
-          (handler-case
-              (let* ((step-val (read-from-string step-str))
-                     (min-val (if min-str (read-from-string min-str) 0))
-                     (num-val (read-from-string val)))
-                (when (and (numberp step-val) (numberp min-val) (numberp num-val)
-                           (not (zerop step-val)))
-                  (let ((diff (- num-val min-val)))
-                    (not (zerop (rem diff step-val))))))
-            (error () nil))))))
+         (val (constraints-limit type (constraints-input-value node ctx))))
+    (when (and val (fdt-supports-step-p type)
+               (not (and step-str (string-equal step-str "any"))))
+      (let* ((declared (and step-str (not (string= step-str ""))
+                            (fdt-parse-float step-str)))
+             (n (if (and declared (plusp declared)) declared (fdt-default-step type)))
+             (step (* n (fdt-step-scale type)))
+             (base (constraints-step-base type node)))
+        (when (plusp step)
+          ;; RATIONALIZE, not the raw doubles: 0.3d0 REM 0.1d0 is 0.0999...,
+          ;; so an exactly-on-step value read as a mismatch.  RATIONALIZE maps
+          ;; each double back to the short decimal that printed it (1/10, 3/10),
+          ;; and CL's MOD on rationals is exact.
+          (not (zerop (mod (rationalize (- val base)) (rationalize step)))))))))
 
 ;;; Check if an <input> element is valid according to all constraints.
 (defun constraints-check-input-valid (node ctx)
@@ -188,26 +241,51 @@
                    (if p v (child-text-content node)))))
         (not (and required (string= val ""))))))
 
-;;; Check if a <select> element is valid (valueMissing).
+;;; <select> selectedness, as forms-select.lisp models it: the `selected'
+;;; content attribute, plus the "ask for a reset" auto-selection of the first
+;;; non-disabled option when the select shows one row and is not `multiple'.
+(defun constraints-option-value (o)
+  (or (get-attr o "value")
+      (let ((out ""))
+        (loop for c across (h:dnode-children o)
+              when (eq (h:dnode-kind c) :text)
+              do (setf out (concatenate 'string out (h:dnode-data c))))
+        out)))
+
+(defun constraints-select-selected (node)
+  (let* ((opts (select-all-options node))
+         (sel (remove-if-not (lambda (o) (dom:has-attribute o "selected")) opts)))
+    (cond (sel sel)
+          ((and opts (select-one-row-p node))
+           (let ((f (find-if (lambda (o) (not (dom:has-attribute o "disabled"))) opts)))
+             (and f (list f))))
+          (t nil))))
+
+;;; The placeholder label option: the FIRST option in the list of options, when
+;;; its value is the empty string and its parent is the select itself — never an
+;;; <optgroup> child — and the select shows one row and is not `multiple'.
+(defun constraints-select-placeholder (node)
+  (let ((opts (select-all-options node)))
+    (and opts
+         (select-one-row-p node)
+         (eq (h:dnode-parent (first opts)) node)
+         (string= (constraints-option-value (first opts)) "")
+         (first opts))))
+
+;;; A required <select> is suffering from being missing when no option is
+;;; selected, or when the ONLY selected option is the placeholder label option.
+;;; The previous version compared against the first option's `value' ATTRIBUTE
+;;; (so an option whose value came from its text was a placeholder), and never
+;;; consulted `multiple' or the display size at all — which is why a `multiple'
+;;; select with a selected empty option read as invalid.
 (defun constraints-check-select-valid (node ctx)
   (declare (ignore ctx))
-  (let ((required (dom:has-attribute node "required")))
-    (if (not required)
-        t
-        (let* ((opts (select-all-options node))
-               (sel (find-if (lambda (o) (dom:has-attribute o "selected")) opts)))
-          (if sel
-              (let* ((first (car opts))
-                     (not-inside-optgroup
-                      (let ((p (h:dnode-parent sel)))
-                        (and p (not (string= (h:dnode-name p) "optgroup")))))
-                     (first-val (get-attr first "value")))
-                (not (and first
-                          (eq sel first)
-                          not-inside-optgroup
-                          (or (null first-val)
-                              (string= first-val "")))))
-              nil)))))
+  (if (not (dom:has-attribute node "required"))
+      t
+      (let ((sel (constraints-select-selected node))
+            (ph (constraints-select-placeholder node)))
+        (not (or (null sel)
+                 (and ph (null (cdr sel)) (eq (first sel) ph)))))))
 
 ;;; Check if a <button> element is valid (always valid for constraints).
 (defun constraints-check-button-valid (node ctx)
@@ -269,6 +347,39 @@
                 (t t))))
         (values valid-p
                 (if valid-p nil (fire-invalid-event ctx node))))))
+
+;;; The nine non-custom ValidityState flags for NODE, as an alist of
+;;; (name . generalized-boolean).
+;;;
+;;; These are the SAME predicates checkValidity has always used.  Until now the
+;;; `validity' getter published a hardcoded all-false record, so one subsystem
+;;; gave two answers: `input.checkValidity()' correctly said false for a
+;;; required empty input while `input.validity.valueMissing' said false too.
+;;; Everything that reads a flag rather than calling the method — most of
+;;; form-validation-validity-*.html — was scoring on the constant.
+;;;
+;;; tooLong/tooShort stay false: both require a DIRTY value (a user edit), and
+;;; we have no user editing, which is what the WPT files assert.  badInput
+;;; likewise needs an unparseable UI state no script can reach.
+(defun constraints-validity-flags (ctx node)
+  (let* ((tag (h:dnode-name node))
+         (input-p (string= tag "input"))
+         (missing (cond (input-p (constraints-check-value-missing node ctx))
+                        ((string= tag "textarea")
+                         (not (constraints-check-textarea-valid node ctx)))
+                        ((string= tag "select")
+                         (not (constraints-check-select-valid node ctx)))
+                        (t nil))))
+    (flet ((in (p) (and input-p (funcall p node ctx) t)))
+      (list (cons "valueMissing"    (and missing t))
+            (cons "typeMismatch"    (in #'constraints-check-type-mismatch))
+            (cons "patternMismatch" (in #'constraints-check-pattern-mismatch))
+            (cons "tooLong"         nil)
+            (cons "tooShort"        nil)
+            (cons "rangeUnderflow"  (in #'constraints-check-range-underflow))
+            (cons "rangeOverflow"   (in #'constraints-check-range-overflow))
+            (cons "stepMismatch"    (in #'constraints-check-step-mismatch))
+            (cons "badInput"        nil)))))
 
 ;;; select-all-options: walk all option descendants of a select element.
 (defun select-all-options (node)
@@ -395,9 +506,23 @@
                                 ;; Call the previous getter to get the base ValidityState
                                 ;; (this preserves individual flag computations from
                                 ;; forms-validity.lisp, forms-select.lisp, etc.)
-                                (obj (if pg (js:js-call pg this '())
-                                         (js:make-object
-                                          :proto (js:eval-script (context-realm ctx) "Object.prototype")))))
+                                ;; ...but PG is ONE accessor shared by every tag,
+                                ;; and it dispatches: for a tag no earlier file
+                                ;; claimed (<select> has no `validity' getter of
+                                ;; its own) it returns undefined, and every
+                                ;; js:put below then died with "#<js undefined>
+                                ;; is not of type JS-OBJECT" — a Lisp error, so
+                                ;; bridge.lisp abandoned the whole <script>.
+                                (base (and pg (js:js-call pg this '())))
+                                (obj (if (js:js-object-p base)
+                                         base
+                                         (make-validity-state ctx))))
+                           ;; Publish the real flags (the base getter's record
+                           ;; is all-false boilerplate; only its customError,
+                           ;; which comes from setCustomValidity, is live).
+                           (loop for (k . v) in (constraints-validity-flags ctx node)
+                                 do (js:put obj k (if v js:*true* js:*false*)
+                                            :writable nil :enumerable t :configurable t))
                            ;; For select/textarea, set customError flag from our hash
                            (when (member tag '("select" "textarea") :test #'string=)
                              (let* ((custom-msg

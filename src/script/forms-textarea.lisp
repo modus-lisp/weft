@@ -71,8 +71,7 @@
     (let ((textarea-validity-custom-errors (make-hash-table :test 'eq)))
       (defget-for ctx ep "textarea" "validity" (this)
         (let* ((node (n this))
-               (obj (js:make-object
-                     :proto (js:eval-script (context-realm ctx) "Object.prototype")))
+               (obj (make-validity-state ctx))
                (custom-msg (gethash node textarea-validity-custom-errors))
                (custom-error-p (and custom-msg (plusp (length custom-msg)))))
           (flet ((vp (k v) (js:put obj k (if v js:*true* js:*false*)

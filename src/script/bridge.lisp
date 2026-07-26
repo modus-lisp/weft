@@ -195,8 +195,10 @@
                             (lambda (this args) (declare (ignore this args))
                               (js:js-throw (js:make-native-error
                                             "TypeError" "Illegal constructor"))))
-                        0)))
-               (js:put f "prototype" (proto ctx proto-key) :enumerable nil :writable nil)
+                        0))
+                   (proto (proto ctx proto-key)))
+               (js:put f "prototype" proto :enumerable nil :writable nil)
+               (js:put proto "constructor" f :enumerable nil :writable t :configurable t)
                (js:define-global realm name f) f)))
       (let ((node-iface (iface "Node" :node)))
         (dolist (pair '(("ELEMENT_NODE" . 1) ("ATTRIBUTE_NODE" . 2) ("TEXT_NODE" . 3)
@@ -370,6 +372,8 @@
   G.ResizeObserver=RO;
   function Image(w,h){var e=document.createElement('img');if(w!==undefined)e.width=w;if(h!==undefined)e.height=h;return e;}
   G.Image=Image;
+  function Option(text,value,defaultSelected,selected){var e=document.createElement('option');if(text!==undefined)e.text=text;if(value!==undefined)e.value=value;if(defaultSelected)e.defaultSelected=true;if(selected)e.selected=true;return e;}
+  G.Option=Option;
   function Headers(init){this._h={};var self=this;if(init&&typeof init==='object'&&typeof init.forEach!=='function'){Object.keys(init).forEach(function(k){self._h[String(k).toLowerCase()]=String(init[k]);});}}
   Headers.prototype.get=function(k){var v=this._h[String(k).toLowerCase()];return v===undefined?null:v;};
   Headers.prototype.set=function(k,v){this._h[String(k).toLowerCase()]=String(v);};Headers.prototype.append=Headers.prototype.set;

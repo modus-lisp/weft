@@ -183,9 +183,19 @@ sends you looking in the wrong place."
    then on every later arm's patch fails with `does not match index' on that one
    file, taking the whole (otherwise clean) patch down with it.  Wave 7 lost
    three merges to this before it was found.  Nothing is lost by dropping them:
-   scoring rewrites them anyway."
-  (format nil "git -C ~a add -A -N >/dev/null 2>&1; ~
+   scoring rewrites them anyway.
+
+   The leading `diff --quiet' over the harness paths is what makes it safe to
+   hand this command to the ARM as well as to the harness (see AGENT-COMMAND).
+   The harness always calls RESTORE-HARNESS first, so its own runs pass; an arm
+   that has edited the oracle or the swarm tooling fails, and the snapshot is
+   refused rather than laundering a tampered tree into the kept patch.  Refusing
+   with a nonzero exit also stops the oracle writing a best-score for a patch
+   that was never taken."
+  (format nil "git -C ~a diff --quiet HEAD -- ~{~a~^ ~} || exit 1; ~
+               git -C ~a add -A -N >/dev/null 2>&1; ~
                git -C ~a diff HEAD -- . ':(exclude)inspect/forms-oracle-*.sexp' > ~a.tmp 2>/dev/null && mv ~a.tmp ~a"
+          (jp job :wd) *harness-paths*
           (jp job :wd) (jp job :wd) (jp job :patch) (jp job :patch) (jp job :patch)))
 
 (defun score (job &key keep)
@@ -616,12 +626,23 @@ guess which of the files to read.
   ;; edits appear to do nothing and it goes looking for the "real" file to fix.
   ;; Three of five workers found /home/claude/weft that way and wrote to it,
   ;; leaving canon dirty and making `git apply' fail for every arm that won.
+  ;; The ORACLE_ vars are EXPORTED INTO THE AGENT, not just used by our own
+  ;; scoring runs, so that every oracle run the arm makes itself also snapshots
+  ;; on a new best.  The harness only scores at the round boundary, but an arm
+  ;; scores many times inside a round: wave 9's typechange-a self-scored 2521,
+  ;; then broke its own code before the boundary, and the boundary score of 2256
+  ;; was all that was ever recorded — RESTORE-BEST then hard-reset against a
+  ;; zero-byte patch and +265 was gone.  Snapshotting on the arm's own runs is
+  ;; the only place that gain was ever visible.  KEEP-CMD is fail-closed against
+  ;; a tampered harness, which is what makes handing it over safe.
   (format nil
           "cd ~a && CL_SOURCE_REGISTRY='(:source-registry (:tree \"~a\") :ignore-inherited-configuration)' ~
+           WPT_ROOT=~a ORACLE_BESTS=~a ORACLE_EXPECTED=~a ORACLE_KEEP_SCORE=~a ORACLE_KEEP_CMD=~s ~
            OPERANDI_CONTEXT_BUDGET=~d OPERANDI_MAX_ITERS=~d ~
            timeout ~d sbcl --non-interactive --load ~a/bin/operandi.lisp -- ~
            --openrouter ~a --no-tools Fan,Task,Spawn ~s >> ~a 2>&1"
           (jp job :wd) (jp job :wd)
+          *wpt* (jp job :bests) (jp job :expected) (jp job :score) (keep-cmd job)
           *context-budget* *max-iters*
           *round-max* *operandi-root* (job-model job)
           (format nil "Read ~a and carry it out fully and autonomously. The tree ~

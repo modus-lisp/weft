@@ -436,23 +436,48 @@
                                             :if-does-not-exist :create)
     (prin1 passed s)))
 
-(defun maybe-keep-best (unit passed)
+(defun maybe-keep-best (unit passed &key (regressed 0))
   "Snapshot the worker's work whenever PASSED beats the best seen. Returns a note.
    PASSED is the TOTAL across all scored units, not the target unit's own tally —
-   work that wins locally by breaking a sibling must not be what we keep."
+   work that wins locally by breaking a sibling must not be what we keep.
+
+   REGRESSED is the number of subtests currently below some unit's pinned best.
+   TOTAL alone is the WRONG ratchet when it is nonzero: a big gain on the target
+   unit can outweigh a sibling's loss and still raise TOTAL, so the round loop
+   keeps it — and then the MERGE throws the whole arm away, because the merge
+   gate (unit-regressions) requires TOTAL up AND no unit down.  An arm can spend
+   an entire wave optimising toward something the merge will never take.  The
+   two gates have to be the same gate.
+
+   The snapshot command's EXIT STATUS decides whether the score is written.  A
+   command that refuses (the wave harness's does, when the arm has modified the
+   oracle or the swarm tooling) must not leave a best-score claiming a patch
+   that was never taken; the next restore would then apply a stale patch and
+   score below a number nothing can reach."
   (let ((cmd (keep-cmd)) (keep (keep-path)))
     (when (or cmd (and keep (probe-file keep)))
       (let ((best (read-best unit)))
-        (when (or (null best) (> passed best))
-          (handler-case
-              (progn
-                (if cmd
-                    (uiop:run-program cmd :ignore-error-status t
-                                          :output nil :error-output nil)
-                    (uiop:copy-file keep (format nil "~a.best-~a" keep unit)))
-                (write-best-score unit passed)
-                (format nil "new best (~d passed) snapshotted" passed))
-            (error () nil)))))))
+        (cond
+          ((and best (<= passed best)) nil)
+          ((plusp regressed)
+           (format nil "TOTAL ~d would be a new best, NOT snapshotted: ~d subtest~:p ~
+                        still below another unit's best. Recover them first — the ~
+                        merge rejects an arm that leaves any unit down, however ~
+                        high its TOTAL." passed regressed))
+          (t
+           (handler-case
+               (let ((ok (if cmd
+                             (zerop (nth-value 2
+                                     (uiop:run-program cmd :ignore-error-status t
+                                                           :output nil :error-output nil)))
+                             (progn (uiop:copy-file
+                                     keep (format nil "~a.best-~a" keep unit))
+                                    t))))
+                 (cond (ok (write-best-score unit passed)
+                           (format nil "new best (~d passed) snapshotted" passed))
+                       (t (format nil "new best (~d passed) NOT snapshotted — the ~
+                                       snapshot command refused" passed))))
+             (error () nil))))))))
 
 (defparameter *max-fails-shown* 8
   "Failing subtests printed per file.  Bounded so one badly-broken file can't
@@ -560,7 +585,7 @@
                      the function that was already installed. TOTAL is the score ~
                      that counts; a gain on ~a paid for out of another unit is ~
                      not a gain.~%" unit))
-        (let ((kept (maybe-keep-best unit total)))
+        (let ((kept (maybe-keep-best unit total :regressed lost)))
           (when kept (format t "~&  [~a]~%" kept))))
       (finish-output))))
 

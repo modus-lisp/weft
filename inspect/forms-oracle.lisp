@@ -52,7 +52,19 @@
     ("fieldset" . "html/semantics/forms/the-fieldset-element/")
     ("forminfra" . "html/semantics/forms/form-control-infrastructure/")
     ("label"    . "html/semantics/forms/the-label-element/")
-    ("button"   . "html/semantics/forms/the-button-element/")))
+    ("button"   . "html/semantics/forms/the-button-element/")
+    ;; ---- wave 8 ------------------------------------------------------------
+    ;; Five of these share one directory because they share one SUBSYSTEM (the
+    ;; constraint validation API).  They are split into separate units for
+    ;; measurement, not because the code is separable — see the note on *units*.
+    ("checkvalidity"  . "html/semantics/forms/constraints/")
+    ("reportvalidity" . "html/semantics/forms/constraints/")
+    ("willvalidate"   . "html/semantics/forms/constraints/")
+    ("valuemissing"   . "html/semantics/forms/constraints/")
+    ("rangestep"      . "html/semantics/forms/constraints/")
+    ("fieldselection" . "html/semantics/forms/textfieldselection/")
+    ("selectevent"    . "html/semantics/forms/textfieldselection/")
+    ("formelement"    . "html/semantics/forms/the-form-element/")))
 
 ;;; unit -> list of test-file basenames under the unit's directory.
 (defparameter *units*
@@ -113,7 +125,80 @@
                         "button-labels.html" "button-checkvalidity.html"
                         "button-setcustomvalidity.html" "button-validationmessage.html"
                         "button-validity.html" "button-willvalidate.html"
-                        "button-willvalidate-readonly-attribute.html"))))
+                        "button-willvalidate-readonly-attribute.html"))
+    ;; ---- wave 8: constraint validation, text field selection, <form> --------
+    ;; The five `constraints/' units are ONE subsystem (willValidate ->
+    ;; checkValidity -> reportValidity, all reading the same ValidityState), so
+    ;; whichever arm gets there first will move all five.  They are separate
+    ;; units so the score says WHICH part moved, and so the four an arm is not
+    ;; working act as sentinels on it.  Do not read their per-unit totals as
+    ;; independent work.
+    ;;
+    ;; A large share of this headroom is in files that currently score exactly
+    ;; ZERO — reportValidity 0/130, validity-valid 0/35, willValidate-datalist
+    ;; 0/17, form-autocomplete 0/67 — which is the signature of one missing
+    ;; method throwing at the top of the file, not 249 separate bugs.
+    ("checkvalidity"  . ("form-validation-checkValidity.html"
+                         "form-validation-validity-valid.html"
+                         "form-validation-validity-valid-weekmonth.html"
+                         "form-validation-validity-customError.html"
+                         "form-check-validity-crash.html"))
+    ("reportvalidity" . ("form-validation-reportValidity.html"
+                         "form-validation-validate.html"
+                         "reportValidity-crash.html"))
+    ("willvalidate"   . ("form-validation-willValidate.html"
+                         "form-validation-willValidate-datalist.html"
+                         "inputwillvalidate.html"))
+    ("valuemissing"   . ("form-validation-validity-valueMissing.html"
+                         "form-validation-validity-valueMissing-weekmonth.html"
+                         "radio-valueMissing.html" "radio-group-valueMissing.html"
+                         "form-validation-validity-textarea-defaultValue.html"))
+    ;; The already-green files (badInput 11, tooLong 63, tooShort 63) stay in
+    ;; deliberately: they are the ballast that turns this unit into a real
+    ;; sentinel on the per-type value/constraint algorithms.
+    ("rangestep"      . ("form-validation-validity-patternMismatch.html"
+                         "form-validation-validity-rangeOverflow.html"
+                         "form-validation-validity-rangeOverflow-weekmonth.html"
+                         "form-validation-validity-rangeUnderflow.html"
+                         "form-validation-validity-rangeUnderflow-weekmonth.html"
+                         "form-validation-validity-stepMismatch.html"
+                         "form-validation-validity-typeMismatch.html"
+                         "form-validation-validity-badInput.html"
+                         "form-validation-validity-tooLong.html"
+                         "form-validation-validity-tooShort.html"
+                         "input-maxlength-emoji.html"
+                         "input-pattern-dynamic-value.html"
+                         "input-number-validity-dynamic-value-no-change.html"))
+    ;; selectionStart/End/Direction, setSelectionRange, setRangeText.  Split
+    ;; from `selectevent' because that one file is a different mechanism (does
+    ;; the `select' event fire?) and is 270 subtests on its own — left together
+    ;; it would drown everything else in the unit.
+    ("fieldselection" . ("textfieldselection-setRangeText.html"
+                         "textfieldselection-setSelectionRange.html"
+                         "setSelectionRange.html" "selection.html"
+                         "selection-start-end.html" "selection-start-end-extra.html"
+                         "selection-after-content-change.html"
+                         "selection-not-application.html"
+                         "selection-not-application-textarea.html"
+                         "selection-value-interactions.html"
+                         "defaultSelection.html"
+                         "textarea-setRangeText-utf16-code-unit-crash.html"))
+    ("selectevent"    . ("select-event.html"))
+    ("formelement"    . ("form-autocomplete.html" "form-requestsubmit.html"
+                         "form-nameditem.html" "form-indexed-element.html"
+                         "form-indexed-element-shadow.html"
+                         "form-elements-matches.html" "form-elements-filter.html"
+                         "form-elements-sameobject.html"
+                         "form-elements-nameditem-01.html"
+                         "form-elements-nameditem-02.html"
+                         "form-elements-interfaces-01.html"
+                         "form-action.html" "form-action-reflection.html"
+                         "form-action-reflection-with-base-url.html"
+                         "form-action-submission.html"
+                         "form-action-submission-with-base-url.html"
+                         "form-checkvalidity.html" "form-length.html"
+                         "form-controls-id-removal-crash.html"
+                         "form-controls-nested-id-crash.html"))))
 
 (defun read-file-string (path)
   (with-open-file (in path :external-format :utf-8 :if-does-not-exist nil)

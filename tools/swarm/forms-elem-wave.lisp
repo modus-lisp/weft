@@ -42,7 +42,17 @@
 (defparameter *variants* '(("a" . :flash))
   "Variants run per unit when a unit is named as a bare string in *UNITS*.")
 
-(defparameter *units* '("forminfra" "label" "option" "select" "button")
+;;; Wave 7 finding: arms do NOT stay in their lanes.  The oracle prints the
+;;; failing subtests of EVERY unit, so four of five arms abandoned their
+;;; assignment and worked whichever unit was densest.  That is not misbehaviour
+;;; — it is the score doing its job — but it means arm TOTALs are not additive
+;;; and two arms named onto the same subsystem will produce two patches of the
+;;; same files.  So wave 8 spends its arms on subsystems that are actually
+;;; disjoint (constraint validation / text selection / <form>), and where a
+;;; subsystem is worth two attempts they get DIFFERENT unit names, so both can
+;;; merge on their own merits instead of one being discarded as a duplicate.
+(defparameter *units* '("checkvalidity" "reportvalidity"
+                        "fieldselection" "selectevent" "formelement")
   "Units to work this wave.  An entry may also be (unit variant . tier) for an
 extra arm on a unit that deserves one — e.g. (\"option\" \"p\" . :pro).")
 
@@ -207,6 +217,61 @@ sends you looking in the wrong place."
 
 ;;; ---- the task the worker is given ----------------------------------------
 
+;;; Waves 1-7 were all "<tag> element IDL", so the task text could take the unit
+;;; name to BE the tag: it said "implement HTMLElement IDL for <option>" and
+;;; showed (defget-for ctx ep "option" ...).  Wave 8's units are subsystems that
+;;; cut across elements — the constraint validation API is one API over seven
+;;; tags — and handing such an arm (defget-for ctx ep "checkvalidity" ...) would
+;;; be gibberish it then has to work around.  So a unit may now declare its own
+;;; headline, the tags it installs on, and where to start reading.  A unit that
+;;; is absent from this table keeps the old behaviour: it IS a tag.
+;;;   (unit HEADLINE START-FILE . TAGS)
+(defparameter *unit-subjects*
+  '(("checkvalidity"
+     "the constraint validation API — willValidate, checkValidity, validity.valid"
+     "src/script/forms-constraints.lisp"
+     "input" "textarea" "select" "button" "fieldset" "output" "form")
+    ("reportvalidity"
+     "the constraint validation API — reportValidity and the `invalid' event"
+     "src/script/forms-constraints.lisp"
+     "input" "textarea" "select" "button" "fieldset" "output" "form")
+    ("willvalidate"
+     "the constraint validation API — willValidate and barred-from-validation"
+     "src/script/forms-constraints.lisp"
+     "input" "textarea" "select" "button" "fieldset" "output" "form")
+    ("valuemissing"
+     "the constraint validation API — the valueMissing flag"
+     "src/script/forms-constraints.lisp"
+     "input" "textarea" "select")
+    ("rangestep"
+     "the constraint validation API — the per-type value constraint flags"
+     "src/script/forms-validity.lisp"
+     "input" "textarea")
+    ("fieldselection"
+     "the text field selection API — selectionStart/End/Direction, select(), setSelectionRange, setRangeText"
+     "src/script/forms-selection.lisp"
+     "input" "textarea")
+    ("selectevent"
+     "the `select' event — which selection operations fire it, and on what"
+     "src/script/forms-selection.lisp"
+     "input" "textarea")
+    ("formelement"
+     "HTMLFormElement IDL — elements, the named/indexed getters, reflections, requestSubmit"
+     "src/script/forms-form.lisp"
+     "form")))
+
+(defun unit-headline (unit)
+  (let ((e (assoc unit *unit-subjects* :test #'string=)))
+    (if e (second e) (format nil "<~a> element IDL" unit))))
+
+(defun unit-start-file (unit)
+  (let ((e (assoc unit *unit-subjects* :test #'string=)))
+    (if e (third e) (format nil "src/script/forms-~a.lisp" unit))))
+
+(defun unit-tags (unit)
+  (let ((e (assoc unit *unit-subjects* :test #'string=)))
+    (if e (cdddr e) (list unit))))
+
 (defun guidance (unit)
   (cond
     ((string= unit "select")
@@ -295,21 +360,128 @@ disabled by an ancestor fieldset); plus labels, checkValidity,
 setCustomValidity and validationMessage off the shared validity machinery in
 src/script/forms-validity.lisp.  button-events.html and button-validation.html
 hold most of the remaining subtests — read their failing assertions first.")
+    ;; ---- wave 8 -------------------------------------------------------------
+    ((string= unit "checkvalidity")
+     "The constraint validation API — 24 of 181, and the misses are two facts, not
+a hundred bugs.
+(1) `validity.valid' is currently always true.  It must be FALSE when any of the
+other flags is set (valueMissing, typeMismatch, patternMismatch, tooLong,
+tooShort, rangeUnderflow, rangeOverflow, stepMismatch, badInput, customError) —
+that single definition is the whole of form-validation-validity-valid.html
+(0/35) and -valid-weekmonth.html (0/8), and it is also why
+`element.checkValidity()' returns true for a control with a pattern mismatch.
+(2) `checkValidity' does not exist on <form> at all — every \"(in a form)\"
+subtest reports `undefined'.  On a form it is the STATIC VALIDATION of the whole
+form: false if any submittable element whose form owner is this form is invalid.
+form.elements / ELEMENT-FORM-OWNER (src/script/dom.lisp) already give you the
+membership; note the owner relation is the `form' content attribute one, not
+\"descendant of the form\".
+Also worth knowing: validationMessage must be the EMPTY STRING whenever the
+control is barred from constraint validation (disabled, readonly, a datalist
+ancestor, type=hidden/reset/button, ...), even if setCustomValidity was called —
+that is what the two customError misses are.
+src/script/forms-validity.lisp has the per-input ValidityState; the cross-element
+parts belong in the pre-wired src/script/forms-constraints.lisp.")
+    ((string= unit "reportvalidity")
+     "The constraint validation API — 1 of 138.  `reportValidity' does not exist,
+on controls or on <form>: all 130 subtests of form-validation-reportValidity.html
+say \"The reportValidity method doesn't exist\", which is one missing method, not
+130 problems.
+For a control, reportValidity() runs the same check as checkValidity() and
+returns the same boolean; the difference is that when it fails the user agent
+also REPORTS the problem to the user.  We have no UI, so the reporting step is
+legitimately a no-op — but the `invalid' event is not: both checkValidity and
+reportValidity must fire a cancelable `invalid' event at each control that fails,
+and form-validation-validate.html counts those events (expects 4, gets 0).  On a
+<form> it is static validation over the form's submittable controls, firing
+`invalid' at every one that fails, not just the first.
+`checkValidity' is also missing on <form> — you will likely need to build that to
+get anywhere, and that is fine; it is the same subsystem.  Event dispatch lives
+in src/script/events.lisp; the pre-wired src/script/forms-constraints.lisp is the
+home for the cross-element machinery.")
+    ((string= unit "fieldselection")
+     "The text field selection API — 136 of 278.  The single biggest fact:
+**<textarea> is not in the supported set**.  selectionStart, selectionEnd,
+setSelectionRange and setRangeText all throw \"not supported for this input type\"
+on a textarea, which costs whole blocks of every file in the unit.  A textarea is
+always a text-entry control — the \"applies only to certain input types\" rule is
+about <input>, not about textarea.  src/script/forms-selection.lisp already
+implements the API correctly for <input>; the gap is which elements it is
+installed on and which types it considers supported.
+The rest are exactness, and the failing assertions state the rule verbatim:
+- arguments are ECMAScript **unsigned long** — -1 becomes 4294967295, then clamps
+  to the value length; we currently produce 0.
+- if end <= start, both selection points go immediately before the start-th
+  character (i.e. end is pulled up to start, not start pushed down).
+- setRangeText: 3rd argument greater than 2nd throws IndexSizeError; calling it
+  with no argument throws TypeError; the default selectionMode is \"preserve\"
+  and the four modes (select/start/end/preserve) place the selection differently
+  after the replacement.
+- the getters return null (not a number) for a control the API does not apply to,
+  and selectionDirection is one of \"forward\"/\"backward\"/\"none\".
+selection.html ABORTS part way through — 24 subtests never run at all, which the
+oracle scores as failures.  Whatever throws there is worth more than any single
+assertion.")
+    ((string= unit "selectevent")
+     "The `select' event — 1 of 270, all in one file, and the file is currently
+gated shut rather than 269-ways wrong.  Most subtests never reach their assertion
+at all: they reject with \"setRangeText not supported for this input type\" or
+\"selectionStart not supported for this input type\" — on a **textarea**.  A
+textarea is always a text-entry control; the \"applies only to certain input
+types\" rule is about <input>.  Fixing which elements/types the selection API is
+installed for unblocks the file before any event work happens, so measure that
+first and you will know how much of the remaining work is actually about events.
+Then the event itself: select() and setSelectionRange() and setRangeText() must
+QUEUE a task that fires a `select' event at the element (it bubbles, is not
+cancelable).  Queued, not synchronous — several subtests are specifically about
+the event arriving after the current task, about it firing on a DISCONNECTED
+node, and about select() called twice firing exactly once.  src/script/timers.lisp
+has the task queue; src/script/events.lisp has dispatch;
+src/script/forms-selection.lisp is the API.
+These tests are promise_test/async — a subtest that reports \"Test timed out\" is
+one whose event never arrived, not one that asserted something false.")
+    ((string= unit "formelement")
+     "HTMLFormElement — 7 of 112, spread over three independent pieces.
+(1) form-autocomplete.html (0/67) is the largest and is pure string work: `form.
+autocomplete' is an enumerated reflection whose only valid values are \"on\" and
+\"off\", ASCII case-insensitive, with \"on\" as BOTH the missing and the invalid
+default.  A control's own `autocomplete' is different: it is a token list checked
+against the spec's field-name vocabulary (name, honorific-prefix, email, ...),
+returned lowercased with whitespace stripped, and the empty string when the value
+is not an allowed field name.  We currently return the raw attribute verbatim.
+(2) form.elements is reported as `[object HTMLCollection] is not iterable' —
+HTMLCollection has no @@iterator (Symbol.iterator).  That one is not specific to
+forms and will show up in other units too.  Relatedly, form-nameditem.html
+asserts a <form> must NOT expose `item'/`namedItem' itself; those belong on the
+collection, not on the form.
+(3) requestSubmit(submitter) is missing: with no argument it submits the form as
+if the form itself were the submitter; with one it must throw TypeError if the
+argument is not a submit button and NotFoundError if the button's form owner is
+not this form, and it runs interactive validation first (returning without
+submitting if validation fails).  We have no navigation, so \"submits\" can be as
+far as firing the `submit' event — but say plainly in a comment what it does and
+does not do rather than pretending.
+The pre-wired src/script/forms-form.lisp is the home; ELEMENT-FORM-OWNER in
+src/script/dom.lisp is what `elements' and requestSubmit's owner check must agree
+with.")
     (t "")))
 
 (defun task-text (job)
-  (let ((wd (jp job :wd)) (unit (job-unit job)))
+  (let* ((wd (jp job :wd)) (unit (job-unit job))
+         (tags (unit-tags unit))
+         (tag (first tags))
+         (tag-list (format nil "~{<~a>~^, ~}" tags)))
     (format nil "~a
 
-# Focused WPT swarm unit: <~a> element IDL  (variant ~a)
+# Focused WPT swarm unit: ~a  (variant ~a)
 
-Implement HTMLElement IDL for <~a> in the weft engine (pure Common Lisp; JS on
-the in-tree shuttle engine) so that more WPT subtests pass.
+Implement ~a in the weft engine (pure Common Lisp; JS on the in-tree shuttle
+engine) so that more WPT subtests pass.  It is installed on ~a.
 
 ## Your working tree
   ~a
 It is a git worktree.  **Edit any file in it you need to.**  Start from
-src/script/forms-~a.lisp, but the remaining failures are not all there — when a
+~a, but the remaining failures are not all there — when a
 failure's cause is in src/script/dom.lisp, src/script/bridge.lisp or anywhere
 else, fix it there.  Do not create files outside this tree.
 
@@ -328,19 +500,22 @@ destroying 131 subtests across five others, purely from js:*undefined*
 else-branches.
 
 So install with the -for variants, which gate on the tag AND delegate to
-whatever was installed before.  Write only the <~a> case; there is no
+whatever was installed before.  Write only the cases for ~a; there is no
 else-branch to write.
   (defgetset-for ctx ep \"~a\" \"value\" (this) <getter> (v) <setter>)
   (defget-for    ctx ep \"~a\" \"type\"  (this) <getter>)
   (defmethod-for ctx ep \"~a\" \"add\" 2 (this a) <body>)
 Use plain defmethod*/defget/defgetset only for a name nothing else could define.
+If your feature applies to SEVERAL tags, register one -for form per tag rather
+than one unguarded plain form — the -for chain is what lets sibling units keep
+their own version of a shared name like checkValidity or selectionStart.
 
 ## Oracle — run after EVERY edit
   ~a
 It prints per-file pass/fail WITH THE NAME AND ASSERTION MESSAGE of every
 failing subtest, the \"UNIT ~a: P passed, F failed\" line, a SENTINEL line per
 OTHER unit, and finally:
-  TOTAL <n> passed across 8 units, best-ever <b>
+  TOTAL <n> passed across <k> units, best-ever <b>
 **TOTAL is your score.**  A gain paid for out of a sentinel is not a gain, and
 any \"REGRESSION -n\" line means you have broken code you never read.  Run it
 FIRST: it names exactly which subtests are broken and why, so you never have to
@@ -374,9 +549,13 @@ guess which of the files to read.
   at the repo root ships with your work.
 "
             (or (slurp (format nil "~a/tools/swarm/API.md" *src*)) "")
-            unit (job-variant job) unit
-            wd unit
-            unit unit unit unit
+            ;; header: headline, variant / body: headline, tags
+            (unit-headline unit) (job-variant job)
+            (unit-headline unit) tag-list
+            ;; working tree, then where to start reading
+            wd (unit-start-file unit)
+            ;; the -for section: which tags, then three worked examples
+            tag-list tag tag tag
             ;; Same ORACLE_BESTS/ORACLE_EXPECTED as the harness uses, so the
             ;; agent's own oracle runs share one ratchet with ours AND keep the
             ;; oracle's bookkeeping out of the worktree — otherwise every

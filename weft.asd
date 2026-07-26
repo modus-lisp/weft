@@ -107,6 +107,10 @@
                                (:file "forms-select") (:file "forms-textarea") (:file "forms-button")
                                (:file "forms-meter") (:file "forms-progress")
                                (:file "forms-fieldset") (:file "forms-option")
+                               ;; Cross-element subsystems: the constraint
+                               ;; validation API is one API over seven elements,
+                               ;; and <form> has a surface of its own.
+                               (:file "forms-constraints") (:file "forms-form")
                                (:file "bridge") (:file "interact")))))))
 
 (defsystem "weft/test"

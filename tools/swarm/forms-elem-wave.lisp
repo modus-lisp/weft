@@ -159,7 +159,9 @@
                       (and keep (keep-cmd job))
                       (job-unit job))))
     (restore-harness wd)
-    (sh "rm -rf ~a" (jp job :cache))
+    ;; The cache is per-job and the worktree path is stable, so ASDF's fasls stay
+    ;; valid between scoring runs.  The bash version wiped it every time and paid
+    ;; a full weft rebuild (~60s) for each score, several times a round.
     (let ((out (sh "~a" cmd)))
       (spit (jp job :result) out)
       (values (total-of out) out))))
@@ -277,9 +279,15 @@ guess which of the files to read.
 ;;; ---- running one worker ---------------------------------------------------
 
 (defun agent-command (job total)
+  ;; The two OPERANDI_ vars are not decoration.  operandi's defaults are sized
+  ;; for a small local model, and at the 24k context default these workers
+  ;; thrashed so badly they made ZERO Write calls in 40 minutes across six arms
+  ;; — an agent that looks lazy rather than one that looks broken.
   (format nil
-          "timeout ~d sbcl --non-interactive --load ~a/bin/operandi.lisp -- ~
+          "OPERANDI_CONTEXT_BUDGET=~d OPERANDI_MAX_ITERS=~d ~
+           timeout ~d sbcl --non-interactive --load ~a/bin/operandi.lisp -- ~
            --openrouter ~a --no-tools Fan,Task,Spawn ~s >> ~a 2>&1"
+          *context-budget* *max-iters*
           *round-max* *operandi-root* (job-model job)
           (format nil "Read ~a and carry it out fully and autonomously. The tree ~
                        already scores TOTAL ~a; your job is to raise it. Run the ~
@@ -383,6 +391,7 @@ guess which of the files to read.
 (defun setup (job)
   (let ((wd (jp job :wd)))
     (sh "git -C ~a worktree add -q --detach --force ~a HEAD" *src* wd)
+    (sh "rm -rf ~a" (jp job :cache))
     ;; The oracle's bookkeeping starts from the canonical tree's, but lives
     ;; outside the worktree so it never lands in the worker's diff.
     (sh "cp ~a/inspect/forms-oracle-bests.sexp ~a" *src* (jp job :bests))

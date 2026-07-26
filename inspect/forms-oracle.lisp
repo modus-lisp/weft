@@ -27,7 +27,7 @@
 
 (defpackage #:weft.forms-oracle
   (:use #:cl) (:local-nicknames (#:s #:weft.script) (#:js #:shuttle))
-  (:export #:run))
+  (:export #:run #:sweep))
 (in-package #:weft.forms-oracle)
 
 (defparameter *wpt-root*
@@ -411,3 +411,40 @@
         (let ((kept (maybe-keep-best unit total)))
           (when kept (format t "~&  [~a]~%" kept))))
       (finish-output))))
+
+;;; ---- corpus sweep ---------------------------------------------------------
+;;; The curated units are 37 files out of ~700 under html/semantics/forms.  Six
+;;; of the eight units are at 100% and the other two are down to their hardest
+;;; residue, so the swarm's ceiling is now set by the CORPUS, not the engine —
+;;; and which files are worth adding is a measurement, not a guess.  SWEEP runs
+;;; every .html in a directory and sorts by what is already reachable:
+;;;
+;;;   (weft.forms-oracle:sweep "html/semantics/forms/the-option-element/")
+;;;
+;;; A file at 0/n with a named assertion is addressable work; one that throws
+;;; on test_driver or a missing subsystem is not.  Nothing is written.
+(defun sweep (subdir &key (min-total 1))
+  (let ((dir (merge-pathnames subdir *wpt-root*))
+        (rows '()) (sum-p 0) (sum-n 0) (skipped 0))
+    (dolist (path (sort (directory (merge-pathnames "*.html" dir)) #'string<
+                        :key #'namestring))
+      (let ((name (file-namestring path)))
+        (if (search "-ref." name)
+            (incf skipped)
+            (multiple-value-bind (p n err fails unscorable) (run-one path)
+              (declare (ignore fails))
+              (if unscorable
+                  (incf skipped)
+                  (progn (push (list name p n err) rows)
+                         (incf sum-p p) (incf sum-n n)))))))
+    (setf rows (sort (nreverse rows) #'> :key (lambda (r) (- (third r) (second r)))))
+    (format t "~&~a~%" subdir)
+    (dolist (r rows)
+      (destructuring-bind (name p n err) r
+        (when (>= n min-total)
+          (format t "~&  -~3d  ~3d/~3d  ~a~@[  [~a]~]~%" (- n p) p n name
+                  (and err (subseq err 0 (min 60 (length err))))))))
+    (format t "~&  == ~d/~d subtests over ~d files (~d unscorable/ref skipped)~%"
+            sum-p sum-n (length rows) skipped)
+    (finish-output)
+    (values sum-p sum-n)))

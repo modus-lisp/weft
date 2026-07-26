@@ -280,11 +280,20 @@
       ;; assert `list.keys === Array.prototype.keys`).  They are generic over any
       ;; array-like, so they run against the live length/index [[Get]] traps.
       (let* ((nlp (proto ctx :nodelist))
+             (hcp (proto ctx :htmlcollection))
              (arrp (js:eval-script realm "Array.prototype"))
              (sym (js:eval-script realm "Symbol.iterator")))
         (dolist (m '("values" "keys" "entries" "forEach"))
           (js:put nlp m (js:js-get arrp m) :enumerable nil :writable t :configurable t))
-        (js:put nlp sym (js:js-get arrp sym) :enumerable nil :writable t :configurable t)))
+        (js:put nlp sym (js:js-get arrp sym) :enumerable nil :writable t :configurable t)
+        ;; HTMLCollection gets @@iterator and NOTHING ELSE.  It is not declared
+        ;; `iterable<>' in the IDL the way NodeList is; it qualifies only under
+        ;; the indexed-property-getter rule (WebIDL §3.7.10), which supplies
+        ;; @@iterator = %Array.prototype.values% and no named methods.  In a
+        ;; browser [...document.forms] works while document.forms.forEach is
+        ;; undefined — handing out the four named methods here is a conformance
+        ;; failure waiting for the test that checks it.
+        (js:put hcp sym (js:js-get arrp "values") :enumerable nil :writable t :configurable t)))
     ;; URL / URLSearchParams / XMLHttpRequest / IntersectionObserver / ResizeObserver —
     ;; Web APIs real pages depend on.  URL parsing is delegated to weft.url (WHATWG)
     ;; through a native helper; the rest are JS polyfills.  IntersectionObserver /

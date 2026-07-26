@@ -28,7 +28,7 @@
  ("form-elements-nameditem-01.html" . 3)
  ("form-elements-nameditem-02.html" . 1) ("form-elements-sameobject.html" . 1)
  ("form-indexed-element-shadow.html" . 1) ("form-indexed-element.html" . 2)
- ("form-length.html" . 1) ("form-nameditem.html" . 3)
+ ("form-length.html" . 1) ("form-nameditem.html" . 17)
  ("form-requestsubmit.html" . 10) ("form-validation-checkValidity.html" . 130)
  ("form-validation-reportValidity.html" . 130)
  ("form-validation-validate.html" . 8)

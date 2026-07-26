@@ -1325,7 +1325,16 @@ the context node when it is an element, else NIL (a document/fragment root makes
 
 ;;; ---- live collections -----------------------------------------------------
 (defun index-string-p (k)
-  (and (stringp k) (plusp (length k)) (every #'digit-char-p k)))
+  "True when K is a CANONICAL array index string, i.e. K equals
+   String(ToUint32(K)) — the WebIDL test for a supported property index.
+   Every-digit-p is not that test: it also admits \"03\", \"007\" and values at or
+   past 2^32-1, none of which are indices.  That matters because indexed
+   properties take priority over named ones, so a control named \"03\" was being
+   resolved as index 3 and its name lookup never ran."
+  (and (stringp k) (plusp (length k)) (every #'digit-char-p k)
+       (or (string= k "0") (char/= (char k 0) #\0))
+       (< (length k) 11)
+       (< (parse-integer k) (1- (expt 2 32)))))
 
 (defun collection-named-node (ctx list name)
   "HTMLCollection namedItem (DOM §): the first element with id=NAME, else the first
@@ -1377,6 +1386,8 @@ the context node when it is an element, else NIL (a document/fragment root makes
                   (num (length (funcall list-fn))))
                  ((and (stringp key) (string= key "item")) item)
                  ((and (stringp key) (string= key "namedItem")) named)
+                 ;; Indexed access first (per spec, numeric indices take priority;
+                 ;; if out of bounds, return undefined, do NOT fall through to named)
                  ((index-string-p key)
                   (let ((i (parse-integer key)) (l (funcall list-fn)))
                     (if (< i (length l)) (wrap ctx (nth i l)) js:*undefined*)))
@@ -1389,6 +1400,11 @@ the context node when it is an element, else NIL (a document/fragment root makes
              (let ((key (js:to-property-key key)))
                (or (and (stringp key)
                         (or (string= key "length") (string= key "item") (string= key "namedItem")))
+                   ;; Indexed BEFORE named, at every trap.  WebIDL §3.7.4 resolves
+                   ;; a supported property index first and only then a supported
+                   ;; property name; swapping them here to make a control called
+                   ;; "03" reachable is fitting to a symptom — the actual defect
+                   ;; was INDEX-STRING-P calling "03" an index at all.
                    (and (index-string-p key) (< (parse-integer key) (length (funcall list-fn))))
                    (and html (stringp key) (funcall lookup key) t)
                    (js:js-has (js:js-object-proto o) key))))
@@ -1757,6 +1773,63 @@ the context node when it is an element, else NIL (a document/fragment root makes
                       (ignore-errors (and (weft.render:fetch-image src) t)))))
           (ignore-errors
             (dispatch-event ctx node (make-event-object ctx (if ok "load" "error") nil))))))))
+
+;;; ---------------------------------------------------------------------------
+;;; ---- autocomplete validation for input/textarea/select ---------------------
+(defun autocomplete-validate (raw)
+  "Validate autocomplete tokens for input/textarea/select. Returns serialized
+   form or empty string if invalid."
+  (let* ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return #\Page) raw))
+         (tokens '()))
+    (when (zerop (length trimmed)) (return-from autocomplete-validate ""))
+    ;; Split into tokens
+    (loop with s = trimmed
+          for start = 0 then (1+ end)
+          for end = (position-if (lambda (c) (member c '(#\Space #\Tab #\Newline #\Return #\Page) :test #'char=)) s :start start)
+          for token = (subseq s start end)
+          while end
+          when (plusp (length token)) do (push (string-downcase token) tokens)
+          finally (let ((last (subseq s start)))
+                    (when (plusp (length last)) (push (string-downcase last) tokens))
+                    (setf tokens (nreverse tokens))))
+    (unless tokens (return-from autocomplete-validate ""))
+    ;; "on" or "off" alone -> valid, return as-is
+    (when (and (= (length tokens) 1) (member (car tokens) '("on" "off") :test #'string=))
+      (return-from autocomplete-validate (car tokens)))
+    ;; Extract section, mode, contact, credential, then field
+    (let* ((section (find-if (lambda (tok) (and (>= (length tok) 9) (string= "section-" (subseq tok 0 8)))) tokens))
+           (rest (if section (remove section tokens :test #'string= :count 1) tokens))
+           (mode (find-if (lambda (tok) (member tok '("shipping" "billing") :test #'string=)) rest))
+           (rest (if mode (remove mode rest :test #'string= :count 1) rest))
+           (contact (find-if (lambda (tok) (member tok '("home" "work" "mobile") :test #'string=)) rest))
+           (rest (if contact (remove contact rest :test #'string= :count 1) rest))
+           (credential (find-if (lambda (tok) (string= tok "webauthn")) rest))
+           (rest (if credential (remove credential rest :test #'string= :count 1) rest)))
+      ;; Remaining must be exactly one valid field keyword (or zero if webauthn was the only token)
+      (if (or (and (= (length rest) 1)
+                   (member (car rest)
+                           '("name" "honorific-prefix" "given-name" "additional-name" "family-name"
+                             "honorific-suffix" "nickname" "username" "new-password" "current-password"
+                             "one-time-code" "organization-title" "organization" "street-address"
+                             "address-line1" "address-line2" "address-line3" "address-level4"
+                             "address-level3" "address-level2" "address-level1" "country" "country-name"
+                             "postal-code" "cc-name" "cc-given-name" "cc-additional-name" "cc-family-name"
+                             "cc-number" "cc-exp" "cc-exp-month" "cc-exp-year" "cc-csc" "cc-type"
+                             "transaction-currency" "transaction-amount" "language" "bday" "bday-day"
+                             "bday-month" "bday-year" "sex" "url" "photo" "tel" "tel-country-code"
+                             "tel-national" "tel-area-code" "tel-local" "tel-local-prefix"
+                             "tel-local-suffix" "tel-extension" "email" "impp" "webauthn")
+                           :test #'string=))
+              ;; webauthn alone (extracted as credential, nothing left)
+              (and credential (null rest)))
+          (let ((field (if rest (car rest) credential)))
+            (format nil "~{~a~^ ~}"
+                    (append (when section (list section))
+                            (when mode (list mode))
+                            (when contact (list contact))
+                            (list field)
+                            (when (and credential (not (null rest))) (list credential)))))
+          ""))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Element.prototype (<- Node.prototype)
@@ -2186,7 +2259,21 @@ the context node when it is an element, else NIL (a document/fragment root makes
                           (set-attr (n this) ,attr (princ-to-string k)) (setf (context-dirty ctx) t)))))
       (refl-str "placeholder" "placeholder") (refl-str "pattern" "pattern")
       (refl-str "step" "step") (refl-str "min" "min") (refl-str "max" "max")
-      (refl-str "accept" "accept") (refl-str "alt" "alt") (refl-str "autocomplete" "autocomplete")
+      (refl-str "accept" "accept") (refl-str "alt" "alt")
+      (defgetset ctx ep "autocomplete" (this)
+        (let* ((node (n this))
+               (tag (h:dnode-name node))
+               (raw (get-attr node "autocomplete")))
+          ;; For input[type=hidden], autocomplete is always "" per spec
+          (if (and (string= tag "input") (string= (input-type node) "hidden"))
+              ""
+              (if (null raw) ""
+                  (let* ((trimmed (string-trim '(#\Space #\Tab #\Newline #\Return #\Page) raw))
+                         (lowered (string-downcase trimmed)))
+                    (if (member tag '("input" "textarea" "select") :test #'string=)
+                        (autocomplete-validate lowered)
+                        lowered)))))
+        (v) (progn (set-attr (n this) "autocomplete" (jstr v)) (setf (context-dirty ctx) t)))
       (refl-str "inputMode" "inputmode") (refl-str "dirName" "dirname")
       (refl-str "formAction" "formaction") (refl-str "formEnctype" "formenctype")
       (refl-str "formMethod" "formmethod") (refl-str "formTarget" "formtarget")

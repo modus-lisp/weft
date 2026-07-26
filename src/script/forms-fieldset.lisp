@@ -139,30 +139,71 @@
           obj)))))
 
 (register-element-proto-extension :fieldset #'install-forms-fieldset)
-;; ---- HTMLFormElement named access (form[name] -> element) ------------------
+;; ---- HTMLFormElement named/indexed access (form[name] -> element) ----------
 ;; HTMLFormElement has [LegacyUnenumerableNamedProperties]: form[name] returns
-;; the element(s) with that name/id.  This is per-instance exotic behaviour.
+;; the element(s) with that name/id.  Indexed access (form[0]) returns the
+;; control at that index, excluding input type=image.
 (register-element-exotic "form"
   (lambda (ectx node obj)
     (declare (ignore obj))
-    (list
-     :get
-     (lambda (o key rcv)
-       (let ((k (js:to-property-key key)))
-         (if (and (stringp k) (not (js::ordinary-has o k)))
-             (let ((ctl (named-control node k)))
-               (if ctl (wrap ectx ctl) (js::ordinary-get o k (or rcv o))))
-             (js::ordinary-get o k (or rcv o)))))
-     :has
-     (lambda (o key)
-       (or (js::ordinary-has o key)
-           (let ((k (js:to-property-key key)))
-             (and (stringp k) (named-control node k) t))))
-     :get-own-property
-     (lambda (o key)
-       (or (gethash key (js::js-object-props o))
-           (when (stringp key)
-             (let ((ctl (named-control node key)))
-               (when ctl
-                 (js::make-prop :value (wrap ectx ctl)
-                                :enumerable nil :configurable t :writable nil)))))))))
+    ;; There is deliberately no "item"/"namedItem" exclusion here.  A wave patch
+    ;; added one to satisfy form-nameditem.html's "Forms should not have an item
+    ;; method", but that test uses an EMPTY form: it passes because nothing is
+    ;; named "item", not because the name is banned.  HTMLFormElement's IDL has
+    ;; no item/namedItem, so as long as the prototype does not define them the
+    ;; named lookup simply misses and `form.item` is undefined — while a control
+    ;; actually named "item" stays reachable, which the ban broke.
+    (labels ((form-ctl (name)
+               (and (stringp name) (named-control node name)))
+             (form-ctls ()
+               "List of form controls (excluding input type=image)."
+               (remove-if (lambda (n)
+                            (and (string= (h:dnode-name n) "input")
+                                 (string= (or (get-attr n "type") "text") "image")))
+                          (form-controls node)))
+             (form-by-index (i)
+               "Index into the form controls list."
+               (let ((ctls (form-ctls)))
+                 (if (and (>= i 0) (< i (length ctls))) (nth i ctls) nil))))
+      (list
+       :get
+       (lambda (o key rcv)
+         (let ((k (js:to-property-key key)))
+           (cond
+             ((index-string-p k)
+              (let ((ctl (form-by-index (parse-integer k))))
+                (if ctl (wrap ectx ctl) js:*undefined*)))
+             ((and (stringp k) (form-ctl k))
+              (wrap ectx (form-ctl k)))
+             (t (js::ordinary-get o k (or rcv o))))))
+       :has
+       (lambda (o key)
+         (let ((k (js:to-property-key key)))
+           (or (and (index-string-p k) (form-by-index (parse-integer k)) t)
+               (and (stringp k) (form-ctl k) t)
+               (js::ordinary-has o key))))
+       ;; Order is index, then name, then ordinary own property — WebIDL §3.9.1
+       ;; for a legacy platform object, and HTMLFormElement carries
+       ;; [LegacyOverrideBuiltIns], so a supported name wins even over an own
+       ;; property.  The wave patch had the ordinary lookup first.
+       ;;
+       ;; PROPS-GET, not GETHASH: shuttle's own-property map is a hybrid — NIL
+       ;; while empty, an alist while small, an EQUAL hash-table only once the key
+       ;; count passes +props-small-limit+ (8).  GETHASH therefore works ONLY on
+       ;; objects that happen to have been promoted, and a <form> wrapper usually
+       ;; has not been, so this raised "NIL is not of type HASH-TABLE" — a LISP
+       ;; error, for which bridge.lisp abandons the entire <script> block.  The
+       ;; key needs coercing here too, exactly as the traps above do.
+       :get-own-property
+       (lambda (o key)
+         (let* ((k (js:to-property-key key))
+                (idx (and (index-string-p k) (form-by-index (parse-integer k)))))
+           (cond
+             ;; indices are enumerable, named properties are not
+             ;; ([LegacyUnenumerableNamedProperties])
+             (idx (js::make-prop :value (wrap ectx idx)
+                                 :enumerable t :configurable t :writable nil))
+             ((form-ctl k)
+              (js::make-prop :value (wrap ectx (form-ctl k))
+                             :enumerable nil :configurable t :writable nil))
+             (t (js::props-get o k)))))))))

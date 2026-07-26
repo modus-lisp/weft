@@ -11,7 +11,7 @@
   (macrolet ((n (this) `(require-node ctx ,this)))
     (let ((validity-custom-errors (make-hash-table :test 'eq)))
       ;; validity getter — returns a ValidityState object reflecting current state
-      (defget ctx ep "validity" (this)
+      (defget-for ctx ep "input" "validity" (this)
         (let* ((node (n this))
                (obj (js:make-object
                      :proto (js:eval-script (context-realm ctx) "Object.prototype")))
@@ -38,7 +38,7 @@
                (custom-error-p (and custom-msg (plusp (length custom-msg)))))
           (if custom-error-p js:*false* js:*true*)))
       ;; setCustomValidity(error) — stores/clears custom error message
-      (defmethod* ctx ep "setCustomValidity" 1 (this a)
+      (defmethod-for ctx ep "input" "setCustomValidity" 1 (this a)
         (let ((node (n this))
               (msg (jstr (arg a 0))))
           (if (string= msg "")
@@ -46,7 +46,7 @@
               (setf (gethash node validity-custom-errors) msg)))
         js:*undefined*)
       ;; validationMessage getter — returns the custom error or ""
-      (defget ctx ep "validationMessage" (this)
+      (defget-for ctx ep "input" "validationMessage" (this)
         (let ((node (n this)))
           (or (gethash node validity-custom-errors) ""))))))
 

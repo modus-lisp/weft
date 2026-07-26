@@ -111,6 +111,8 @@
                      (wrap ctx node) (list evt-obj))
           (when (evt-stop-immediate ev) (return)))))))
 
+(defvar *label-activating* nil)
+
 (defun dispatch-event (ctx node evt-obj)
   (let ((ev (evt-of ctx evt-obj))
         (*ctx* ctx))
@@ -118,9 +120,13 @@
     (setf (evt-target ev) node (evt-dispatched ev) t
           (evt-stopped ev) nil (evt-stop-immediate ev) nil)
     (let* ((path (event-path node))            ; node .. root
-           (ancestors (rest path)))
+           (ancestors (rest path))
+           (window (proto ctx :window)))
       ;; capture: root -> parent
       (setf (evt-phase ev) 1)
+      ;; Window capture phase (before document)
+      (when window
+        (invoke-listeners ctx window evt-obj ev t))
       (dolist (a (reverse ancestors))
         (when (evt-stopped ev) (return))
         (invoke-listeners ctx a evt-obj ev t))
@@ -134,8 +140,29 @@
         (setf (evt-phase ev) 3)
         (dolist (a ancestors)
           (when (evt-stopped ev) (return))
-          (invoke-listeners ctx a evt-obj ev nil)))
+          (invoke-listeners ctx a evt-obj ev nil))
+        ;; Window bubble phase (after document)
+        (when (and window (not (evt-stopped ev)))
+          (invoke-listeners ctx window evt-obj ev nil)))
       (setf (evt-phase ev) 0 (evt-current-target ev) nil)
+      ;; Label click activation default action: if a click event hasn't been
+      ;; cancelled and the target is inside a <label>, fire a click at the
+      ;; label's labeled control.
+      (when (and (string= (evt-type ev) "click")
+                 (not (evt-default-prevented ev))
+                 (not *label-activating*))
+        (let ((*label-activating* t))
+          (loop for a = node then (h:dnode-parent a)
+                while a
+                when (and (eq (h:dnode-kind a) :element)
+                          (string= (h:dnode-name a) "label"))
+                do (let ((ctl (labels-label-control a)))
+                     (when (and ctl (not (eq ctl node)))
+                       (let ((ctrl-wrap (wrap ctx ctl)))
+                         (js:invoke (context-realm ctx)
+                                    (js:js-get ctrl-wrap "click")
+                                    ctrl-wrap nil))))
+                   (return t))))
       (jbool (not (evt-default-prevented ev))))))
 
 (defun dispatch-to-window (ctx evt-obj)

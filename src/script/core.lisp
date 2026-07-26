@@ -34,6 +34,7 @@
   (perf-marks (make-hash-table :test 'equal)) ; performance.mark name -> most-recent start time (ms)
   (perf-entries nil)        ; performance timeline entries, oldest first (mark/measure host objects)
   (iframe-docs (make-hash-table :test 'eq)) ; iframe/object dnode -> its content document
+  (iframe-windows (make-hash-table :test 'eq)) ; iframe/object dnode -> its content window object
   (frame-fragments (make-hash-table :test 'eq)) ; content document -> its URL fragment (sans '#'), for :target
   (canvas-ctxs (make-hash-table :test 'eq)) ; <canvas> dnode -> its CanvasRenderingContext2D host object
   (listeners (make-hash-table :test 'eq))   ; dnode -> list of (type listener capture) entries
@@ -49,6 +50,7 @@
   (blank-url-docs (make-hash-table :test 'eq)) ; document dnode -> t when its URL is "about:blank" (createHTMLDocument/createDocument)
   (xml-documents (make-hash-table :test 'eq)) ; document dnode -> t when it is an XMLDocument (createDocument; not a DOMParser result)
   (input-values (make-hash-table :test 'eq)) ; <input> node -> its independent value property
+  (shadow-roots (make-hash-table :test 'eq)) ; element dnode -> shadow root (DocumentFragment dnode)
   (on-handlers (make-hash-table :test 'eq))  ; node -> (equal hash "type" -> handler fn)
   (write-buffers (make-hash-table :test 'eq)) ; document node -> pending document.write buffer (open())
   (base "")                 ; base URL/directory for resolving subresource references

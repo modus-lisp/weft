@@ -225,7 +225,7 @@
         nil))))
 
 (defparameter +on-events+
-  '("load" "error" "click" "submit" "change" "focus" "blur" "input"
+  '("load" "error" "click" "submit" "reset" "change" "focus" "blur" "input"
     "keydown" "keyup" "keypress" "mousedown" "mouseup" "mouseover" "mouseout"
     "mousemove" "dblclick" "contextmenu" "scroll" "resize" "unload"))
 

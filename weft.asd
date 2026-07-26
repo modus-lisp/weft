@@ -102,10 +102,11 @@
                                (:file "forms-valueasnumber") (:file "forms-valueasdate")
                                (:file "forms-stepupdown") (:file "forms-selection")
                                (:file "forms-validity") (:file "forms-labels")
+                               (:file "forms-label")
                                ;; Per-element IDL feature files (<select>/<textarea>/<button>).
                                (:file "forms-select") (:file "forms-textarea") (:file "forms-button")
                                (:file "forms-meter") (:file "forms-progress")
-                               (:file "forms-fieldset")
+                               (:file "forms-fieldset") (:file "forms-option")
                                (:file "bridge") (:file "interact")))))))
 
 (defsystem "weft/test"

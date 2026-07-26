@@ -500,12 +500,10 @@
                 (when (string= (h:dnode-name node) "option")
                   (set-attr node "label" (jstr v))
                   (setf (context-dirty ctx) t))))
-        ;; HTMLOptionElement.form — getter (returns null for simplicity)
-        (defget-for ctx ep "option" "form" (this)
-          (let ((node (n this)))
-            (if (string= (h:dnode-name node) "option")
-                js:*null*
-                js:*undefined*)))
+        ;; HTMLOptionElement.form lives in forms-option.lisp — it is the parent
+        ;; SELECT's form owner, not the option's own.  A copy here asked
+        ;; ELEMENT-FORM-OWNER about the option itself, which agrees only while
+        ;; the select has no `form' attribute of its own.
         ;; HTMLOptGroupElement — disabled, label
         (defgetset-for ctx ep "optgroup" "disabled" (this)
           (let ((node (n this)))

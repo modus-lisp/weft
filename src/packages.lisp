@@ -28,7 +28,7 @@
            #:serialize-html-fragment #:serialize-html-outer
            #:dnode #:dnode-kind #:dnode-name #:dnode-attrs #:dnode-data
            #:dnode-children #:dnode-parent #:dnode-namespace #:dnode-mode
-           #:dnode-public #:dnode-system
+           #:dnode-public #:dnode-system #:dnode-form-ptr
            ;; node constructors + mutation kernel (the DOM-scripting seam)
            #:make-element #:make-text #:make-comment #:make-fragment #:make-doctype
            #:make-cdata #:make-processing-instruction

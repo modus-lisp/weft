@@ -13,7 +13,8 @@
   (namespace :html)                     ; :html :svg :math
   (mode :no-quirks)                     ; document only: :no-quirks :limited-quirks :quirks
   (children (make-array 0 :adjustable t :fill-pointer 0))
-  parent)
+  parent
+  (form-ptr nil))                       ; parser's form element pointer (for parser-inserted controls)
 
 (defun dom-append (parent child)
   (setf (dnode-parent child) parent)
@@ -37,14 +38,18 @@ If REF is NIL, append.  Used for foster parenting."
         node)))
 
 (defun dom-remove (node)
-  "Detach NODE from its parent's children."
+  "Detach NODE from its parent's children.  Also clears the parser's form
+   element pointer (form-ptr) — per spec, removing a parser-inserted element
+   from its parent resets the parser-inserted flag."
   (let ((parent (dnode-parent node)))
     (when parent
       (let* ((ch (dnode-children parent)) (idx (position node ch)))
         (when idx
           (loop for k from idx below (1- (length ch)) do (setf (aref ch k) (aref ch (1+ k))))
           (decf (fill-pointer ch))))
-      (setf (dnode-parent node) nil)))
+      (setf (dnode-parent node) nil)
+      ;; Clear parser-inserted form pointer when detached
+      (setf (dnode-form-ptr node) nil)))
   node)
 
 (defun dom-move-children (from to)

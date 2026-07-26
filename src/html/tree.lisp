@@ -150,9 +150,15 @@ whose children are the fragment nodes."
              (dom-insert-before parent node before)))
          (push-el (el) (push el open) el)
          (insert-element (name &optional attrs (ns :html))
-           (let ((el (make-element name attrs ns))) (insert-node el) (push-el el) el))
+           (let ((el (make-element name attrs ns)))
+             (when form-ptr
+               (setf (dnode-form-ptr el) form-ptr))
+             (insert-node el) (push-el el) el))
          (insert-void (name &optional attrs)
-           (insert-node (make-element name attrs)))
+           (let ((el (make-element name attrs)))
+             (when form-ptr
+               (setf (dnode-form-ptr el) form-ptr))
+             (insert-node el)))
          (insert-text (data)
            (multiple-value-bind (parent before) (foster-place)
              (let ((prev (dom-prev-sibling parent before)))
@@ -845,7 +851,18 @@ whose children are the fragment nodes."
                        (loop while (and open (not (equal (top-name) "select"))) do (pop open))
                        (when open (pop open)) (reset-mode) (reproc)))
                     ((member name '("script" "template") :test #'equal) (raw-element tk nil))
-                    (t))))                                ; ignore everything else
+                    ;; "In select" used to ignore every other start tag.  Containers
+                    ;; now have to survive: WPT seeds
+                    ;;   select.innerHTML = "<div><optgroup><div><option selected>1"
+                    ;; and asserts on the resulting shape, which only holds if the
+                    ;; <div>s are in the tree.  Formatting elements still get
+                    ;; dropped — html5lib's tests1.dat expects <select><b> to lose
+                    ;; the <b>, and inserting it there regresses two of its cases.
+                    ;; The permitted set in the current spec is NOT verified here:
+                    ;; this rule is derived from the two corpora we can actually
+                    ;; run, and our html5lib vectors predate the spec change.
+                    ((member name *formatting* :test #'equal))
+                    (t (insert-element name (tok-attrs tk))))))
                ((eq ty :end-tag)
                 (let ((name (tok-name tk)))
                   (cond

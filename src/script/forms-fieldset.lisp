@@ -11,10 +11,10 @@
   (remove-if-not (lambda (n) (member (h:dnode-name n) +form-control-tags+ :test #'string=))
                  (dom:get-elements-by-tag-name node "*")))
 
-(defun fieldset-form-owner (node)
-  "Return the nearest ancestor <form> element, or NIL."
-  (loop for a = (h:dnode-parent node) then (h:dnode-parent a)
-        while a when (tag= a "form") return a))
+;; Form-owner lookup lives in ONE place: ELEMENT-FORM-OWNER in dom.lisp.  Two
+;; private copies grew here during the wave (a nearest-ancestor-only one and an
+;; id-scanning one); both were strictly weaker than the shared version — neither
+;; consulted the parser's form pointer — and both are gone.  Call the shared one.
 
 (defun fieldset-first-legend (node)
   "Return the first <legend> child of the fieldset, or NIL."
@@ -45,10 +45,10 @@
     (defget-for ctx ep "fieldset" "type" (this)
       (declare (ignore this))
       "fieldset")
-    ;; form — nearest ancestor <form> or null
+    ;; form — form owner (respects form= content attribute)
     (defget-for ctx ep "fieldset" "form" (this)
       (let ((node (n this)))
-        (let ((form (fieldset-form-owner node)))
+        (let ((form (element-form-owner ctx node)))
           (if form (wrap ctx form) js:*null*))))
     ;; elements — live HTMLCollection of descendant form controls
     (defget-for ctx ep "fieldset" "elements" (this)
@@ -144,14 +144,14 @@
 ;; the element(s) with that name/id.  This is per-instance exotic behaviour.
 (register-element-exotic "form"
   (lambda (ectx node obj)
-    (declare (ignore ectx obj))
+    (declare (ignore obj))
     (list
      :get
      (lambda (o key rcv)
        (let ((k (js:to-property-key key)))
          (if (and (stringp k) (not (js::ordinary-has o k)))
              (let ((ctl (named-control node k)))
-               (if ctl (wrap ctx ctl) (js::ordinary-get o k (or rcv o))))
+               (if ctl (wrap ectx ctl) (js::ordinary-get o k (or rcv o))))
              (js::ordinary-get o k (or rcv o)))))
      :has
      (lambda (o key)
@@ -164,5 +164,5 @@
            (when (stringp key)
              (let ((ctl (named-control node key)))
                (when ctl
-                 (js::make-prop :value (wrap ctx ctl)
+                 (js::make-prop :value (wrap ectx ctl)
                                 :enumerable nil :configurable t :writable nil)))))))))

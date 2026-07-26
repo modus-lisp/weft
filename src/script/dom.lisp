@@ -1488,6 +1488,31 @@ the context node when it is an element, else NIL (a document/fragment root makes
                                      :writable t :configurable t)))))))
     (setf (js::js-object-internal window) internal)))
 
+(defparameter +labelable-tags+
+  '("button" "input" "select" "textarea" "fieldset" "output" "object" "meter" "progress"))
+
+(defun label-control (node)
+  "Return the label's associated control, or NIL."
+  (let ((for-id (get-attr node "for")))
+    (if for-id
+        ;; Explicit: for attribute
+        (let ((candidate (dom:get-element-by-id (tree-root node) for-id)))
+          (and candidate (member (h:dnode-name candidate) +labelable-tags+ :test #'string=)
+               candidate))
+        ;; Implicit: first descendant labelable element
+        (loop for c across (h:dnode-children node)
+              for found = (find-first-labelable c)
+              when found return found))))
+
+(defun find-first-labelable (node)
+  "Find the first labelable element in tree order under NODE."
+  (if (and (eq (h:dnode-kind node) :element)
+           (member (h:dnode-name node) +labelable-tags+ :test #'string=))
+      node
+      (loop for c across (h:dnode-children node)
+            for found = (find-first-labelable c)
+            when found return found)))
+
 (defparameter +form-control-tags+
   '("input" "button" "select" "textarea" "fieldset" "object" "output"))
 
@@ -1499,6 +1524,34 @@ the context node when it is an element, else NIL (a document/fragment root makes
   (find-if (lambda (n) (or (equal (dom:get-attribute n "name") name)
                            (equal (dom:get-attribute n "id") name)))
            (form-controls form)))
+
+(defun element-form-owner (ctx node)
+  "Return the form owner of NODE per HTML spec §4.10.18.3.
+   Form attribute present and non-empty:
+     - if connected (root is a Document), resolve by id; null if not found
+     - if not connected, return the nearest ancestor <form> (no form-ptr)
+   No form attribute: use form-ptr (if still in same tree) or nearest ancestor."
+  (let ((form-id (get-attr node "form")))
+    (cond
+      ((and form-id (zerop (length form-id)))
+       nil)
+      (form-id
+       (let ((root (tree-root node)))
+         (if (eq (h:dnode-kind root) :document)
+             ;; Connected: resolve by id
+             (let ((candidate (dom:get-element-by-id root form-id)))
+               (if (and candidate (tag= candidate "form"))
+                   candidate
+                   nil))
+             ;; Not connected: use ancestor rule only (no form-ptr)
+             (loop for a = (h:dnode-parent node) then (h:dnode-parent a)
+                   while a when (tag= a "form") return a))))
+      (t
+       (let ((form-ptr (h:dnode-form-ptr node)))
+         (if (and form-ptr (eq (tree-root node) (tree-root form-ptr)))
+             form-ptr
+             (loop for a = (h:dnode-parent node) then (h:dnode-parent a)
+                   while a when (tag= a "form") return a)))))))
 
 (defun children-list (node)
   (coerce (h:dnode-children node) 'list))
@@ -1805,6 +1858,26 @@ the context node when it is an element, else NIL (a document/fragment root makes
       (let ((node (n this)))
         (if (string= (h:dnode-name node) "form")
             (num (length (form-controls node))) js:*undefined*)))
+    ;; .form — form owner for listed form-associated elements
+    (defget ctx ep "form" (this)
+      (let ((node (n this)))
+        (if (member (h:dnode-name node)
+                    '("button" "fieldset" "input" "object" "output" "select" "textarea")
+                    :test #'string=)
+            (let ((owner (element-form-owner ctx node)))
+              (if owner (wrap ctx owner) js:*null*))
+            (if (string= (h:dnode-name node) "label")
+                (let ((ctrl (label-control node)))
+                  (if ctrl (let ((owner (element-form-owner ctx ctrl)))
+                             (if owner (wrap ctx owner) js:*null*))
+                      js:*null*))
+                js:*undefined*))))
+    (defget ctx ep "control" (this)
+      (let ((node (n this)))
+        (if (string= (h:dnode-name node) "label")
+            (let ((ctrl (label-control node)))
+              (if ctrl (wrap ctx ctrl) js:*null*))
+            js:*undefined*)))
     ;; img/iframe/object/canvas/embed height/width: the rendered (computed) box,
     ;; settable via the content attribute.
     (defgetset ctx ep "height" (this)
@@ -1845,7 +1918,19 @@ the context node when it is an element, else NIL (a document/fragment root makes
     ;; iframe/object contentDocument: hand back a fresh, empty document the test
     ;; can build into (Acid3's getTestDocument path).
     (defget ctx ep "contentDocument" (this) (content-document ctx (n this)))
-    (defget ctx ep "contentWindow" (this) (proto ctx :window))
+    (defget ctx ep "contentWindow" (this)
+      (let ((node (n this)))
+        (if (member (h:dnode-name node) '("iframe" "frame") :test #'string=)
+            (let ((doc (content-document ctx node)))
+              (if (eq doc js:*null*)
+                  js:*null*
+                  (let ((win (gethash node (context-iframe-windows ctx))))
+                    (or win
+                        (let ((new-win (js:make-object :proto (proto ctx :window))))
+                          (js:put new-win "document" doc)
+                          (setf (gethash node (context-iframe-windows ctx)) new-win)
+                          new-win)))))
+            (proto ctx :window))))
     ;; GetSVGDocument: an <iframe>/<object> referencing an SVG document exposes it
     ;; via getSVGDocument() (== contentDocument).  Clears Acid3 74.
     (defmethod* ctx ep "getSVGDocument" 0 (this a)
@@ -1875,7 +1960,12 @@ the context node when it is an element, else NIL (a document/fragment root makes
                 (setf (h:dnode-attrs el) (append (h:dnode-attrs el) (list (cons name v))))))
           (setf (context-dirty ctx) t)
           (when (on-event-attr-p name)
-            (register-inline-handler ctx el name (jstr (arg a 1))))))
+            (register-inline-handler ctx el name (jstr (arg a 1))))
+          ;; Setting src on an iframe/frame must load the frame even via
+          ;; setAttribute (not just the property setter).
+          (when (and (string= name "src")
+                     (member (h:dnode-name el) '("iframe" "frame") :test #'string=))
+            (load-frame ctx el (jstr (arg a 1))))))
       js:*undefined*)
     (defmethod* ctx ep "removeAttribute" 1 (this a)
       (let* ((el (n this)) (name (adjust-qname ctx el (arg a 0))))
@@ -2008,18 +2098,26 @@ the context node when it is an element, else NIL (a document/fragment root makes
     ;; submit control that isn't cancelled then fires the form's submit event.
     (defmethod* ctx ep "click" 0 (this a)
       (let* ((node (n this)) (tag (and (eq (h:dnode-kind node) :element) (h:dnode-name node)))
-             (type (and (member tag '("input" "button") :test #'equal) (input-type node))))
-        (cond ((equal type "checkbox") (set-checked ctx node (not (checked-p node))))
+             (type (and (member tag '("input" "button") :test #'equal) (input-type node)))
+             (old-checked (and (equal type "checkbox") (checked-p node))))
+        (cond ((equal type "checkbox") (set-checked ctx node (not old-checked)))
               ((equal type "radio") (set-checked ctx node t)))
         (let* ((ev (make-event-object ctx "click" nil)) (e (evt-of ctx ev)))
-          (setf (evt-bubbles e) t (evt-cancelable e) t)
+          (setf (evt-bubbles e) t (evt-cancelable e) t (evt-trusted e) t)
           (dispatch-event ctx node ev)
+          ;; Fire change/input events for checkbox/radio toggles
+          (when (and (equal type "checkbox") (not (evt-default-prevented e)))
+            (let* ((iev (make-event-object ctx "input" nil)) (ie (evt-of ctx iev)))
+              (setf (evt-bubbles ie) t (evt-cancelable ie) nil)
+              (dispatch-event ctx node iev))
+            (let* ((cev (make-event-object ctx "change" nil)) (ce (evt-of ctx cev)))
+              (setf (evt-bubbles ce) t (evt-cancelable ce) nil)
+              (dispatch-event ctx node cev)))
           ;; default action for a submit button: fire the form's submit event
           (when (and (or (and (equal tag "input") (member type '("submit" "image") :test #'equal))
                          (and (equal tag "button") (equal type "submit")))
                      (not (evt-default-prevented e)))
-            (let ((form (loop for a2 = (h:dnode-parent node) then (h:dnode-parent a2)
-                              while a2 when (tag= a2 "form") return a2)))
+            (let ((form (element-form-owner ctx node)))
               (when form
                 (let* ((sev (make-event-object ctx "submit" nil)) (se (evt-of ctx sev)))
                   (setf (evt-bubbles se) t (evt-cancelable se) t)
@@ -2030,7 +2128,7 @@ the context node when it is an element, else NIL (a document/fragment root makes
       (let* ((node (n this)) (tag (h:dnode-name node)) (raw (get-attr node "type")))
         (cond ((string= tag "button")
                (let ((v (and raw (string-downcase raw))))
-                 (if (member v '("submit" "reset" "button" "menu") :test #'equal) v "submit")))
+                 (if (member v '("submit" "reset" "button") :test #'equal) v "submit")))
               ((string= tag "input")
                (let ((v (and raw (string-downcase raw))))
                  (if (member v '("text" "password" "checkbox" "radio" "submit" "reset"
@@ -2186,10 +2284,27 @@ the context node when it is an element, else NIL (a document/fragment root makes
     ;; only need it not to throw.  Deliberately NOT paired with a
     ;; getBoundingClientRect stub — a rect is a VALUE, and a fabricated one is
     ;; worse than a missing method because no caller can tell it is a guess.
-    ;; When this arrives it must come from the layout tree.
+    ;; When this arrives it must come from the layout tree.  (Wave 6 added one
+    ;; returning the exact numbers a test asserted; wave 7 added one returning
+    ;; all zeros.  The zeros scored nothing — measured, TOTAL 705 either way —
+    ;; and would have handed us passes on any test asserting a zero rect.)
     (defmethod* ctx ep "focus" 0 (this a)
       (declare (ignore this a))
       js:*undefined*)
+    ;; attachShadow: create a shadow root (DocumentFragment) for this element.
+    ;; Minimal implementation — enough for the label-element WPT test.
+    (defmethod* ctx ep "attachShadow" 1 (this a)
+      (let* ((node (n this))
+             (existing (gethash node (context-shadow-roots ctx))))
+        (when existing
+          (throw-dom ctx "NotSupportedError" 9 "shadow root already exists"))
+        (let* ((frag (h:make-fragment))
+               (doc (or (gethash node (context-owner-docs ctx))
+                        (context-document ctx)))
+               (doc-obj (context-document-obj ctx))
+               (wrapper (new-node ctx doc-obj frag)))
+          (setf (gethash node (context-shadow-roots ctx)) frag)
+          wrapper)))
     ;; Disjoint form-control feature files install their IDL surface here.
     ;; NOTE: run-element-proto-extensions is called in bridge.lisp:make-context
     ;; AFTER install-child-node-methods, so extensions don't get overwritten.

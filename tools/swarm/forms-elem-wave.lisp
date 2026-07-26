@@ -316,6 +316,16 @@ guess which of the files to read.
 - PURE Common Lisp, NO regex/external libs.  Balanced parens; the oracle
   compiles first — fix any READ/compile error before logic.  Loop
   edit -> oracle -> fix, and keep going while TOTAL rises.
+- NEVER hardcode the value a test asserts.  Returning the numbers a specific
+  WPT file expects — a fixed rect from getBoundingClientRect, a canned string
+  from a getter — scores points and is worthless: it is a fabricated value that
+  no caller can tell from a computed one, and it will be reverted on review.  A
+  method that must merely not throw may be an explicit no-op; a VALUE has to be
+  derived from the document.  If you cannot derive it, leave the subtest failing
+  and say so — an honest failure is worth more than a fake pass.
+- Scratch and probe files: delete them before the round ends, or put them in
+  /tmp.  Your WHOLE worktree diff is what gets merged, so a leftover diag.lisp
+  at the repo root ships with your work.
 "
             (or (slurp (format nil "~a/tools/swarm/API.md" *src*)) "")
             unit (job-variant job) unit
@@ -339,10 +349,21 @@ guess which of the files to read.
   ;; for a small local model, and at the 24k context default these workers
   ;; thrashed so badly they made ZERO Write calls in 40 minutes across six arms
   ;; — an agent that looks lazy rather than one that looks broken.
+  ;; `cd' and CL_SOURCE_REGISTRY are the two things that keep a worker inside its
+  ;; own worktree, and wave 6 lost all three winning merges for want of them.
+  ;; Without the `cd' the worker inherits the WAVE's cwd, which is the canonical
+  ;; tree — so every relative-path edit it makes lands in canon.  And without the
+  ;; registry any sbcl the worker starts itself resolves "weft" through
+  ;; ~/quicklisp/local-projects/weft.asd, a symlink to the canonical tree, so its
+  ;; edits appear to do nothing and it goes looking for the "real" file to fix.
+  ;; Three of five workers found /home/claude/weft that way and wrote to it,
+  ;; leaving canon dirty and making `git apply' fail for every arm that won.
   (format nil
-          "OPERANDI_CONTEXT_BUDGET=~d OPERANDI_MAX_ITERS=~d ~
+          "cd ~a && CL_SOURCE_REGISTRY='(:source-registry (:tree \"~a\") :ignore-inherited-configuration)' ~
+           OPERANDI_CONTEXT_BUDGET=~d OPERANDI_MAX_ITERS=~d ~
            timeout ~d sbcl --non-interactive --load ~a/bin/operandi.lisp -- ~
            --openrouter ~a --no-tools Fan,Task,Spawn ~s >> ~a 2>&1"
+          (jp job :wd) (jp job :wd)
           *context-budget* *max-iters*
           *round-max* *operandi-root* (job-model job)
           (format nil "Read ~a and carry it out fully and autonomously. The tree ~
@@ -488,6 +509,19 @@ guess which of the files to read.
                             jobs))
            (results (mapcar #'sb-thread:join-thread threads)))
       (note "~&=== WAVE COMPLETE — merge ===")
+      ;; The tree was clean when the wave started, so anything here now was put
+      ;; there by a worker reaching outside its worktree.  It has to go before the
+      ;; first apply: `git apply --3way' refuses any file that does not match the
+      ;; index, so one stray edit to a shared file makes EVERY arm's patch fail,
+      ;; and the reported reason ("does not match index") points nowhere near the
+      ;; cause.  Say what was found — silently resetting would hide a worker bug.
+      (let ((dirty (sh "git -C ~a status --porcelain" *src*)))
+        (when (plusp (length dirty))
+          (note "~&!! canon tree was polluted DURING the wave — a worker wrote outside~%~
+                 !! its worktree.  Resetting before merge; the patches are unaffected.~%~a"
+                dirty)
+          (sh "git -C ~a checkout -- ." *src*)
+          (sh "git -C ~a clean -fdq -- src inspect" *src*)))
       (dolist (unit (wave-units))
         (note "~a:" unit)
         (merge-best results unit))

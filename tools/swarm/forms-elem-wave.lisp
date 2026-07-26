@@ -34,8 +34,17 @@
       (error "OPERANDI_ROOT must be set to the operandi checkout")))
 (defparameter *wpt*    "/home/claude/wpt")
 
-(defparameter *units*    '("select" "textarea"))
-(defparameter *variants* '(("a" . :flash) ("b" . :flash) ("c" . :pro)))
+;;; Wave 6 onward the arms are spread across UNITS rather than across variants of
+;;; the same unit.  Waves 1-5 ran 2 units x 3 variants because there was nothing
+;;; else to work on; the corpus sweep (inspect/forms-oracle.lisp) opened four
+;;; units with 150+ untouched subtests between them, and three arms racing on one
+;;; unit only ever merges one patch.
+(defparameter *variants* '(("a" . :flash))
+  "Variants run per unit when a unit is named as a bare string in *UNITS*.")
+
+(defparameter *units* '("meter" "progress" "option" "fieldset" "select")
+  "Units to work this wave.  An entry may also be (unit variant . tier) for an
+extra arm on a unit that deserves one — e.g. (\"option\" \"p\" . :pro).")
 
 (defparameter *models* '((:flash . "deepseek/deepseek-v4-flash")
                          (:pro   . "deepseek/deepseek-v4-pro")))
@@ -125,12 +134,18 @@ sends you looking in the wrong place."
     (if (eq kind :wd) base (format nil "~a.~(~a~)" base kind))))
 
 (defun make-jobs (wave)
-  (loop for unit in *units*
-        append (loop for (v . tier) in *variants*
-                     collect (make-job :id (format nil "~a-~a" unit v)
-                                       :unit unit :variant v
-                                       :model (cdr (assoc tier *models*))
-                                       :wave wave))))
+  (flet ((job (unit v tier)
+           (make-job :id (format nil "~a-~a" unit v) :unit unit :variant v
+                     :model (cdr (assoc tier *models*)) :wave wave)))
+    (loop for spec in *units*
+          append (if (consp spec)
+                     (destructuring-bind (unit v . tier) spec (list (job unit v tier)))
+                     (loop for (v . tier) in *variants* collect (job spec v tier))))))
+
+(defun wave-units ()
+  "The distinct units this wave touches (merge is per unit, not per arm)."
+  (remove-duplicates (mapcar (lambda (s) (if (consp s) (first s) s)) *units*)
+                     :test #'string= :from-end t))
 
 ;;; ---- scoring --------------------------------------------------------------
 
@@ -187,19 +202,53 @@ sends you looking in the wrong place."
 (defun guidance (unit)
   (cond
     ((string= unit "select")
-     "HTMLSelectElement — options (an HTMLOptionsCollection of <option> descendants),
-selectedOptions, selectedIndex, value, length (get/set), item/namedItem,
-add(element[,before]), remove([index]), multiple, type, the named/indexed getter,
-and the constraint-validation members.  Several remaining failures are NOT in
-forms-select.lisp: collections whose prototype is Object rather than
-HTMLCollection, and indexed access returning undefined, both live in the DOM
-bridge.  Go and fix them there.")
+     "HTMLSelectElement — options, selectedOptions, selectedIndex, value, length,
+item/namedItem, add/remove, multiple, type, constraint validation.  Most of this
+works; what is left is the selectedness rules (which <option> descendants count
+as \"the list of options\" when nested inside <div>/<optgroup>/<select>, and
+which one is selected by default), the placeholder-label-option validity rules,
+and one test that times out.  Read the failing assertions carefully — each names
+the exact nesting it expects to be excluded.")
     ((string= unit "textarea")
-     "HTMLTextAreaElement — value (raw/API value, defaulting to child text
-content), defaultValue, textLength, type, cols, rows, wrap, maxLength/minLength,
-setCustomValidity/validity/checkValidity, placeholder/readOnly/required.
-Only four subtests remain; expect at least some of them to need changes outside
-forms-textarea.lisp.")
+     "HTMLTextAreaElement — 25 of 27 pass.  The two that do not need
+test_driver.send_keys (real WebDriver input) and form submission into an iframe;
+both are probably out of reach.  Look for the cheaper wins elsewhere in the tree
+if this unit will not move.")
+    ((string= unit "meter")
+     "HTMLMeterElement — currently 0 of 62.  value/min/max/low/high/optimum are
+DOUBLE reflections, not string ones: each parses its content attribute as a
+floating-point number and falls back to a default when the attribute is absent
+or unparseable (value 0, min 0, max 1; low/high/optimum default to min/max/
+midpoint).  Then the spec CLAMPS them against each other in a fixed order —
+read the failing assertion messages, they walk you through it.  Setting the IDL
+attribute writes the number back to the content attribute.  A leading '+' is
+valid in the HTML number grammar.  A new src/script/forms-meter.lisp registered
+with register-element-proto-extension is the natural home; add it to weft.asd.")
+    ((string= unit "progress")
+     "HTMLProgressElement — currently 0 of 16.  value/max are double reflections
+with clamping (max defaults to 1 and must be > 0; value clamps to [0,max]),
+position is -1 for an indeterminate progress (no value attribute) and
+value/max otherwise, and labels comes from the shared labels machinery.  A new
+src/script/forms-progress.lisp registered with register-element-proto-extension
+is the natural home; add it to weft.asd.")
+    ((string= unit "option")
+     "HTMLOptionElement — 39 of 108.  The big one is option-text-spaces.html
+(6/50): .text is the element's rendered-ish text with ASCII whitespace stripped
+and collapsed, skipping <script>/<style> descendants — the whitespace rules are
+the whole test.  Also: value falls back to text when there is no value
+attribute, index within the owning select's list of options, selected vs the
+selected content attribute (defaultSelected), form, label falling back to text,
+and the Option(text, value, defaultSelected, selected) constructor.  Much of
+this is already in src/script/forms-select.lisp — extend it there.")
+    ((string= unit "fieldset")
+     "HTMLFieldSetElement — 3 of 22.  elements (an HTMLFormControlsCollection of
+the listed form controls in the fieldset), type (\"fieldset\"), name, form,
+disabled — and the DISABLED FIELDSET rule that most of the tests are about: a
+disabled <fieldset> disables all its descendant form controls EXCEPT those in
+its first <legend> child.  That rule also drives willValidate/checkValidity,
+which is why they are currently 0.  A new src/script/forms-fieldset.lisp
+registered with register-element-proto-extension is the natural home; add it to
+weft.asd.")
     (t "")))
 
 (defun task-text (job)
@@ -439,7 +488,7 @@ guess which of the files to read.
                             jobs))
            (results (mapcar #'sb-thread:join-thread threads)))
       (note "~&=== WAVE COMPLETE — merge ===")
-      (dolist (unit *units*)
+      (dolist (unit (wave-units))
         (note "~a:" unit)
         (merge-best results unit))
       (note "~&Worktrees left in ~a for inspection; `git -C ~a worktree prune' after removing."

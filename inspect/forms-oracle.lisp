@@ -40,7 +40,18 @@
 
 (defparameter *textarea-dir* "html/semantics/forms/the-textarea-element/")
 
-;;; unit -> list of test-file basenames under *input-dir*.
+;;; unit -> the directory its files live in; anything unlisted is *input-dir*.
+;;; Added when SWEEP showed the curated corpus (37 files) was the binding
+;;; constraint rather than the engine — six of eight units were at 100%.
+(defparameter *unit-dirs*
+  '(("select"   . "html/semantics/forms/the-select-element/")
+    ("textarea" . "html/semantics/forms/the-textarea-element/")
+    ("meter"    . "html/semantics/forms/the-meter-element/")
+    ("progress" . "html/semantics/forms/the-progress-element/")
+    ("option"   . "html/semantics/forms/the-option-element/")
+    ("fieldset" . "html/semantics/forms/the-fieldset-element/")))
+
+;;; unit -> list of test-file basenames under the unit's directory.
 (defparameter *units*
   '(("valueasnumber" . ("input-valueasnumber.html" "input-valueasnumber-stepping.html"
                         "input-valueasnumber-typeerror.html" "input-valueasnumber-invalidstateerr.html"))
@@ -67,7 +78,23 @@
                         "textarea-type.html" "textarea-maxlength.html" "textarea-minlength.html"
                         "wrap-reflect-1a.html" "wrap-reflect-1b.html"
                         "wrap-enumerated-ascii-case-insensitive.html"
-                        "textarea-setcustomvalidity.html" "change-to-empty-value.html"))))
+                        "textarea-setcustomvalidity.html" "change-to-empty-value.html"))
+    ;; ---- units opened up by the corpus sweep.  No *-manual.html (WPT's own
+    ;; marker for "needs a human": they load testharness.js, register nothing,
+    ;; and would pin at a denominator of 1 forever) and no *.tentative.html
+    ;; (unstandardised proposals).
+    ("meter"         . ("meter.html" "meter-leading-plus-sign.html"))
+    ("progress"      . ("progress.html" "progress-2.html" "progress-max-setting.html"))
+    ("option"        . ("option-text-spaces.html" "option-text-recurse.html"
+                        "option-label.html" "option-value.html"
+                        "option-element-constructor.html" "option-index.html"
+                        "option-selected.html" "option-form.html"
+                        "option-text-backslash.html" "option-text-label.html"
+                        "option-text-setter.html"))
+    ("fieldset"      . ("HTMLFieldSetElement.html" "disabled-001.html" "disabled-003.html"
+                        "fieldset-checkvalidity.html" "fieldset-willvalidate.html"
+                        "fieldset-setcustomvalidity.html" "fieldset-validationmessage.html"
+                        "fieldset-validity.html" "fieldset-intrinsic-size.html"))))
 
 (defun read-file-string (path)
   (with-open-file (in path :external-format :utf-8 :if-does-not-exist nil)
@@ -305,9 +332,7 @@
    push the tally and the sentinel lines out of the agent's tool-result window.")
 
 (defun unit-dir (unit)
-  (cond ((string= unit "select") *select-dir*)
-        ((string= unit "textarea") *textarea-dir*)
-        (t *input-dir*)))
+  (or (cdr (assoc unit *unit-dirs* :test #'string=)) *input-dir*))
 
 (defun score-unit (unit expected &key verbose)
   "Run UNIT's files against the loaded engine.

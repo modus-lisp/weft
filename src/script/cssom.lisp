@@ -64,6 +64,8 @@
 ;;; re-derives the computed serialization from the element's SPECIFIED value
 ;;; string.  Read-only: it never touches the cascade or paint (pixel-neutral).
 
+(defvar *nan-constant* (sb-kernel:make-double-float #x7FF80000 0)
+  "NaN double-float, computed at load time.")
 (defun %css-nan-p (x) (and (floatp x) (sb-ext:float-nan-p x)))
 (defun %nan0 (x) (if (%css-nan-p x) 0d0 (float x 1d0)))
 (defun %clampf (x lo hi) (max lo (min hi (%nan0 x))))
@@ -113,8 +115,7 @@
            (let ((start i))
              (loop while (and (< i n) (alpha-char-p (char s i))) do (incf i))
              (let ((id (string-downcase (subseq s start i))))
-               (push (cond ((string= id "nan") (- sb-ext:double-float-positive-infinity
-                                                   sb-ext:double-float-positive-infinity))
+               (push (cond ((string= id "nan") *nan-constant*)
                            ((string= id "infinity") sb-ext:double-float-positive-infinity)
                            ((string= id "pi") pi)
                            ((string= id "e") (exp 1d0))

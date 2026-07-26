@@ -104,6 +104,8 @@
                                (:file "forms-validity") (:file "forms-labels")
                                ;; Per-element IDL feature files (<select>/<textarea>/<button>).
                                (:file "forms-select") (:file "forms-textarea") (:file "forms-button")
+                               (:file "forms-meter") (:file "forms-progress")
+                               (:file "forms-fieldset")
                                (:file "bridge") (:file "interact")))))))
 
 (defsystem "weft/test"

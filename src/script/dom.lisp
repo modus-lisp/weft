@@ -2039,6 +2039,7 @@ the context node when it is an element, else NIL (a document/fragment root makes
                                  "week" "datetime-local") :test #'equal)
                      v "text")))
               ((string= tag "textarea") "textarea")   ; a <textarea>'s type is always "textarea"
+              ((string= tag "fieldset") "fieldset")
               (t (or raw ""))))
       (v) (progn (set-attr (n this) "type" (jstr v)) (setf (context-dirty ctx) t)))
     ;; value: <input> and <textarea> hold the current value in CONTEXT-INPUT-VALUES
@@ -2181,6 +2182,14 @@ the context node when it is an element, else NIL (a document/fragment root makes
         (insert-adjacent ctx element where text)
         (setf (context-dirty ctx) t)
         js:*undefined*))
+    ;; focus() is a no-op: weft has no focus model, and the callers in this corpus
+    ;; only need it not to throw.  Deliberately NOT paired with a
+    ;; getBoundingClientRect stub — a rect is a VALUE, and a fabricated one is
+    ;; worse than a missing method because no caller can tell it is a guess.
+    ;; When this arrives it must come from the layout tree.
+    (defmethod* ctx ep "focus" 0 (this a)
+      (declare (ignore this a))
+      js:*undefined*)
     ;; Disjoint form-control feature files install their IDL surface here.
     ;; NOTE: run-element-proto-extensions is called in bridge.lisp:make-context
     ;; AFTER install-child-node-methods, so extensions don't get overwritten.

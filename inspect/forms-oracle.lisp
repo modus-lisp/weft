@@ -158,9 +158,15 @@
 ;;; Monotonic, so a file that legitimately gets FURTHER (registering more) just
 ;;; raises its own bar.
 
+;;; ORACLE_EXPECTED moves this bookkeeping OUT of the tree under test.  A swarm
+;;; worker now edits any file it likes, and the harness reads its work as a
+;;; whole-tree `git diff` — so anything the oracle itself writes into that tree
+;;; shows up as part of the worker's patch.  Keeping it outside is cheaper than
+;;; excluding it everywhere downstream.
 (defparameter *expected-file*
-  (merge-pathnames "forms-oracle-expected.sexp"
-                   (or *load-truename* *default-pathname-defaults*)))
+  (or (uiop:getenv "ORACLE_EXPECTED")
+      (merge-pathnames "forms-oracle-expected.sexp"
+                       (or *load-truename* *default-pathname-defaults*))))
 
 (defun load-expected ()
   (handler-case
@@ -178,15 +184,23 @@
     (error () nil)))
 
 ;;; ---- keep-best ratchet ----------------------------------------------------
-;;; A worker that runs out of budget mid-repair ends on a file that may not even
-;;; compile, so the whole run scores zero however good its best moment was.  If
-;;; ORACLE_KEEP names the file the unit owns, every improvement is snapshotted
-;;; beside it; the harness can restore that snapshot when the run ends worse.
+;;; A worker that runs out of budget mid-repair ends on a tree that may not even
+;;; compile, so the whole run scores zero however good its best moment was.  The
+;;; oracle therefore snapshots on every improvement, and the harness restores
+;;; that snapshot when the run ends worse than its own best.
+;;;
+;;; Two ways to say what a snapshot IS.  ORACLE_KEEP names a single file and is
+;;; copied aside — right when a worker owns exactly one file.  ORACLE_KEEP_CMD
+;;; is a shell command the harness supplies (in practice `git diff` over the
+;;; whole worktree), which is what lets a worker edit ANY file it needs: the
+;;; oracle no longer has to know which files those were.
 
 (defun keep-path () (uiop:getenv "ORACLE_KEEP"))
+(defun keep-cmd  () (uiop:getenv "ORACLE_KEEP_CMD"))
 
 (defun best-score-path (unit)
-  (format nil "~a.best-~a.score" (keep-path) unit))
+  (or (uiop:getenv "ORACLE_KEEP_SCORE")
+      (format nil "~a.best-~a.score" (keep-path) unit)))
 
 ;;; ---- sentinel units -------------------------------------------------------
 ;;; Every unit installs its behaviour onto ONE shared element prototype (see
@@ -198,8 +212,9 @@
 ;;; compares against a pinned best-ever, and the number that ratchets is the SUM.
 
 (defparameter *bests-file*
-  (merge-pathnames "forms-oracle-bests.sexp"
-                   (or *load-truename* *default-pathname-defaults*)))
+  (or (uiop:getenv "ORACLE_BESTS")
+      (merge-pathnames "forms-oracle-bests.sexp"
+                       (or *load-truename* *default-pathname-defaults*))))
 
 (defun load-bests ()
   (handler-case
@@ -232,21 +247,27 @@
         (and s (read s nil nil)))
     (error () nil)))
 
+(defun write-best-score (unit passed)
+  (with-open-file (s (best-score-path unit) :direction :output
+                                            :if-exists :supersede
+                                            :if-does-not-exist :create)
+    (prin1 passed s)))
+
 (defun maybe-keep-best (unit passed)
-  "Snapshot the owned file whenever PASSED beats the best seen. Returns a note.
+  "Snapshot the worker's work whenever PASSED beats the best seen. Returns a note.
    PASSED is the TOTAL across all scored units, not the target unit's own tally —
-   a file that wins locally by breaking a sibling must not be what we keep."
-  (let ((keep (keep-path)))
-    (when (and keep (probe-file keep))
+   work that wins locally by breaking a sibling must not be what we keep."
+  (let ((cmd (keep-cmd)) (keep (keep-path)))
+    (when (or cmd (and keep (probe-file keep)))
       (let ((best (read-best unit)))
         (when (or (null best) (> passed best))
           (handler-case
               (progn
-                (uiop:copy-file keep (format nil "~a.best-~a" keep unit))
-                (with-open-file (s (best-score-path unit) :direction :output
-                                                          :if-exists :supersede
-                                                          :if-does-not-exist :create)
-                  (prin1 passed s))
+                (if cmd
+                    (uiop:run-program cmd :ignore-error-status t
+                                          :output nil :error-output nil)
+                    (uiop:copy-file keep (format nil "~a.best-~a" keep unit)))
+                (write-best-score unit passed)
                 (format nil "new best (~d passed) snapshotted" passed))
             (error () nil)))))))
 

@@ -534,9 +534,21 @@ guess which of the files to read.
   (dom:has-attribute node \"n\"); current value hash (context-input-values ctx);
   throw via (throw-dom ctx \"IndexSizeError\" 1 \"m\") or
   (js:js-throw (js:make-native-error \"TypeError\" \"m\")).
+- Per-node mutable state (a selection offset, a custom-error string, a dirty
+  flag) goes in a hash table in a LET closure inside your own install-* function
+  — see the `fieldset-custom-errors' let in src/script/forms-fieldset.lisp — or
+  in a DEFVAR at the top of your own file.  Your file loads after core.lisp and
+  dom.lisp, so neither of those needs touching to give you somewhere to put it.
+  A whole round has been spent deliberating where such a variable could live.
 - PURE Common Lisp, NO regex/external libs.  Balanced parens; the oracle
   compiles first — fix any READ/compile error before logic.  Loop
   edit -> oracle -> fix, and keep going while TOTAL rises.
+- A balanced file is not a correct one.  One misplaced closing paren moves the
+  else-branch of an IF inside the then-branch, or a form out of a LET; it
+  compiles, it runs, and it inverts the behaviour.  Wave 8 shipped a
+  setRangeText whose InvalidStateError fired for every control that DOES
+  support it and never for the ones that do not, worth 268 subtests, from one
+  paren.  When a method behaves backwards, check the shape before the logic.
 - NEVER hardcode the value a test asserts.  Returning the numbers a specific
   WPT file expects — a fixed rect from getBoundingClientRect, a canned string
   from a getter — scores points and is worthless: it is a fabricated value that

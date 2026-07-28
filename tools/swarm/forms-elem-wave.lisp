@@ -710,6 +710,21 @@ guess which of the files to read.
           ;; Still partial whenever a round was killed by `timeout': say so.
           (format nil "~a¢~:[ (~d/~d rounds)~;~]" out (= lines rounds) lines rounds)))))
 
+(defun calls-made (job)
+  "Successful model calls so far, summed from operandi's usage line.  This is the
+   difference between `the model tried and got nowhere' and `the model was never
+   asked', which are otherwise indistinguishable in this harness: both leave the
+   TOTAL untouched, both burn the dry counter, both merge nothing.
+
+   Wave 10 ran three arms to completion against an OpenRouter balance of exactly
+   -$0.0056.  Every request came back 402, every arm reported `round 1 TOTAL 2755
+   -> 2755 (dry=1)' and then `made no change; nothing to merge', and the wave
+   summary read as a clean negative result on three units.  It was a billing
+   problem.  Nothing below the log's HTTP lines said so."
+  (let ((out (sh "grep -aoE '[0-9]+ calls' ~a 2>/dev/null | ~
+                  awk '{s+=$1} END{printf \"%d\", s}'" (jp job :log))))
+    (or (ignore-errors (parse-integer out :junk-allowed t)) 0)))
+
 (defun run-worker (job)
   (let* ((deadline (+ (get-universal-time) *worker-budget*))
          (start (get-universal-time))
@@ -723,7 +738,21 @@ guess which of the files to read.
             (return))
           (when (>= dry *dry-rounds*) (return))
           (incf round)
-          (sh "~a" (agent-command job total))
+          (let ((calls-before (calls-made job)))
+            (sh "~a" (agent-command job total))
+            ;; A round that reached the model zero times is not a dry round, and
+            ;; letting it burn the dry counter turns an outage into a finding.
+            (when (= (calls-made job) calls-before)
+              (note "~a: ABORT in round ~d — the round made 0 model calls. ~
+                     This is an outage, NOT a dry round; the TOTAL below is the ~
+                     baseline, not a result.  Check the API balance and token; ~
+                     the HTTP status is in ~a."
+                    (job-id job) round (jp job :log))
+              (return-from run-worker
+                (list :job job :rounds (1- round)
+                      :seconds (- (get-universal-time) start)
+                      :total (or (best-score job) 0) :cost "cost ?"
+                      :error "0 model calls — see log"))))
           (let ((after (score job :keep t))
                 (best (best-score job)))
             ;; The oracle snapshots on every improvement, so a round that ended
@@ -758,12 +787,22 @@ guess which of the files to read.
    TOTAL rises and scripting-dom stays green, revert otherwise."
   (let* ((arms (remove-if-not (lambda (r) (string= unit (job-unit (getf r :job))))
                               results))
-         (winner (first (sort (copy-list arms) #'> :key (lambda (r) (getf r :total))))))
+         ;; Errored arms sort last regardless of TOTAL: theirs is the baseline
+         ;; they were handed, so on a tie they would otherwise beat a real arm.
+         (winner (first (sort (copy-list arms) #'>
+                              :key (lambda (r) (if (getf r :error) -1 (getf r :total)))))))
     (dolist (r arms)
-      (note "  ~12a TOTAL ~a  [~a, ~ds, ~d round~:p, ~a]"
+      (note "  ~12a TOTAL ~a  [~a, ~ds, ~d round~:p, ~a]~@[  ERRORED: ~a~]"
             (job-id (getf r :job)) (getf r :total)
             (car (last (uiop:split-string (job-model (getf r :job)) :separator "/")))
-            (getf r :seconds) (getf r :rounds) (getf r :cost)))
+            (getf r :seconds) (getf r :rounds) (getf r :cost) (getf r :error)))
+    ;; An errored arm has no result to merge and, more importantly, no result to
+    ;; REPORT: a unit whose every arm errored was not attempted, and saying
+    ;; "nothing to merge" about it invites reading the flat TOTAL as evidence.
+    (when (every (lambda (r) (getf r :error)) arms)
+      (note "  -> ~a NOT ATTEMPTED — every arm errored.  The TOTAL is the ~
+             baseline; this unit has no result either way." unit)
+      (return-from merge-best nil))
     (unless winner (return-from merge-best nil))
     (let* ((job (getf winner :job))
            (patch (jp job :patch))

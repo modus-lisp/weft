@@ -299,7 +299,23 @@ sends you looking in the wrong place."
     ("valuemode"
      "the four input VALUE MODES (value/default/default-on/filename) and the dirty value flag"
      "src/script/forms-valuemode.lisp"
-     "input")))
+     "input")
+    ;; ---- wave 10 -----------------------------------------------------------
+    ;; Three DISJOINT units this time, each with its own file — the opposite of
+    ;; wave 9's deliberate collision.  The residue is small and fragmented, so
+    ;; there is nothing to gain from racing two arms onto one subsystem.
+    ("inputfiles"
+     "HTMLInputElement.files — a FileList for type=file, null for every other type"
+     "src/script/forms-files.lisp"
+     "input")
+    ("inputtypes"
+     "the remaining per-type input behaviour — color, range, datetime-local and month"
+     "src/script/forms-valuemode.lisp"
+     "input")
+    ("formaction"
+     "formAction/formMethod/formEnctype/formTarget URL reflection, and the shared disabled-state rules"
+     "src/script/forms-formaction.lisp"
+     "input" "button")))
 
 (defun unit-headline (unit)
   (let ((e (assoc unit *unit-subjects* :test #'string=)))

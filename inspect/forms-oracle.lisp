@@ -64,7 +64,9 @@
     ("rangestep"      . "html/semantics/forms/constraints/")
     ("fieldselection" . "html/semantics/forms/textfieldselection/")
     ("selectevent"    . "html/semantics/forms/textfieldselection/")
-    ("formelement"    . "html/semantics/forms/the-form-element/")))
+    ("formelement"    . "html/semantics/forms/the-form-element/")
+    ;; ---- wave 10 -----------------------------------------------------------
+    ("formaction"     . "html/semantics/forms/attributes-common-to-form-controls/")))
 
 ;;; unit -> list of test-file basenames under the unit's directory.
 (defparameter *units*
@@ -202,6 +204,33 @@
     ;; dirty value flag, which is what CLONE.HTML actually measures: a cloned
     ;; control keeps its DEFAULT value, not its current one.
     ("valuemode"      . ("valueMode.html" "clone.html"))
+    ;; ---- wave 10 -----------------------------------------------------------
+    ;; The corpus-wide sweep (inspect/forms-sweep-all.lisp) says the forms tree
+    ;; is nearly EXHAUSTED for swarm-scale work: ~640 subtests unreached across
+    ;; all 20 subtrees, of which ~440 are walls (real form submission and
+    ;; navigation, test_driver input events, cross-origin iframes, .tentative
+    ;; specs) and ~60 more are hard residue that arms already had in the
+    ;; aperture and could not crack.  What is left that is BOTH reachable and
+    ;; unclaimed is these three units, ~77 subtests.  That is the honest ceiling
+    ;; — a tenth the size of wave 9's block, and the reason the next front is
+    ;; probably not forms.
+    ;;
+    ;; `input.files': null for every type except file, a FileList for file.
+    ;; 24 subtests, no test_driver, pure IDL — the cleanest unit in the residue.
+    ("inputfiles"     . ("files.html"))
+    ;; Per-type residue in the same family as forms-valuemode/forms-datetime:
+    ;; each type's own value parsing, stepping and reflection.  Four small files
+    ;; rather than one big one, so root causes do not multiply out the way
+    ;; type-change-state did.
+    ("inputtypes"     . ("color.html" "range.html"
+                         "datetime-local.html" "month.html"))
+    ;; formAction/formMethod/formEnctype/formTarget URL reflection, plus the
+    ;; disabled-state rules shared across control types.  Reflection is not
+    ;; submission — these read the resolved IDL attribute, they do not navigate,
+    ;; which is why they are reachable when form-submission-0/ (137 subtests) is
+    ;; not.
+    ("formaction"     . ("formAction_document_address.html" "formaction.html"
+                         "disabled-elements-01.html"))
     ("formelement"    . ("form-autocomplete.html" "form-requestsubmit.html"
                          "form-nameditem.html" "form-indexed-element.html"
                          "form-indexed-element-shadow.html"

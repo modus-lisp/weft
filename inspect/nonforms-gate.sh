@@ -34,6 +34,10 @@ cd "$REPO" || exit 1
 #  - the two scripting suites need :weft/script, not :weft.  Under
 #    --disable-debugger the wrong system does not say "wrong system", it dumps a
 #    backtrace and quits, which reads like a broken test file.
+# The muffle-warning below is deliberate (a clean transcript), but it means this
+# gate can NOT tell you the tree compiles — it hides exactly the duplicate-defun
+# WARNING that ASDF treats as fatal.  cold-build.sh is the gate for that; run
+# both.
 run() {
   local label="$1" system="$2" file="$3" form="$4"
   printf '\n=== %s ===\n' "$label"

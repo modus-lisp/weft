@@ -917,9 +917,6 @@ the context node when it is an element, else NIL (a document/fragment root makes
   local                                 ; localName
   (owner nil))                          ; owning element dnode, or NIL when detached
 
-(defun ns-arg (v) "JS null/undefined/empty-string namespace -> NIL."
-  (if (or (nullish v) (and (stringp v) (string= v ""))) nil (jstr v)))
-
 (defun attr-rec-of (ctx cell &optional owner)
   "The ATTR-REC for attribute CELL, lazily synthesizing a null-namespace record
    (localName = qualified name) for a plain attribute first reflected as an Attr."

@@ -113,6 +113,8 @@
                                ;; Before forms-constraints: the constraint code
                                ;; calls this file's sanitizer directly.
                                (:file "forms-valuemode")
+                               ;; Wave 10: disjoint per-unit files.
+                               (:file "forms-files") (:file "forms-formaction")
                                (:file "forms-constraints") (:file "forms-form")
                                (:file "bridge") (:file "interact")))))))
 

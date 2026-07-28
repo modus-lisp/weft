@@ -57,7 +57,21 @@
 ;;; wave 7.  It did — and solved a block nobody had assigned it.  Both results
 ;;; held: arms follow the score, and the tier is not the lever (see *MODELS*).
 ;;; Choose the next roster from SWEEP, not from the last wave's leftovers.
-(defparameter *units* '()
+;;;
+;;; Wave 10 is the LAST forms wave worth running, and it is a small one.  The
+;;; corpus-wide sweep (inspect/forms-sweep-all.lisp, all 20 forms subtrees) found
+;;; ~640 subtests the oracle does not pass, and then found that ~440 of them are
+;;; walls we are not trying to climb — real submission + navigation, test_driver
+;;; user gestures, cross-origin iframes, .tentative files — and ~60 more are hard
+;;; residue already inside the aperture that four waves have not moved.  What is
+;;; left that is BOTH reachable and unclaimed is these three units, about 77
+;;; subtests.  Wave 9's block was 436.  Aperture-widening has won three waves in
+;;; a row; this is the wave where it runs out, and that is the signal to move the
+;;; front off forms rather than to run wave 11.
+(defparameter *units*
+  '("inputfiles"                        ; input.files / FileList  — 24 unreached
+    "inputtypes"                        ; value-mode tail          — 38 unreached
+    "formaction")                       ; form* reflection         — 15 unreached
   "Units to work this wave.  An entry may also be (unit variant . tier) for an
 extra arm on a unit that deserves one.  Run FLASH unless there is a reason not
 to — see *MODELS*.")

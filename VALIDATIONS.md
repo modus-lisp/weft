@@ -93,10 +93,21 @@ diff any page against a real browser now exists.
 
 ## Not validated / known limits — stated plainly
 
-- **No JavaScript.** No JS engine exists (that is P4). Pages that render content
-  client-side (SPAs, infinite scroll, most modern app UIs) render **blank**.
-- **Acid3 cannot run** — it is ~99% JavaScript (183 `createElement`, 14
-  `<script>` blocks). weft renders only its static pre-script state. See the Acid
+- **JavaScript exists now, but "runs script" is not "runs the web."** `weft/script`
+  binds **shuttle** (our clean-room Lisp-native JS engine, **87.99%** of test262)
+  to the live DOM: inline `<script>` reads and mutates the tree and the change is
+  reflected on relayout, with events, timers, mutation observers, CSSOM, canvas,
+  SVG, ranges. What is *not* validated is the thing the old claim was really
+  about — **no SPA has been rendered end-to-end and diffed against a browser.**
+  The Web IDL surface is broad and thinly covered outside the areas with a WPT
+  gate (forms IDL is at 2,692 subtests; everything else is unmeasured), and
+  network-driven rendering (fetch → parse → script → relayout as a loop) is not
+  exercised. Treat "weft runs JavaScript" as true of the *engine* and unproven
+  of the *page*.
+- **Acid3 has not been re-measured since shuttle landed.** It is ~99% JavaScript
+  (183 `createElement`, 14 `<script>` blocks), so it was correctly listed as
+  unrunnable when there was no engine. That reason has expired; the measurement
+  simply has not been redone. Until it is, no claim either way. See the Acid
   gate below.
 - **Acid2 renders at 100% pixel-match vs a real browser** (up from ~0%). Driven
   to convergence by an objective oracle (the per-element + colour-class diffs
@@ -144,8 +155,10 @@ real, gnarly pages ever *error*. Conformance is measured separately and honestly
   mismatched). The grind from ~0% → 100% is recorded commit-by-commit (each subject
   carries its `face-ink`/`face-geom` delta). Re-run: render via
   `(weft.acid.test:run)`, then the two scripts.
-- **Acid3** — still ~99% JavaScript; weft renders only its static pre-script
-  state until the JS engine (P4) lands. Not runnable yet.
+- **Acid3** — ~99% JavaScript. It was unrunnable while there was no engine; that
+  is no longer the blocker, but the test has **not been re-run since shuttle was
+  wired in**, so there is no score to report and we are not going to guess one.
+  Running it is cheap and is on the roadmap.
 
 **These are now permanent CI gates.** `inspect/acid2-conformance.lisp`
 (`weft.acid2.conformance:run`, wired into `test-op`) re-runs both checks in pure

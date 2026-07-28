@@ -16,41 +16,107 @@ dependency order and keep every component pinned to its conformance oracle.
 > engine as the oracle. Stop where the oracle stops being honest (pixels), and
 > lean on reftests there.
 
-## Phases (dependency order, each with its oracle)
+## Where we actually are
 
-### P0 — Foundation  *(in progress)*
-- [x] **URL** — WHATWG URL parser. Oracle: WPT `urltestdata.json`. *(97.2%)*
+P0–P4 are all built and oracle-gated. The frontier is no longer "does this phase
+exist" — it is **conformance depth inside phases that already work**, and the
+active work is the Web IDL surface at the end of P4.
+
+`VALIDATIONS.md` is the authoritative evidence document; this file is the map.
+Where the two disagree, VALIDATIONS.md and the gates themselves are right.
+
+### P0 — Foundation  *(built; residue is data tables)*
+- [x] **URL** — WHATWG URL parser. Oracle: WPT `urltestdata.json`.
+      **868/888 (97.7%)**
 - [ ] URL: full UTS#46 IDNA mapping tables; opaque-path space edge cases.
-- [ ] **Encoding** — UTF-8 + legacy charset decoders. Oracle: WPT `encoding/`.
-- [ ] **Fetch glue** — wire URL + the existing transport (TLS/HTTP on the other
-      host) + the `br`/`zstd`/`gzip` content-decoders into a resource loader.
+      *(the whole of the remaining 2.3%)*
+- [x] **Encoding** — 36 charset decoders. Oracle: the reference codecs
+      themselves. **37,923/37,923**
+- [x] **Fetch glue** — URL + transport + `br`/`zstd`/`gzip` content-decoders
+      wired into a resource loader; fetches live pages end-to-end.
+- [ ] Fetch: byte-correctness per page is not asserted, only "decodes + doesn't
+      crash".
 
-### P1 — DOM
-- [ ] **HTML** — WHATWG tokenizer + tree construction → DOM. Oracle:
-      `html5lib-tests` (thousands of broken-markup cases — HTML5 *is* the
-      error-recovery spec, so conformant == realistic).
-- [ ] DOM core (nodes, traversal, mutation) + ranges.
+### P1 — DOM  *(built)*
+- [x] **HTML tokenizer** — Oracle: html5lib-tests. **6,677/6,677 (100%)**
+- [x] **Tree construction → DOM** — Oracle: html5lib-tests `.dat`.
+      **338/342 (98.8%)** non-fragment
+- [ ] Tree construction: the deepest adoption-agency × table foster-parenting
+      cases (4 failing); 21 fragment-parsing cases skipped.
+- [x] DOM core (nodes, traversal, mutation, ranges). **116/116** query,
+      **540/540** traversal/attributes.
 
-### P2 — CSSOM
-- [ ] CSS tokenizer + parser (Syntax spec). Oracle: WPT `css/`.
-- [ ] Selectors + specificity; the cascade, inheritance, computed values.
+### P2 — CSSOM  *(built)*
+- [x] CSS tokenizer + parser; **38 value-type parsers**, spec-precise Python
+      references as oracle. **369/369**
+- [x] Selectors + specificity, cascade, inheritance, computed values.
+      Oracle: soupsieve. **35/35**
+- [ ] CSS grid; `inline-block` baseline alignment.
 
-### P3 — Layout & paint  *(oracle weakens to reftests here)*
-- [ ] Box tree; block + inline layout; then flexbox, grid, floats, positioning.
-- [ ] Software rasterizer → PNG. Oracle: WPT reference tests + render-tree dumps.
-- [ ] *First "it renders a real page" milestone.*
+### P3 — Layout & paint  *(built; the oracle is the weak point, not the code)*
+- [x] Box tree; block + inline layout; floats, positioning, tables, flex.
+- [x] Software rasterizer → PNG (validated loadable by Pillow).
+- [x] *First "it renders a real page" milestone* — Hacker News renders
+      faithfully; **CI-gated** at box error ≤ 5500 vs Chromium (currently 4487).
+- [x] **Acid2 at 100% pixel-match** vs the reference — 0/21,160 face pixels
+      mismatched, 0% stray red. Two independent oracles (colour-class + per-
+      element box diff vs Chromium), both permanent CI gates.
+- [ ] **General layout on arbitrary pages is still author-eyeballed.** Acid2 and
+      HN are two pages. The reftest tooling generalizes to any page; pointing it
+      at a corpus is the open work.
+- [ ] Text: fake-bold (no bold face vendored); per-line mixed-font-size baseline
+      sharing.
 
-### P4 — JavaScript
-- [ ] Lexer → parser (ESTree-ish) → bytecode → interpreter + GC. Oracle: test262.
-- [ ] Web IDL bindings (DOM/Events/Fetch APIs) + the event loop.
+### P4 — JavaScript  *(engine built and wired; IDL surface is the frontier)*
+- [x] **JS engine** — [shuttle](https://github.com/modus-lisp/shuttle), a
+      clean-room Lisp-native engine (no FFI). Oracle: test262.
+      **41,404/47,058 (87.99%)** — including full Temporal, Intl, RegExp `\p{}`,
+      BigInt, Proxy, classes/generators/async.
+- [x] **The scripting seam** — `weft/script`: inline `<script>` reads and mutates
+      the live DOM, reflected on relayout. Events, timers, mutation observers,
+      CSSOM, canvas, SVG, traversal, ranges, XML.
+- [ ] **Web IDL breadth — this is where the work is.** HTML forms IDL is the
+      current front (see below). Everything past it is unclaimed surface.
+- [ ] test262 residue: intl402/Temporal (real calendars + IANA tz), the 112
+      `$262.agent` Atomics tests (real threads), exotic-locale output.
+- [ ] Acid3 is no longer blocked on "no engine" — it has simply not been
+      re-measured since shuttle landed. Cheap, and worth doing.
 
 ### P5 — The long tail
-- [ ] Text shaping / fonts; image decoders (PNG/JPEG/WebP — more codecs).
+- [x] Text shaping / fonts via **scribe** (real outlines, shaping, AA
+      compositing; own FreeType/HarfBuzz oracle).
+- [x] Image decoders: PNG (incl. tRNS/Adam7), JPEG, WebP.
 - [ ] The breadth of the Web Platform API surface.
+- [ ] External images and web-fonts are not fetched during render.
+
+## The current front: HTML forms IDL
+
+Driven by a DeepSeek swarm against WPT `html/semantics/forms`, with
+`inspect/forms-oracle.lisp` as the ratchet.
+
+**TOTAL 2,692 subtests across 25 units.** Wave history: 447 → 705 → 1,262 →
+1,925 → 2,098 → 2,692.
+
+The oracle scores a named set of files (its *aperture*) and scores every other
+unit as a **sentinel** against a pinned best, ratcheting on the SUM — a gain in
+one unit paid for out of another is not a gain. `(weft.forms-oracle:sweep DIR)`
+and `inspect/forms-sweep-all.lisp` rank the corpus by unreached subtests;
+**the next wave's roster comes from that measurement, not from the last wave's
+narrative** — which has been wrong three times running.
+
+`inspect/nonforms-gate.sh` runs the six suites the forms oracle cannot see. Any
+wave touching shared code must leave it unchanged.
+
+Known-unreachable residue, deliberately not chased: tests needing
+`test_driver`/WebDriver input, real form submission into an iframe, and
+reftests — these are *unscorable*, which is not the same as failing, and mixing
+them into a denominator aims arms at a wall.
 
 ## Notes
-- CL strengths land in P0–P2 and P4-parser (compiler-heavy, live-buildable,
-  CLOS for the node hierarchy, macros for IDL binding boilerplate). The known
-  soft spot is P3 rasterization performance — acceptable for correctness-first.
-- Each phase ships as its own ASDF system/module with an `inspect/` gate, like
-  the sibling projects.
+- CL strengths landed where predicted (P0–P2, P4 parser: compiler-heavy,
+  live-buildable, macros for IDL binding boilerplate). The predicted soft spot,
+  P3 rasterization performance, is real and accepted — correctness first.
+- Each phase ships as its own ASDF system/module with an `inspect/` gate.
+- **No swarm output is trusted on its word.** Every arm patch is re-verified in
+  the canonical tree (clean-cache compile + full gate) before it counts; several
+  "passing" swarm results were caught as false this way and rewritten by hand.

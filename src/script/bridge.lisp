@@ -6,24 +6,59 @@
 ;;; Realm + DOM binding construction
 ;;; ---------------------------------------------------------------------------
 (defun make-location (ctx)
-  "A Location object parsed from the document's base URL."
-  (let* ((realm (context-realm ctx)) (base (context-base ctx))
-         (u (and (plusp (length base)) (ignore-errors (weft.url:parse base))))
-         (loc (js:make-object :proto (js:eval-script realm "Object.prototype"))))
-    (macrolet ((field (k form) `(js:put loc ,k (or (and u ,form) ""))))
-      (field "href" (weft.url:href u))
-      (field "protocol" (weft.url:protocol u))
-      (field "host" (weft.url:host-str u))
-      (field "hostname" (weft.url:hostname u))
-      (field "port" (weft.url:port-str u))
-      (field "pathname" (weft.url:pathname-str u))
-      (field "search" (weft.url:search-str u))
-      (field "hash" (weft.url:hash-str u))
-      (field "origin" (weft.url:origin u)))
+  "A Location object parsed from the document's base URL, with live getters."
+  (let* ((realm (context-realm ctx))
+         (op (js:eval-script realm "Object.prototype"))
+         (loc (js:make-host-object realm
+                :proto op
+                :get (lambda (o key rcv) (declare (ignore rcv))
+                       (let* ((base (context-base ctx))
+                              (u (and (plusp (length base))
+                                      (ignore-errors (weft.url:parse base)))))
+                         (cond
+                           ((and (stringp key) (string= key "href"))
+                            (or (and u (weft.url:href u)) ""))
+                           ((and (stringp key) (string= key "protocol"))
+                            (or (and u (weft.url:protocol u)) ""))
+                           ((and (stringp key) (string= key "host"))
+                            (or (and u (weft.url:host-str u)) ""))
+                           ((and (stringp key) (string= key "hostname"))
+                            (or (and u (weft.url:hostname u)) ""))
+                           ((and (stringp key) (string= key "port"))
+                            (or (and u (weft.url:port-str u)) ""))
+                           ((and (stringp key) (string= key "pathname"))
+                            (or (and u (weft.url:pathname-str u)) ""))
+                           ((and (stringp key) (string= key "search"))
+                            (or (and u (weft.url:search-str u)) ""))
+                           ((and (stringp key) (string= key "hash"))
+                            (or (and u (weft.url:hash-str u)) ""))
+                           ((and (stringp key) (string= key "origin"))
+                            (or (and u (weft.url:origin u)) ""))
+                           ((and (stringp key) (string= key "toString"))
+                            (gethash "toString" loc-methods))
+                           (t (js:js-get op key o)))))
+                :has (lambda (o key)
+                       (let ((key (js:to-property-key key)))
+                         (or (and (stringp key)
+                                  (member key '("href" "protocol" "host" "hostname"
+                                                 "port" "pathname" "search" "hash"
+                                                 "origin" "toString" "reload" "replace"
+                                                 "assign") :test #'string=))
+                             (js:js-has op key o))))
+                :own-keys (lambda (o) (declare (ignore o))
+                            '("href" "protocol" "host" "hostname" "port"
+                              "pathname" "search" "hash" "origin"))))
+         (loc-methods (make-hash-table :test 'equal)))
     (dolist (m '("reload" "replace" "assign"))
-      (js:put loc m (js:native-function realm m (lambda (a b) (declare (ignore a b)) js:*undefined*) 0)))
-    (js:put loc "toString"
-            (js:native-function realm "toString" (lambda (this a) (declare (ignore a)) (js:js-get this "href")) 0))
+      (setf (gethash m loc-methods)
+            (js:native-function realm m (lambda (a b) (declare (ignore a b)) js:*undefined*) 0)))
+    (setf (gethash "toString" loc-methods)
+          (js:native-function realm "toString" (lambda (this a) (declare (ignore a))
+                                                (let* ((base (context-base ctx))
+                                                       (u (and (plusp (length base))
+                                                               (ignore-errors (weft.url:parse base)))))
+                                                  (or (and u (weft.url:href u)) "")))
+                        0))
     loc))
 
 ;;; High Resolution Time (W3C) + Performance Timeline (W3C).  performance.now()
@@ -142,7 +177,22 @@
       (js:put hist "length" 1.0)
       (js:put hist "state" js:*null*)
       (js:put hist "scrollRestoration" "auto")
-      (dolist (m '("pushState" "replaceState" "back" "forward" "go"))
+      ;; pushState: update the context base URL so formAction resolves correctly
+      (js:put hist "pushState"
+              (js:native-function realm "pushState"
+                (lambda (this args)
+                  (declare (ignore this))
+                  (let ((url (arg args 2)))
+                    (when (and url (stringp url) (plusp (length url)))
+                      (let ((resolved (resolve-url ctx url)))
+                        (when (and resolved (plusp (length resolved)))
+                          (setf (context-base ctx) resolved)))))
+                  js:*undefined*)
+                3))
+      (js:put hist "replaceState"
+              (js:native-function realm "replaceState"
+                (lambda (this args) (declare (ignore this args)) js:*undefined*) 3))
+      (dolist (m '("back" "forward" "go"))
         (js:put hist m (js:native-function realm m (lambda (this args) (declare (ignore this args)) js:*undefined*) 0)))
       (js:define-global realm "history" hist))
     (flet ((storage ()

@@ -39,16 +39,36 @@
   "Trim leading/trailing ASCII whitespace from S."
   (string-trim '(#\Space #\Tab #\Newline #\Return #\Page) s))
 
+(defun fdt-step-align-range (value step base)
+  "Align VALUE to the nearest STEP multiple from BASE.
+   Uses >= step/2 rounding (rounds up when remainder >= step/2)."
+  (let* ((diff (- value base))
+         (rem (mod diff step))
+         (half (/ step 2)))
+    (if (>= rem half)
+        (+ value (- step rem))
+        (- value rem))))
+
 (defun valuemode-range-default (node)
   "Range's DEFAULT VALUE: the minimum plus half the difference between the
    minimum and the maximum, or the minimum when the maximum is below it.
    min defaults to 0 and max to 100, so the bare case is \"50\" — but a range
    with min/max attributes has a different default, and hardcoding 50 there
-   silently invents a value the author never wrote."
+   silently invents a value the author never wrote.
+   The default is then aligned to the step (default 1) from the step base."
   (let* ((min (or (and node (fdt-parse-float (or (get-attr node "min") ""))) 0))
          (max (or (and node (fdt-parse-float (or (get-attr node "max") ""))) 100))
-         (default (if (< max min) min (+ min (/ (- max min) 2)))))
-    (fdt-number->value "range" default)))
+         (raw-default (if (< max min) min (+ min (/ (- max min) 2))))
+         (step-attr (and node (get-attr node "step")))
+         (step (if (and step-attr (fdt-parse-float step-attr))
+                   (fdt-parse-float step-attr)
+                   1.0d0))
+         (step-base (if (and node (get-attr node "min")
+                             (fdt-parse-float (get-attr node "min")))
+                        min 0.0d0))
+         (aligned (fdt-step-align-range raw-default step step-base))
+         (final (max (min aligned max) min)))
+    (fdt-number->value "range" final)))
 
 (defun valuemode-sanitize (type v &optional node)
   "HTML value sanitization algorithm.  Returns the sanitized string.
@@ -69,8 +89,26 @@
      (if (or (string= v "") (not (fdt-parse-float v))) "" v))
     ;; range: anything that is not a valid floating-point number becomes the
     ;; default value, which is derived from min/max (50 only by their defaults).
+    ;; Otherwise, clamp to min/max and align to step via the step-up algorithm.
     ((string= type "range")
-     (if (or (string= v "") (not (fdt-parse-float v))) (valuemode-range-default node) v))
+     (if (or (string= v "") (not (fdt-parse-float v)))
+         (valuemode-range-default node)
+         (let* ((val (fdt-parse-float v))
+                (min (or (and node (fdt-parse-float (or (get-attr node "min") ""))) 0))
+                (max (or (and node (fdt-parse-float (or (get-attr node "max") ""))) 100))
+                (step-attr (and node (get-attr node "step")))
+                (step (if (and step-attr (fdt-parse-float step-attr))
+                          (fdt-parse-float step-attr) 1.0d0))
+                (step-base (if (and node (get-attr node "min")
+                                    (fdt-parse-float (get-attr node "min")))
+                               min 0.0d0))
+                ;; Clamp to [min, max]
+                (clamped (max (min val max) min))
+                ;; Align to step
+                (aligned (fdt-step-align-range clamped step step-base)))
+           ;; Re-clamp aligned value to [min, max]
+           (let ((final (max (min aligned max) min)))
+             (fdt-number->value "range" final)))))
     ;; date: if empty or not a valid date → ""
     ((string= type "date")
      (if (or (string= v "") (not (fdt-parse-date v))) "" v))
@@ -84,14 +122,27 @@
     ((string= type "time")
      (if (or (string= v "") (not (fdt-parse-hms v))) "" v))
     ;; datetime-local: if empty or not valid → ""
+    ;; Also normalize separator: space → "T" before returning
     ((string= type "datetime-local")
-     (if (or (string= v "") (not (fdt-parse-datetime-local v))) "" v))
-    ;; color: valid lowercase simple color → lowercase; invalid → "#000000"
+     (if (or (string= v "") (not (fdt-parse-datetime-local v)))
+         ""
+         (let* ((tpos (or (position #\T v) (position #\Space v)))
+                (date-s (subseq v 0 tpos))
+                (time-s (subseq v (1+ tpos)))
+                (day (fdt-parse-date date-s))
+                (tod (fdt-parse-hms time-s)))
+           (if (and day tod)
+               (format nil "~aT~a" (fdt-fmt-date-ed day) (fdt-fmt-time-ms tod))
+               v))))
+    ;; color: use the CSS parser; valid → "#rrggbb", invalid → "#000000"
     ((string= type "color")
-     (if (and (= (length v) 7) (char= (char v 0) #\#)
-              (loop for i from 1 to 6 always (digit-char-p (char v i) 16)))
-         (string-downcase v)
-         "#000000"))
+     (let* ((c (css:parse-value "color" v))
+            (r (and (consp c) (not (eq c :invalid)) (first c)))
+            (g (and (consp c) (not (eq c :invalid)) (second c)))
+            (b (and (consp c) (not (eq c :invalid)) (third c))))
+       (if (and r g b)
+           (string-downcase (format nil "#~2,'0x~2,'0x~2,'0x" r g b))
+           "#000000")))
     (t v)))
 
 ;;; ---- re-sanitize the stored value when type changes -------------------------
@@ -139,7 +190,11 @@
            (if present v (or (get-attr node "value") "on"))))
         (t
          (multiple-value-bind (v present) (gethash node (context-input-values ctx))
-           (if present v (or (get-attr node "value") ""))))))
+           (if present v
+               (let ((raw (or (get-attr node "value") "")))
+                 (if (member type +valuemode-sanitized-types+ :test #'string=)
+                     (valuemode-sanitize type raw node)
+                     raw)))))))
     (v)
     ;; Setter — sanitize the value before storing
     (let* ((node (require-node ctx this))

@@ -109,7 +109,8 @@
           (* (fdt-iso-week-monday y w) 86400000))))))
 
 (defun fdt-parse-hms (s)
-  "\"HH:MM\" / \"HH:MM:SS\" / \"HH:MM:SS.fff\" -> ms of day, or NIL."
+  "\"HH:MM\" / \"HH:MM:SS\" / \"HH:MM:SS.fff\" -> ms of day, or NIL.
+   Fractional seconds must be 1-3 digits per spec; 4+ digits are invalid."
   (let ((n (length s)))
     (when (and (>= n 5) (char= (char s 2) #\:)
                (fdt-all-digits-p s 0 2) (fdt-all-digits-p s 3 5))
@@ -121,8 +122,9 @@
              (setf se (fdt-int s 6 8))
              (unless (<= 0 se 59) (return-from fdt-parse-hms nil))
              (cond ((= n 8))                                ; HH:MM:SS
-                   ((and (> n 9) (char= (char s 8) #\.) (fdt-all-digits-p s 9 n))
-                    (let ((frac (subseq s 9 (min n 12))))   ; up to ms precision
+                   ((and (> n 9) (char= (char s 8) #\.) (fdt-all-digits-p s 9 n)
+                         (<= (- n 9) 3))                    ; 1-3 fractional digits only
+                    (let ((frac (subseq s 9 n)))
                       (setf ms (* (fdt-int frac 0 (length frac))
                                   (aref #(0 100 10 1) (length frac))))))
                    (t (return-from fdt-parse-hms nil))))

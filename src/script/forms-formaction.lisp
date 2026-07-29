@@ -43,8 +43,84 @@
 ;;;; so this file never has to edit shared core.
 (in-package #:weft.script)
 
+(defun form-action-resolve (ctx node)
+  "Resolve formAction: attribute absent/empty -> document base URL;
+   present -> resolve against base URL; unparseable -> raw value."
+  (let ((raw (get-attr node "formaction")))
+    (if (or (null raw) (zerop (length raw)))
+        (let ((base (context-base ctx)))
+          (if (string= base "") "" base))
+        (resolve-url ctx raw))))
+
+(defun form-method-enum (node)
+  "Enumerated reflection for formMethod: valid values 'get'/'post',
+   ASCII case-insensitive.  Missing default = 'get', invalid default = 'get'."
+  (let ((raw (get-attr node "formmethod")))
+    (if raw
+        (let ((lower (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) raw))))
+          (if (member lower '("get" "post") :test #'string=) lower "get"))
+        "get")))
+
+(defun form-enctype-enum (node)
+  "Enumerated reflection for formEnctype: valid values
+   'application/x-www-form-urlencoded', 'multipart/form-data', 'text/plain'.
+   Missing default = application/x-www-form-urlencoded,
+   invalid default = application/x-www-form-urlencoded."
+  (let ((raw (get-attr node "formenctype")))
+    (if raw
+        (let ((lower (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) raw))))
+          (if (member lower '("application/x-www-form-urlencoded" "multipart/form-data" "text/plain") :test #'string=)
+              lower "application/x-www-form-urlencoded"))
+        "application/x-www-form-urlencoded")))
+
 (defun install-forms-formaction (ctx ep)
-  (declare (ignorable ctx ep))
-  nil)
+  (macrolet ((n (this) `(require-node ctx ,this)))
+    ;; formAction: URL-reflecting attribute for button and input
+    (defgetset-for ctx ep "button" "formAction" (this)
+      (form-action-resolve ctx (n this))
+      (v) (progn (set-attr (n this) "formaction" (jstr v))
+                 (setf (context-dirty ctx) t)))
+    (defgetset-for ctx ep "input" "formAction" (this)
+      (form-action-resolve ctx (n this))
+      (v) (progn (set-attr (n this) "formaction" (jstr v))
+                 (setf (context-dirty ctx) t)))
+    ;; formMethod: enumerated "get"/"post"
+    (defgetset-for ctx ep "button" "formMethod" (this)
+      (form-method-enum (n this))
+      (v) (progn (set-attr (n this) "formmethod" (jstr v))
+                 (setf (context-dirty ctx) t)))
+    (defgetset-for ctx ep "input" "formMethod" (this)
+      (form-method-enum (n this))
+      (v) (progn (set-attr (n this) "formmethod" (jstr v))
+                 (setf (context-dirty ctx) t)))
+    ;; formEnctype: enumerated
+    (defgetset-for ctx ep "button" "formEnctype" (this)
+      (form-enctype-enum (n this))
+      (v) (progn (set-attr (n this) "formenctype" (jstr v))
+                 (setf (context-dirty ctx) t)))
+    (defgetset-for ctx ep "input" "formEnctype" (this)
+      (form-enctype-enum (n this))
+      (v) (progn (set-attr (n this) "formenctype" (jstr v))
+                 (setf (context-dirty ctx) t)))
+    ;; formTarget: plain string reflection
+    (defgetset-for ctx ep "button" "formTarget" (this)
+      (or (get-attr (n this) "formtarget") "")
+      (v) (progn (set-attr (n this) "formtarget" (jstr v))
+                 (setf (context-dirty ctx) t)))
+    (defgetset-for ctx ep "input" "formTarget" (this)
+      (or (get-attr (n this) "formtarget") "")
+      (v) (progn (set-attr (n this) "formtarget" (jstr v))
+                 (setf (context-dirty ctx) t)))
+    ;; formNoValidate: boolean reflection
+    (defgetset-for ctx ep "button" "formNoValidate" (this)
+      (jbool (dom:has-attribute (n this) "formnovalidate"))
+      (v) (progn (if (js:js-truthy v) (set-attr (n this) "formnovalidate" "")
+                     (remove-attr (n this) "formnovalidate"))
+                 (setf (context-dirty ctx) t)))
+    (defgetset-for ctx ep "input" "formNoValidate" (this)
+      (jbool (dom:has-attribute (n this) "formnovalidate"))
+      (v) (progn (if (js:js-truthy v) (set-attr (n this) "formnovalidate" "")
+                     (remove-attr (n this) "formnovalidate"))
+                 (setf (context-dirty ctx) t)))))
 
 (register-element-proto-extension :formaction #'install-forms-formaction)

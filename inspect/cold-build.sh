@@ -50,5 +50,25 @@ for system in weft weft/render weft/script; do
   fi
 done
 
+# ASDF only fails on a duplicate defun WITHIN one file.  Two files in the same
+# package defining the same name is merely "WARNING: redefining X in DEFUN" at
+# load time — nobody reads it, the later file silently wins, and the two copies
+# drift.  weft.css::SPLIT-WS sat like that in selector.lisp and style.lisp.
+# So group defuns by (package, name) and report any name defined in more than
+# one file; same name in different packages is fine and must not trip this.
+printf '=== duplicate defuns ===\n'
+dupes=$(for f in $(find src -name '*.lisp'); do
+          pkg=$(grep -m1 -oE '^\(in-package [^)]*' "$f" | sed 's/.*[#:]://')
+          grep -oE '^\(defun [a-zA-Z0-9%*+/<>=_-]+' "$f" |
+            sed "s/^(defun /$pkg /" | sort -u | sed "s|\$| $f|"
+        done | awk '{k=$1" "$2; f[k]=f[k]" "$3; n[k]++} END{for(k in n) if(n[k]>1) print k":"f[k]}')
+if [ -n "$dupes" ]; then
+  echo "FAIL: same name defined in two files of the same package"
+  echo "$dupes"
+  rc=1
+else
+  echo "ok"
+fi
+
 [ $rc -eq 0 ] && echo "cold build clean"
 exit $rc

@@ -52,10 +52,16 @@ CSS. Real JS-heavy pages render blank; server-rendered pages render.
 ## Honesty
 
 See [VALIDATIONS.md](VALIDATIONS.md) — what is validated against independent
-oracles (URL/encoding/tokenizer/tree/DOM/selectors vs WPT, html5lib, soupsieve),
-what is only self-asserted (layout/paint correctness — no pixel oracle yet), and
-the known limits (no JS; Acid3 cannot run; Acid2 does not pass). Read it before
+oracles (URL/encoding/tokenizer/tree/DOM/selectors vs WPT, html5lib, soupsieve;
+Acid2 at 100% pixel-match vs a real browser; JavaScript via shuttle at 87.99% of
+test262), what is only self-asserted, and the known limits. Read it before
 trusting any screenshot.
+
+The sharpest remaining limit is breadth, not depth: no SPA has been rendered
+end-to-end and diffed against a browser, and the Web IDL surface is thinly
+covered outside the areas with a WPT gate. Acid3 scores 100/100 on its scripted
+conformance, but its *rendering* is not compared against the reference, so that
+is not a full Acid3 pass.
 
 ## Roadmap
 

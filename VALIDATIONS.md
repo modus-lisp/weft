@@ -100,15 +100,29 @@ diff any page against a real browser now exists.
   SVG, ranges. What is *not* validated is the thing the old claim was really
   about — **no SPA has been rendered end-to-end and diffed against a browser.**
   The Web IDL surface is broad and thinly covered outside the areas with a WPT
-  gate (forms IDL is at 2,692 subtests; everything else is unmeasured), and
+  gate (forms IDL is at 2,832 subtests; everything else is unmeasured), and
   network-driven rendering (fetch → parse → script → relayout as a loop) is not
   exercised. Treat "weft runs JavaScript" as true of the *engine* and unproven
   of the *page*.
-- **Acid3 has not been re-measured since shuttle landed.** It is ~99% JavaScript
-  (183 `createElement`, 14 `<script>` blocks), so it was correctly listed as
-  unrunnable when there was no engine. That reason has expired; the measurement
-  simply has not been redone. Until it is, no claim either way. See the Acid
-  gate below.
+- **Acid3 scores 100/100** on its own scripted conformance — the page's `score`
+  global, with `index` reaching 100 of 100 tests, mirrored into `#score`. It is
+  ~99% JavaScript (183 `createElement`, 14 `<script>` blocks) and was correctly
+  listed as unrunnable while there was no engine; that reason expired when
+  shuttle landed. Re-run with
+  `sbcl --non-interactive --load inspect/acid3.lisp --eval '(weft.acid3:run)'`
+  (the file's own `--script` usage line is stale — `--script` skips the init that
+  puts sibling systems on the source registry, so `pigment` is not found).
+  Two qualifications, both honest:
+  - **This is the scripted score, not a full Acid3 pass.** The official test also
+    requires the rendering to match its reference pixel-for-pixel and the title
+    to read `Acid3`; we compare neither. Acid2 has that pixel oracle, Acid3 does
+    not yet.
+  - The run logs `Total elapsed time: -0.79s`, which is *not* a clock bug. Acid3
+    computes `(endTime - startTime) - delay * tests.length` with `delay = 10`,
+    subtracting 1000 ms of `setTimeout` it assumes were really waited; our event
+    loop drains timers immediately, so ~0.21 s of real work minus 1.0 s goes
+    negative. The companion "took 133 ms (less than 30fps)" line is a
+    performance note Acid3 logs against a test it still counts as passed.
 - **Acid2 renders at 100% pixel-match vs a real browser** (up from ~0%). Driven
   to convergence by an objective oracle (the per-element + colour-class diffs
   above), the face assembles correctly: crown, two green-pupil eyes, black
@@ -155,10 +169,9 @@ real, gnarly pages ever *error*. Conformance is measured separately and honestly
   mismatched). The grind from ~0% → 100% is recorded commit-by-commit (each subject
   carries its `face-ink`/`face-geom` delta). Re-run: render via
   `(weft.acid.test:run)`, then the two scripts.
-- **Acid3** — ~99% JavaScript. It was unrunnable while there was no engine; that
-  is no longer the blocker, but the test has **not been re-run since shuttle was
-  wired in**, so there is no score to report and we are not going to guess one.
-  Running it is cheap and is on the roadmap.
+- **Acid3** — **100/100 scripted** (`inspect/acid3.lisp`; the page's own `score`
+  global, `index` 100/100). Rendering is *not* compared against the Acid3
+  reference, so this is the script conformance number and not a full pass.
 
 **These are now permanent CI gates.** `inspect/acid2-conformance.lisp`
 (`weft.acid2.conformance:run`, wired into `test-op`) re-runs both checks in pure

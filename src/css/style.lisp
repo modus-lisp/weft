@@ -1384,15 +1384,10 @@ Ignores the system-font keywords (caption/icon/...)."
               (let ((m (line-height-multiplier lh-s (cstyle-font-size cs))))
                 (when m (setf (cstyle-line-height cs) m))))))))))
 
-(defun split-ws (s)
-  "Split S on runs of ASCII whitespace."
-  (let ((out '()) (start nil) (n (length s)))
-    (dotimes (i n)
-      (let ((ws (member (char s i) '(#\Space #\Tab #\Newline #\Return #\Page))))
-        (cond ((and ws start) (push (subseq s start i) out) (setf start nil))
-              ((not (or ws start)) (setf start i)))))
-    (when start (push (subseq s start n) out))
-    (nreverse out)))
+;; SPLIT-WS lives in selector.lisp, which is the same package and loads first.
+;; A second copy here silently clobbered it at load time — identical semantics,
+;; so nothing broke, but "WARNING: redefining WEFT.CSS::SPLIT-WS" is the same
+;; defun-clobber hazard that shipped a dom.lisp which would not compile.
 
 (defun split-slash (s)
   "Split S on '/' into substrings."

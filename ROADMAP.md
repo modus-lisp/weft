@@ -75,12 +75,16 @@ Where the two disagree, VALIDATIONS.md and the gates themselves are right.
 - [x] **The scripting seam** — `weft/script`: inline `<script>` reads and mutates
       the live DOM, reflected on relayout. Events, timers, mutation observers,
       CSSOM, canvas, SVG, traversal, ranges, XML.
-- [ ] **Web IDL breadth — this is where the work is.** HTML forms IDL is the
-      current front (see below). Everything past it is unclaimed surface.
+- [ ] **Web IDL breadth — this is where the work is.** HTML forms IDL is done
+      (see below); everything past it is unclaimed surface, and picking the next
+      front is itself an open question.
 - [ ] test262 residue: intl402/Temporal (real calendars + IANA tz), the 112
       `$262.agent` Atomics tests (real threads), exotic-locale output.
-- [ ] Acid3 is no longer blocked on "no engine" — it has simply not been
-      re-measured since shuttle landed. Cheap, and worth doing.
+- [x] Acid3 re-measured now that shuttle is wired in: **100/100 scripted**
+      (`inspect/acid3.lisp`, the page's own `score` global).
+- [ ] Acid3 *rendering* vs its reference. The scripted 100/100 is not a full
+      pass — the official test also wants a pixel match and the title to read
+      `Acid3`, and there is no Acid3 pixel oracle the way there is for Acid2.
 
 ### P5 — The long tail
 - [x] Text shaping / fonts via **scribe** (real outlines, shaping, AA
@@ -94,8 +98,16 @@ Where the two disagree, VALIDATIONS.md and the gates themselves are right.
 Driven by a DeepSeek swarm against WPT `html/semantics/forms`, with
 `inspect/forms-oracle.lisp` as the ratchet.
 
-**TOTAL 2,692 subtests across 25 units.** Wave history: 447 → 705 → 1,262 →
-1,925 → 2,098 → 2,692.
+**TOTAL 2,832 subtests across 28 units — this front is CLOSED.** Wave history:
+447 → 705 → 1,262 → 1,925 → 2,098 → 2,692 → 2,832.
+
+Wave 10 took the remainder and stopped exactly at the ceiling the corpus sweep
+predicted (2,755 + 77). Of the ~640 subtests still unpassed, ~440 are walls we
+are not trying to climb — real form submission and navigation, `test_driver`
+user gestures, cross-origin iframes, `.tentative` files — and ~60 are hard
+residue four waves have not moved. The estimate and the outcome agreeing is what
+makes this a close rather than a plateau: there is no hidden headroom left to
+widen the aperture into.
 
 The oracle scores a named set of files (its *aperture*) and scores every other
 unit as a **sentinel** against a pinned best, ratcheting on the SUM — a gain in

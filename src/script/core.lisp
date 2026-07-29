@@ -56,6 +56,10 @@
   ;; user watches move under the arrow keys are the same thing, and storing them
   ;; separately is how they drift apart.  A caret is the collapsed case (s = e).
   (selections (make-hash-table :test 'eq))
+  ;; <select> nodes whose selectedness was explicitly cleared (selectedIndex=-1),
+  ;; suppressing the "ask for a reset" auto-selection of the first option.  On the
+  ;; context, not in a closure, because the shell picks options too.
+  (deselected (make-hash-table :test 'eq))
   (edit-start nil)          ; the focused control's value when it gained focus (for `change')
   (shadow-roots (make-hash-table :test 'eq)) ; element dnode -> shadow root (DocumentFragment dnode)
   (on-handlers (make-hash-table :test 'eq))  ; node -> (equal hash "type" -> handler fn)

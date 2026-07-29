@@ -29,4 +29,7 @@
            ;; live form-control state: the shell binds this so a control's
            ;; CURRENT value (script-set or typed) is painted, not its default
            #:*form-value-fn* #:*form-caret-fn* #:form-control-p
-           #:form-control-focusable-p #:text-editable-p #:caret-index-at))
+           #:form-control-focusable-p #:text-editable-p #:caret-index-at
+           ;; the open <select> popup: no layout box (it overlaps the page and
+           ;; vanishes on pick), so the shell paints and hit-tests it itself
+           #:select-menu-geometry #:paint-select-menu #:select-menu-row-at))

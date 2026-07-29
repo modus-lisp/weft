@@ -15,40 +15,75 @@
          (or (null s) (string= s "")
              (eql 1 (parse-integer s :junk-allowed t))))))
 
+;;; These five are top-level rather than closed over inside INSTALL-FORMS-SELECT
+;;; because the shell picks options too (a real dropdown click), and the IDL and
+;;; the pointer must agree about which option is selected — one store, one answer.
+;;; Note SELECT-AUTO-SELECT-P is NOT SELECT-ONE-ROW-P above: they disagree on a
+;;; non-numeric `size' (that one says no, this one says yes), and the corpus
+;;; tests both, so they stay two functions.
+
+(defun select-options-list (node)
+  "Walk all option descendants of <select> in tree order. Block at
+   <option>, <hr>, <select> elements.  For <optgroup>, block only
+   if we are already inside an optgroup (prevents nested optgroups)."
+  (let ((result nil))
+    (labels ((walk (n inside-optgroup)
+               (loop for c across (h:dnode-children n)
+                     do (let ((tag (h:dnode-name c)))
+                          (cond ((string= tag "option")
+                                 (push c result))
+                                ((string= tag "optgroup")
+                                 (unless inside-optgroup
+                                   (walk c t)))
+                                ((member tag '("hr" "select") :test #'string=)
+                                 nil) ; stop here
+                                (t (walk c inside-optgroup)))))))
+      (walk node nil))
+    (nreverse result)))
+
+(defun select-auto-select-p (node)
+  "Auto-select the first option? Only when display size is 1 (or absent)
+   and multiple is absent."
+  (and (not (dom:has-attribute node "multiple"))
+       (let ((size-attr (get-attr node "size")))
+         (or (null size-attr)
+             (string= size-attr "")
+             (= (or (parse-integer size-attr :junk-allowed t) 1) 1)))))
+
+(defun select-first-non-disabled (opts)
+  (position-if (lambda (o) (not (dom:has-attribute o "disabled"))) opts))
+
+(defun select-selected-index (ctx node)
+  "NODE's selectedIndex: the first `selected' option, else the auto-selected
+   first enabled one, else -1."
+  (let* ((opts (select-options-list node))
+         (sel (position-if (lambda (o) (dom:has-attribute o "selected")) opts)))
+    (if sel sel
+        (if (and (not (gethash node (context-deselected ctx)))
+                 (select-auto-select-p node))
+            (or (select-first-non-disabled opts) -1)
+            -1))))
+
+(defun select-set-selected (ctx node idx)
+  "Make option IDX of NODE the selected one.  Returns T when IDX was in range."
+  (remhash node (context-deselected ctx))
+  (let ((opts (select-options-list node)))
+    (when (and (>= idx 0) (< idx (length opts)))
+      (let ((opt (nth idx opts)))
+        (dolist (o opts)
+          (unless (eq o opt) (remove-attr o "selected")))
+        (set-attr opt "selected" "")
+        (setf (context-dirty ctx) t))
+      t)))
+
 (defun install-forms-select (ctx ep)
   (declare (ignorable ctx ep))
   (macrolet ((n (this) `(require-node ctx ,this))
              (tag-gate (this) `(string= (h:dnode-name (n ,this)) "select")))
     (let ((selected-options-cache (make-hash-table :test 'eq))
-          (explicitly-deselected (make-hash-table :test 'eq)))
+          (explicitly-deselected (context-deselected ctx)))
       (labels
-          ((select-options-list (node)
-             "Walk all option descendants of <select> in tree order. Block at
-              <option>, <hr>, <select> elements.  For <optgroup>, block only
-              if we are already inside an optgroup (prevents nested optgroups)."
-             (let ((result nil))
-               (labels ((walk (n inside-optgroup)
-                          (loop for c across (h:dnode-children n)
-                                do (let ((tag (h:dnode-name c)))
-                                     (cond ((string= tag "option")
-                                            (push c result))
-                                           ((string= tag "optgroup")
-                                            (unless inside-optgroup
-                                              (walk c t)))
-                                           ((member tag '("hr" "select") :test #'string=)
-                                            nil) ; stop here
-                                           (t (walk c inside-optgroup)))))))
-                 (walk node nil))
-               (nreverse result)))
-           (select-auto-select-p (node)
-             "Auto-select the first option? Only when display size is 1 (or absent)
-              and multiple is absent."
-             (and (not (dom:has-attribute node "multiple"))
-                  (let ((size-attr (get-attr node "size")))
-                    (or (null size-attr)
-                        (string= size-attr "")
-                        (= (or (parse-integer size-attr :junk-allowed t) 1) 1)))))
-           (select-child-text (node)
+          ((select-child-text (node)
              (let ((out ""))
                (loop for c across (h:dnode-children node)
                      when (eq (h:dnode-kind c) :text)
@@ -56,8 +91,6 @@
                out))
            (select-option-value (node)
              (or (get-attr node "value") (select-child-text node)))
-           (select-first-non-disabled (opts)
-             (position-if (lambda (o) (not (dom:has-attribute o "disabled"))) opts))
            (select-first-selected (node)
              (let* ((opts (select-options-list node))
                     (sel (position-if (lambda (o) (dom:has-attribute o "selected")) opts)))
@@ -66,27 +99,9 @@
                         (select-auto-select-p node)
                         (let ((fnd (select-first-non-disabled opts)))
                           (when fnd (nth fnd opts)))))))
-           (select-selected-index (node)
-             (let* ((opts (select-options-list node))
-                    (sel (position-if (lambda (o) (dom:has-attribute o "selected")) opts)))
-               (if sel sel
-                   (if (and (not (gethash node explicitly-deselected))
-                            (select-auto-select-p node))
-                       (or (select-first-non-disabled opts) -1)
-                       -1))))
-           (select-set-selected (node idx)
-             (remhash node explicitly-deselected)
-             (let ((opts (select-options-list node)))
-               (when (and (>= idx 0) (< idx (length opts)))
-                 (let ((opt (nth idx opts)))
-                   (dolist (o opts)
-                     (unless (eq o opt) (remove-attr o "selected")))
-                   (set-attr opt "selected" "")
-                   (setf (context-dirty ctx) t))
-                 t)))
            (select-set-selected-safe (node idx)
              (if (and (>= idx 0) (< idx (length (select-options-list node))))
-                 (select-set-selected node idx)
+                 (select-set-selected ctx node idx)
                  (progn
                    (setf (gethash node explicitly-deselected) t)
                    (dolist (o (select-options-list node)) (remove-attr o "selected"))
@@ -178,7 +193,7 @@
                                 ((and (stringp key) (string= key "length"))
                                  (num (length (select-options-list node))))
                                 ((and (stringp key) (string= key "selectedIndex"))
-                                 (num (select-selected-index node)))
+                                 (num (select-selected-index ctx node)))
                                 ((and (stringp key) (string= key "add"))
                                  (js:native-function realm "add"
                                    (lambda (this a) (declare (ignore this))
@@ -256,7 +271,7 @@
                             (js::make-prop :value (num (length l))
                                            :enumerable t :configurable t :writable t))
                            ((and (stringp key) (string= key "selectedIndex"))
-                            (js::make-prop :value (num (select-selected-index node))
+                            (js::make-prop :value (num (select-selected-index ctx node))
                                            :enumerable t :configurable t :writable t))
                            (t nil)))))
                obj)))
@@ -274,7 +289,7 @@
                          (found (find target opts :test #'string=
                                       :key (lambda (o) (select-option-value o)))))
                     (if found
-                        (select-set-selected node (position found opts))
+                        (select-set-selected ctx node (position found opts))
                         (progn
                           (dolist (o opts) (remove-attr o "selected"))
                           (setf (context-dirty ctx) t)))
@@ -293,7 +308,7 @@
         ;; selectedIndex getter/setter
         (defgetset-for ctx ep "select" "selectedIndex" (this)
           (let ((node (n this)))
-            (if (tag-gate this) (num (select-selected-index node)) js:*undefined*))
+            (if (tag-gate this) (num (select-selected-index ctx node)) js:*undefined*))
           (v) (let ((node (n this)))
                 (when (tag-gate this)
                   (select-set-selected-safe node (floor (js:to-number v))))))

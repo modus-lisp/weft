@@ -976,6 +976,50 @@ The subtree is rendered through stencil+gesso during paint."
   "True when clicking NODE should move focus to it: an enabled form control."
   (and (form-control-p n) (not (%ctrl-has n "disabled"))))
 
+;;; ---- the open <select> popup ----------------------------------------------
+;;; A dropdown's list is not part of the document: it overlaps whatever is under
+;;; it and is gone the moment you pick, so it has no box in the layout tree — the
+;;; shell paints it over the finished canvas and hit-tests it before the DOM.
+;;; Geometry lives HERE rather than in the shell because the popup has to line up
+;;; with the closed widget PAINT-SELECT drew, and both read the same font metrics.
+
+(defun select-menu-geometry (box labels &optional max-y)
+  "(values X Y W H ROW-H) in page coordinates for the popup listing LABELS under
+   the <select> laid out at BOX.  Wide enough for the longest label, and flipped
+   to sit ABOVE the widget when it would otherwise run off the bottom (MAX-Y, the
+   canvas height) with room above — a menu you cannot see is not a menu."
+  (let* ((row-h (+ *font-h* 4))
+         (w (max (lbox-w box)
+                 (+ 12 (* (reduce #'max labels :key #'length :initial-value 0) *font-w*))))
+         (h (+ 2 (* row-h (max 1 (length labels)))))
+         (below (+ (lbox-y box) (lbox-h box)))
+         (above (- (lbox-y box) h)))
+    (values (lbox-x box)
+            (if (and max-y (> (+ below h) max-y) (>= above 0)) above below)
+            w h row-h)))
+
+(defun paint-select-menu (cv box labels index &key highlight max-y)
+  "Paint the open dropdown for BOX over canvas CV.  INDEX is the option currently
+   selected, HIGHLIGHT the row the pointer/arrow keys are on (INDEX when NIL)."
+  (multiple-value-bind (x y w h row-h) (select-menu-geometry box labels max-y)
+    (fill-rect cv x y w h '(255 255 255))
+    (%ctrl-frame cv x y w h +ctrl-border+)
+    (loop for label in labels
+          for i from 0
+          for ry = (+ y 1 (* i row-h))
+          do (when (eql i (or highlight index))
+               (fill-rect cv (+ x 1) ry (- w 2) row-h +ctrl-select-bg+))
+             (draw-text cv label (+ x 5) (+ ry 2) +ctrl-ink+))
+    (values x y w h)))
+
+(defun select-menu-row-at (box labels px py &optional max-y)
+  "The row index of the open popup under page point (PX,PY), or NIL when the
+   point is outside it — which is how the shell tells a pick from a dismiss."
+  (multiple-value-bind (x y w h row-h) (select-menu-geometry box labels max-y)
+    (when (and (<= x px (+ x w -1)) (<= y py (+ y h -1)))
+      (let ((i (floor (- py y 1) row-h)))
+        (and (>= i 0) (< i (length labels)) i)))))
+
 (defun make-pseudo-node (content)
   "A synthetic inline element carrying generated CONTENT as its only text child,
 used to materialise a ::before/::after box in the normal layout flow."

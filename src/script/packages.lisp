@@ -25,5 +25,9 @@
            #:active-element #:set-focus #:focus-navigate #:commit-edit #:text-control-p
            #:control-value #:place-caret #:extend-selection-to #:selection-of #:select-all
            #:handle-text-input #:handle-editing-key #:focus-caret #:live-form-caret-fn
+           ;; <select>: the shell draws the popup, the document decides what a
+           ;; pick means (which options there are, which is on, input + change)
+           #:select-control-p #:select-labels #:select-index #:select-pickable-p
+           #:pick-option #:select-step
            ;; Web Font Loader (WebFontConfig) convention, for the shell to replay
            #:web-font-config))

@@ -1,4 +1,4 @@
-;;;; src/script/editing.lisp — typing into a form control.
+;;;; src/script/editing.lisp — changing a form control from the keyboard/pointer.
 ;;;;
 ;;;; The forms IDL knows what a control's value IS; nothing knew how a value
 ;;;; CHANGES under a keyboard.  This is that model, and it is deliberately small:
@@ -10,6 +10,10 @@
 ;;;; the keypress/keydown event and only if it was not cancelled, so a page that
 ;;;; calls preventDefault() on a keystroke suppresses the edit exactly as it does
 ;;;; in a browser.
+;;;;
+;;;; The last section is the same seam for a <select>: no text and no caret, but
+;;;; the same division — the shell owns the popup's pixels, this owns what a pick
+;;;; means.
 (in-package #:weft.script)
 
 (defun text-control-p (node)
@@ -259,3 +263,68 @@
   (when (and node (text-control-p node))
     (set-selection ctx node 0 (length (control-value ctx node)) "forward")
     t))
+
+;;; ---- <select>: picking an option -------------------------------------------
+;;; A dropdown holds no text, so none of the above applies to it — but it is the
+;;; same seam.  The shell owns the popup's pixels and the pointer; what "picked"
+;;; MEANS (which options exist, which one is on, and the two events a user pick
+;;; fires) is the document's business and lives here.
+
+(defun select-control-p (node)
+  "True for a <select> the user can open — an enabled one."
+  (and node (eq (h:dnode-kind node) :element)
+       (string-equal (h:dnode-name node) "select")
+       (not (dom:has-attribute node "disabled"))))
+
+(defun option-label (opt)
+  "What a menu row for OPT reads: its `label' attribute when it has a non-empty
+   one, else its text (HTML's label getter)."
+  (let ((l (get-attr opt "label")))
+    (if (and l (plusp (length l)))
+        l
+        (string-trim '(#\Space #\Tab #\Newline #\Return) (dom:text-content opt)))))
+
+(defun select-labels (node)
+  "NODE's option rows, in order, as the strings a popup displays."
+  (mapcar #'option-label (select-options-list node)))
+
+(defun select-index (ctx node)
+  "NODE's selected option index, or -1."
+  (select-selected-index ctx node))
+
+(defun option-enabled-p (opt) (not (dom:has-attribute opt "disabled")))
+
+(defun select-pickable-p (node index)
+  "True when option INDEX of NODE is one the user can land on: in range and not
+   disabled.  The shell asks before moving a highlight or committing a click."
+  (let ((opts (select-options-list node)))
+    (and (>= index 0) (< index (length opts)) (option-enabled-p (nth index opts)))))
+
+(defun pick-option (ctx node index)
+  "Select option INDEX of NODE as a USER pick: `input' then `change', both once,
+   and only when the selection actually moves — a menu reopened and dismissed on
+   the option already showing has changed nothing.  A disabled option is not
+   pickable.  Returns T when it picked."
+  (let ((opts (select-options-list node)))
+    (when (and (>= index 0) (< index (length opts))
+               (option-enabled-p (nth index opts))
+               (/= index (select-selected-index ctx node)))
+      (select-set-selected ctx node index)
+      (fire-at ctx node "input")
+      (fire-at ctx node "change")
+      t)))
+
+(defun select-step (ctx node delta)
+  "Move NODE's selection DELTA enabled options along, clamping at the ends —
+   the arrow keys on a CLOSED dropdown, which pick as they go.  Returns T when
+   the selection moved."
+  (let* ((opts (select-options-list node))
+         (n (length opts))
+         (i (select-selected-index ctx node)))
+    (when (plusp n)
+      (loop with j = (if (minusp i) (if (plusp delta) -1 n) i)
+            repeat n
+            do (incf j delta)
+               (when (or (minusp j) (>= j n)) (return nil))
+               (when (option-enabled-p (nth j opts))
+                 (return (pick-option ctx node j)))))))

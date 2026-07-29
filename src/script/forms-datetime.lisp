@@ -122,9 +122,8 @@
              (setf se (fdt-int s 6 8))
              (unless (<= 0 se 59) (return-from fdt-parse-hms nil))
              (cond ((= n 8))                                ; HH:MM:SS
-                   ((and (> n 9) (char= (char s 8) #\.) (fdt-all-digits-p s 9 n)
-                         (<= (- n 9) 3))                    ; 1-3 fractional digits only
-                    (let ((frac (subseq s 9 n)))
+                   ((and (> n 9) (char= (char s 8) #\.) (fdt-all-digits-p s 9 n) (<= (- n 9) 3))
+                    (let ((frac (subseq s 9 (min n 12))))   ; up to ms precision
                       (setf ms (* (fdt-int frac 0 (length frac))
                                   (aref #(0 100 10 1) (length frac))))))
                    (t (return-from fdt-parse-hms nil))))

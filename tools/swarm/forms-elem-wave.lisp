@@ -725,11 +725,27 @@ guess which of the files to read.
                   awk '{s+=$1} END{printf \"%d\", s}'" (jp job :log))))
     (or (ignore-errors (parse-integer out :junk-allowed t)) 0)))
 
+(defun exits-seen (job)
+  "How many times operandi has RUN TO COMPLETION in this arm's log, counted by
+   its usage line.  CALLS-MADE alone cannot tell an outage from a round killed by
+   `timeout' at *ROUND-MAX*: the kill lands mid-tool-call, the usage line is
+   never printed, and the call count therefore does not move even though the
+   model was called hundreds of times.  A capped round is the NORMAL way a
+   productive arm ends — wave 10 aborted two arms that had each just banked a
+   real gain, and the merge then discarded both as `NOT ATTEMPTED'.
+
+   So the outage test is `the process exited AND reported zero calls', never
+   `the call count did not move'.  COST-OF documents the same trap one docstring
+   up; that was not enough to stop me building this check on the wrong signal."
+  (let ((n (sh "grep -acE '[0-9.]+¢' ~a 2>/dev/null" (jp job :log))))
+    (or (ignore-errors (parse-integer n :junk-allowed t)) 0)))
+
 (defun run-worker (job)
   (let* ((deadline (+ (get-universal-time) *worker-budget*))
          (start (get-universal-time))
-         (round 0) (dry 0))
+         (round 0) (dry 0) (baseline 0))
     (let ((total (score job :keep t)))
+      (setf baseline (or total 0))
       (note "~a: start TOTAL ~a" (job-id job) (or total "?"))
       (loop
         (let ((left (- deadline (get-universal-time))))
@@ -738,20 +754,26 @@ guess which of the files to read.
             (return))
           (when (>= dry *dry-rounds*) (return))
           (incf round)
-          (let ((calls-before (calls-made job)))
+          (let ((calls-before (calls-made job))
+                (exits-before (exits-seen job)))
             (sh "~a" (agent-command job total))
-            ;; A round that reached the model zero times is not a dry round, and
-            ;; letting it burn the dry counter turns an outage into a finding.
-            (when (= (calls-made job) calls-before)
-              (note "~a: ABORT in round ~d — the round made 0 model calls. ~
-                     This is an outage, NOT a dry round; the TOTAL below is the ~
-                     baseline, not a result.  Check the API balance and token; ~
-                     the HTTP status is in ~a."
+            ;; A round that RAN TO COMPLETION having reached the model zero times
+            ;; is not a dry round, and letting it burn the dry counter turns an
+            ;; outage into a finding.  A round that did not complete was killed
+            ;; by `timeout', which says nothing either way — see EXITS-SEEN.
+            (when (and (> (exits-seen job) exits-before)
+                       (= (calls-made job) calls-before))
+              (note "~a: ABORT in round ~d — the round exited having made 0 ~
+                     model calls.  This is an outage, NOT a dry round; the TOTAL ~
+                     below is whatever earlier rounds banked, not a result for ~
+                     this one.  Check the API balance and token; the HTTP status ~
+                     is in ~a."
                     (job-id job) round (jp job :log))
               (return-from run-worker
                 (list :job job :rounds (1- round)
                       :seconds (- (get-universal-time) start)
-                      :total (or (best-score job) 0) :cost "cost ?"
+                      :total (or (best-score job) 0) :cost (cost-of job (1- round))
+                      :gained (> (or (best-score job) 0) baseline)
                       :error "0 model calls — see log"))))
           (let ((after (score job :keep t))
                 (best (best-score job)))
@@ -766,7 +788,8 @@ guess which of the files to read.
                   (job-id job) round (or total "?") (or after "?") dry)
             (setf total after)))))
     (list :job job :rounds round :seconds (- (get-universal-time) start)
-          :total (or (best-score job) 0) :cost (cost-of job round))))
+          :total (or (best-score job) 0) :cost (cost-of job round)
+          :gained (> (or (best-score job) 0) baseline))))
 
 ;;; ---- merging --------------------------------------------------------------
 
@@ -787,21 +810,25 @@ guess which of the files to read.
    TOTAL rises and scripting-dom stays green, revert otherwise."
   (let* ((arms (remove-if-not (lambda (r) (string= unit (job-unit (getf r :job))))
                               results))
-         ;; Errored arms sort last regardless of TOTAL: theirs is the baseline
-         ;; they were handed, so on a tie they would otherwise beat a real arm.
+         ;; An arm that never got above its baseline sorts last regardless of
+         ;; TOTAL: it is reporting the score it was handed, so on a tie it would
+         ;; otherwise beat an arm that actually earned the same number.
          (winner (first (sort (copy-list arms) #'>
-                              :key (lambda (r) (if (getf r :error) -1 (getf r :total)))))))
+                              :key (lambda (r) (if (getf r :gained) (getf r :total) -1))))))
     (dolist (r arms)
       (note "  ~12a TOTAL ~a  [~a, ~ds, ~d round~:p, ~a]~@[  ERRORED: ~a~]"
             (job-id (getf r :job)) (getf r :total)
             (car (last (uiop:split-string (job-model (getf r :job)) :separator "/")))
             (getf r :seconds) (getf r :rounds) (getf r :cost) (getf r :error)))
-    ;; An errored arm has no result to merge and, more importantly, no result to
-    ;; REPORT: a unit whose every arm errored was not attempted, and saying
-    ;; "nothing to merge" about it invites reading the flat TOTAL as evidence.
-    (when (every (lambda (r) (getf r :error)) arms)
-      (note "  -> ~a NOT ATTEMPTED — every arm errored.  The TOTAL is the ~
-             baseline; this unit has no result either way." unit)
+    ;; NOT ATTEMPTED is about the absence of a RESULT, not the presence of an
+    ;; error.  An arm can bank a real gain in round 1 and then hit an outage in
+    ;; round 2 — that gain is still a measurement and still merges.  Only a unit
+    ;; where every arm errored AND none ever got above its baseline was truly not
+    ;; attempted; wave 10 threw away two banked gains by conflating the two.
+    (when (and (every (lambda (r) (getf r :error)) arms)
+               (notany (lambda (r) (getf r :gained)) arms))
+      (note "  -> ~a NOT ATTEMPTED — every arm errored without banking a gain.  ~
+             The TOTAL is the baseline; this unit has no result either way." unit)
       (return-from merge-best nil))
     (unless winner (return-from merge-best nil))
     (let* ((job (getf winner :job))

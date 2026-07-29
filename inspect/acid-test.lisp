@@ -39,5 +39,6 @@
                       "progress signal; not a conformance score")
               (progn (incf fails) (format t "  FAIL ~a render ERROR: ~a~%" name ink))))))
     (format t "~%~:[render error(s) — see above~;both render without error~]~%" (zerop fails))
-    (format t "Reminder: Acid2 needs :before/:after + data-URI images; Acid3 needs JS (P4).~%")
+    (format t "Scores live elsewhere: Acid2 pixel/geometry in acid2-conformance.lisp, ~
+               Acid3 100/100 scripted in acid3.lisp.~%")
     (values (if (zerop fails) 1 0) fails)))

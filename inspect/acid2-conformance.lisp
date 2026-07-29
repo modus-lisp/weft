@@ -18,14 +18,14 @@
 
 ;;; ---- bounds (current actuals in comments; fail if exceeded) --------------
 (defparameter *max-mismatch-px* 40)   ; face colour-class mismatches   (now 0)
-(defparameter *max-face-geom*    220) ; visible-face box error         (now 166)
+(defparameter *max-face-geom*    220) ; visible-face box error         (now 6)
 (defparameter *max-total-geom*   2200); total box error vs browser     (now 2072 — rose
                                       ; from 1854 when <img> began reserving its border-box
                                       ; (spec-correct); Acid2's ground-truth capture has those
                                       ; broken-in-capture imgs at content size, so this is a
                                       ; capture artifact, not a defect — the pixel face is 0)
-(defparameter *max-table-geom*   1150); table-test box error vs browser (now 316)
-(defparameter *max-hn-geom*       3900); Hacker News box error vs browser (now 3424;
+(defparameter *max-table-geom*   1150); table-test box error vs browser (now 79)
+(defparameter *max-hn-geom*       1800); Hacker News box error vs browser (now 1338;
                                        ; dropped from 11917 once text renders in the
                                        ; browser's metric-compatible faces (HN asks for
                                        ; Verdana -> LiberationSans), then 6713 -> 4487 once
@@ -34,10 +34,20 @@
                                        ; 1.2, then 4487 -> 3424 once the votearrow div boxes in
                                        ; inline flow, cellpadding=0 is honoured, empty spacer
                                        ; <tr>s keep their height, and the line box floors to
-                                       ; the pixel.  Remaining error is structural / font-env
-                                       ; noise (column widths from Verdana->Liberation auto-
-                                       ; table measuring); headroom left so this still catches
-                                       ; STRUCTURAL regressions, e.g. @media re-breaking.)
+                                       ; the pixel, then -> 900, and finally -> 1338 once
+                                       ; block-in-inline HOISTS instead of becoming an atomic
+                                       ; inline (CSS 2.1 9.2.1.1).  Remaining error is
+                                       ; structural / font-env noise (column widths from
+                                       ; Verdana->Liberation auto-table measuring); headroom
+                                       ; left so this still catches STRUCTURAL regressions,
+                                       ; e.g. @media re-breaking.
+                                       ;
+                                       ; THIS GATE SAT RED AND UNNOTICED for ~550 commits: it
+                                       ; only runs under (asdf:test-system "weft"), which the
+                                       ; forms-swarm work never invoked.  A bound with 2.8x
+                                       ; headroom is also a bound nobody re-baselines, so the
+                                       ; 900 -> 12924 regression fit under nothing and was
+                                       ; found only by bisecting.  Keep the headroom modest.)
 
 ;;; ---- small helpers -------------------------------------------------------
 (defun rel (p) (asdf:system-relative-pathname "weft" p))

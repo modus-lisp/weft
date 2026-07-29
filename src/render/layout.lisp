@@ -304,35 +304,21 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
                       ;; block to place, so a run of only such boxes leaves no line box.
                       ((and cs (member (cdisplay cs) '("flex" "table" "grid") :test #'string=))
                        (push n blocks))
-                      ;; A block-level element with an explicit px width AND height
-                      ;; that appears in inline flow (e.g. HN's <div class=votearrow>
-                      ;; 10x10 inside an inline <a>) is not part of the surrounding
-                      ;; inline formatting context, but browsers still reserve its
-                      ;; principal box: it becomes an atomic inline occupying its
-                      ;; border-box plus margins and contributing that height to the
-                      ;; line.  Scoped to definite w AND h so ordinary block children
-                      ;; of an inline (rare) and Acid2's inline-blocks are untouched.
-                      ((and cs (member (cdisplay cs) '("block" "list-item") :test #'string=)
-                            (numberp (css:cstyle-width cs)) (numberp (css:cstyle-height cs)))
-                       (multiple-value-bind (lb adv) (layout-node n styles 0 0 content-w)
-                         (declare (ignore adv))
-                         (when lb
-                           (let ((ml (max 0 (css:cstyle-margin-left cs)))
-                                 (mr (max 0 (css:cstyle-margin-right cs)))
-                                 (mt (max 0 (css:cstyle-margin-top cs)))
-                                 (mb (max 0 (css:cstyle-margin-bottom cs))))
-                             ;; LAYOUT-NODE already positioned LB's border-box at
-                             ;; (ml,mt); wrap it in a marginless atomic box sized to
-                             ;; the full margin box so the line height counts margins.
-                             (atom! (make-lbox :x 0 :y 0
-                                               :w (+ ml (lbox-w lb) mr)
-                                               :h (+ mt (lbox-h lb) mb)
-                                               :kind :block :children (list lb))
-                                    n)))))
-                      ;; An auto-size block-level element in an inline run breaks the
-                      ;; inline formatting context and lays out as a normal block
+                      ;; ANY block-level element in an inline run breaks the inline
+                      ;; formatting context and lays out as a normal block
                       ;; (block-in-inline, CSS 2.1 §9.2.1.1): hoist it like flex/table
                       ;; above so the enclosing block places it on its own line.
+                      ;;
+                      ;; A definite-w/h block (HN's 10x10 <div class=votearrow> inside
+                      ;; an inline <a>) used to take a separate path here: wrapped in an
+                      ;; anonymous atomic inline sized to its margin box.  That matched
+                      ;; the browser only while a line box was as tall as its tallest
+                      ;; item.  Once the line grew a real baseline model the strut's
+                      ;; DESCENT stacked on top of the atomic's full height, making every
+                      ;; HN story row 22px where Chromium gives 19.  Chromium's own dump
+                      ;; settles it: it reports <center> at 10px tall, offset 3px into a
+                      ;; 19px cell — the div's border box with its margins outside, which
+                      ;; is hoisting, not an atomic.  So there is one rule, not two.
                       ((and cs (member (cdisplay cs) '("block" "list-item") :test #'string=))
                        (push n blocks))
                       (t                             ; generic inline: honor horizontal margins
@@ -1388,7 +1374,15 @@ text-align.  Returns (values line-boxes total-height)."
                             do (incf (frag-x it) (round (* j (/ extra (1- f)))))))))))
             (if (loop for m in metrics
                       thereis (or (member (fourth m) '(:top :bottom))     ; line-relative box
-                                  (let ((va (css:cstyle-vertical-align (lbox-style (first m)))))
+                                  ;; LBOX-STYLE is NIL on anonymous boxes — notably the
+                                  ;; marginless wrapper we build around a block-in-inline
+                                  ;; box so the line counts its margins.  Reading a slot
+                                  ;; off NIL is a TYPE-ERROR that LAYOUT-NODE's resilient
+                                  ;; handler swallows into an EMPTY BOX, silently dropping
+                                  ;; the whole subtree (HN's vote arrows, hn-err 900 ->
+                                  ;; 12924).  An anonymous box has no vertical-align.
+                                  (let* ((s (lbox-style (first m)))
+                                         (va (and s (css:cstyle-vertical-align s))))
                                     (and va (not (equal va '("baseline")))))))  ; any non-baseline vertical-align
                 ;; a line carrying an explicit vertical-align (length/%, top,
                 ;; bottom, middle, sub, super) uses the baseline model:

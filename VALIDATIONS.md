@@ -53,7 +53,7 @@ caught and fixed rather than papered over.
 |---|---|---|
 | Resource loader | fetches and decodes **live pages** end-to-end (example.com over our own Brotli; Wikipedia 413 KB over gzip) | asserts "decodes to text + doesn't crash", not byte-correctness of every page |
 | Layout robustness | renders live 400 KB+ pages and the vendored Acid tests **without crashing** (error-resilient: a bad subtree degrades to an empty box) | "doesn't crash" ≠ "lays out correctly" |
-| **Real-page fidelity** | the same browser-diff reftest, pointed at real sites (Playwright screenshot + CSS-inlined HTML → weft renders it → compare). motherfuckingwebsite.com renders near-identically; **Hacker News** renders faithfully (orange header, content-sized table columns, correct link colours) after the fixes it surfaced (rgb() colours, `bgcolor`, `vw/vh`, automatic table layout, `:link`). Text is now measured/painted in the browser's Linux metric-compatible faces via `scribe:match-font` (`font-family` cascade): HN asks for Verdana → LiberationSans, so its box error vs Chromium **dropped 11917 → 4487** (metric-compatible faces, then `line-height:normal` resolved from the face's real hhea ascent/descent/line-gap instead of a flat 1.2×), and the `table-test` error dropped **960 → 188**. Both are **CI gates** (HN ≤ 5500, table ≤ 1150). | Static/server-rendered pages only — **JS-driven pages (SPAs) render blank** (no P4 engine); very large pages (Wikipedia 946 KB inlined) are slow; `border-collapse` edges differ by 1px; external images/web-fonts aren't fetched (only the shipped Liberation/DejaVu faces are used). The remaining HN residual is **font-environment-specific, not structural**: this Chromium substitutes Verdana→Liberation-Sans, so the rank/votelinks columns auto-size ~18px wider than weft's — not a weft defect, and deliberately not chased (we don't overfit a specific site's font setup). One honest imperfection: the UA `td` padding is kept at 2px (browser default is 1px) because weft's line boxes run slightly shorter than this reference, so 2px compensates — a known local fudge, not spec-perfect. |
+| **Real-page fidelity** | the same browser-diff reftest, pointed at real sites (Playwright screenshot + CSS-inlined HTML → weft renders it → compare). motherfuckingwebsite.com renders near-identically; **Hacker News** renders faithfully (orange header, content-sized table columns, correct link colours) after the fixes it surfaced (rgb() colours, `bgcolor`, `vw/vh`, automatic table layout, `:link`). Text is now measured/painted in the browser's Linux metric-compatible faces via `scribe:match-font` (`font-family` cascade): HN asks for Verdana → LiberationSans, so its box error vs Chromium **dropped 11917 → 1338** (metric-compatible faces, then `line-height:normal` resolved from the face's real hhea ascent/descent/line-gap instead of a flat 1.2×, then block-in-inline hoisting per CSS 2.1 §9.2.1.1), and the `table-test` error dropped **960 → 79**. Both are **CI gates** (HN ≤ 1800, table ≤ 1150). | Static/server-rendered pages only — **no SPA has been rendered end-to-end and diffed against a browser** (the engine exists — see the P4 row — but network-driven fetch → parse → script → relayout is not exercised); very large pages (Wikipedia 946 KB inlined) are slow; `border-collapse` edges differ by 1px; external images/web-fonts aren't fetched (only the shipped Liberation/DejaVu faces are used). The remaining HN residual is **font-environment-specific, not structural**: this Chromium substitutes Verdana→Liberation-Sans, so the rank/votelinks columns auto-size ~18px wider than weft's — not a weft defect, and deliberately not chased (we don't overfit a specific site's font setup). One honest imperfection: the UA `td` padding is kept at 2px (browser default is 1px) because weft's line boxes run slightly shorter than this reference, so 2px compensates — a known local fudge, not spec-perfect. |
 
 ## Weak — self-asserted, NO independent oracle ⚠️
 
@@ -180,11 +180,19 @@ reference PNG with weft's own `png-decode`, colour-class matches the rendered
 face (bounded auto-align), and diffs every element's box against the vendored
 `acid2-browser-layout.json`. It **fails the build** if face-pixel mismatch, the
 visible-face geometry error, or the total geometry error exceed their bounds
-(currently 0 / 166 / 1886, with modest headroom). The remaining geometry error
+(currently 0 / 6 / 377 against 40 / 60 / 700). The remaining geometry error
 is deliberately-unfixed Acid2 scaffolding (the parser-quirk table, the giant-font
 image-height torture line, the fixed-`p` coordinate-frame offset) — not a defect,
 which is why the bound has headroom rather than being driven to 0. The `.py`
 scripts remain for ad-hoc inspection / regenerating the browser ground truth.
+
+**Caveat, recorded because it cost a bisect:** this gate runs *only* under
+`asdf:test-system "weft"`. The forms-swarm gates (`forms-oracle`,
+`nonforms-gate.sh`) never invoke it, and it sat **red and unnoticed for ~550
+commits** — HN box error had regressed 900 → 12,924 and fitted comfortably
+under a bound carrying 2.8× headroom. Two lessons are now policy here: run
+`asdf:test-system` alongside the swarm gates, and keep every bound's headroom
+modest, because a bound nobody can trip is a bound nobody re-baselines.
 
 ---
 

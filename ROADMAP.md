@@ -57,7 +57,7 @@ Where the two disagree, VALIDATIONS.md and the gates themselves are right.
 - [x] Box tree; block + inline layout; floats, positioning, tables, flex.
 - [x] Software rasterizer → PNG (validated loadable by Pillow).
 - [x] *First "it renders a real page" milestone* — Hacker News renders
-      faithfully; **CI-gated** at box error ≤ 5500 vs Chromium (currently 4487).
+      faithfully; **CI-gated** at box error ≤ 1800 vs Chromium (currently 1338).
 - [x] **Acid2 at 100% pixel-match** vs the reference — 0/21,160 face pixels
       mismatched, 0% stray red. Two independent oracles (colour-class + per-
       element box diff vs Chromium), both permanent CI gates.

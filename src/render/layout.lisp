@@ -703,8 +703,25 @@ The subtree is rendered through stencil+gesso during paint."
 ;;; <input>, <button>, <textarea>, <select> are replaced elements the UA draws as
 ;;; widgets — a bordered box + its value/label.  weft has no HTML form styling, so
 ;;; without these a login form is invisible.  Sizing uses the fixed 7x13 bitmap
-;;; font (*font-w* / *font-h*); painting uses fill-rect + draw-text.  The current
-;;; value lives in the node's "value" attr (editing mutates it, see INTERACT).
+;;; font (*font-w* / *font-h*); painting uses fill-rect + draw-text.
+;;;
+;;; LIVE vs CONTENT state.  A control's current value is NOT its `value' content
+;;; attribute: HTML keeps them apart (the content attr is the *default* value,
+;;; and the IDL `value' is a separate slot with a dirty flag).  weft/script holds
+;;; the live one in CONTEXT-INPUT-VALUES — a hash we cannot reach from here,
+;;; since weft/script sits ABOVE weft/render in the dependency graph.  So the
+;;; shell binds *FORM-VALUE-FN* around layout and we ask it; unbound, we fall
+;;; back to the content attribute and render the default, as before.
+;;;
+;;; Checkedness needs no hook: weft/script mirrors it into the reserved
+;;; `weft-checked' attribute (so the CSS engine's :checked can see it too), and
+;;; an attribute is something we CAN read.  Same for an <option>'s `selected'.
+
+(defvar *form-value-fn* nil
+  "Optional (node -> string) hook returning a form control's LIVE value, or NIL
+   to fall back to its content attribute / child text.  Bound by the shell (loom)
+   and by RENDER-SCRIPTED-TO-CANVAS around layout, so a value set by script — or
+   typed by the user — is what gets painted.")
 
 (defun %ctrl-attr (node name &optional default)
   (or (cdr (assoc name (h:dnode-attrs node) :test #'string-equal)) default))
@@ -721,22 +738,109 @@ The subtree is rendered through stencil+gesso during paint."
   (string-downcase (%ctrl-attr node "type" (if (string-equal (h:dnode-name node) "input") "text" ""))))
 (defun %ctrl-has (node name) (and (assoc name (h:dnode-attrs node) :test #'string-equal) t))
 
+(defvar *form-caret-fn* nil
+  "Optional (node -> offset) hook returning the caret offset to paint inside a
+   text control, or NIL when it is not the focused one.  Same reason as
+   *FORM-VALUE-FN*: focus lives in the scripting context, which render cannot
+   see.  Unbound, no caret is drawn — a still image has nothing blinking in it.")
+
+(defun %ctrl-live-value (node)
+  "NODE's live value from the shell's hook, or NIL when there is no hook / no
+   dirty value for this control."
+  (and *form-value-fn* (funcall *form-value-fn* node)))
+
+(defun %ctrl-caret (node)
+  (and *form-caret-fn* (funcall *form-caret-fn* node)))
+
+(defun %ctrl-value (node)
+  "What an <input>'s box should display: the live value if the shell has one,
+   else the `value' content attribute (the default value)."
+  (or (%ctrl-live-value node) (%ctrl-attr node "value" "")))
+
+(defun %ctrl-checked (node)
+  "Live checkedness: the reserved `weft-checked' marker weft/script maintains
+   (\"1\"/\"0\"), falling back to the `checked' content attribute for a document
+   nothing has scripted or clicked yet."
+  (let ((wc (%ctrl-attr node "weft-checked")))
+    (if wc (string= wc "1") (%ctrl-has node "checked"))))
+
 (defparameter +ctrl-border+ '(130 130 130))
 (defparameter +ctrl-ink+    '(20 20 20))
 (defun %ctrl-frame (cv x y w h color)               ; a 1px rectangle outline
   (fill-rect cv x y w 1 color) (fill-rect cv x (+ y h -1) w 1 color)
   (fill-rect cv x y 1 h color) (fill-rect cv (+ x w -1) y 1 h color))
-(defun %ctrl-text-fit (cv text x y w color)
-  "Draw TEXT clipped to inner width W, showing its TAIL (like a scrolled input)."
-  (let* ((maxc (max 0 (floor w *font-w*)))
-         (shown (if (> (length text) maxc) (subseq text (- (length text) maxc)) text)))
-    (draw-text cv shown x y color)))
+(defun %ctrl-scroll-start (len maxc caret)
+  "Index of the first visible character in a field of MAXC columns holding LEN
+   characters: enough scroll to keep CARET in view, and the TAIL when there is
+   no caret (an unfocused overflowing field shows its end, as browsers do)."
+  (let ((over (max 0 (- len maxc))))
+    (cond ((zerop over) 0)
+          ((null caret) over)
+          (t (max 0 (min over (- caret maxc)))))))
 
-(defun paint-textbox (cv x y w h value password-p)
+(defun %ctrl-text-fit (cv text x y w color &optional caret)
+  "Draw TEXT clipped to inner width W, scrolled so CARET (if any) is visible,
+   and draw the caret itself as a 1px bar."
+  (let* ((maxc (max 0 (floor w *font-w*)))
+         (start (%ctrl-scroll-start (length text) maxc caret))
+         (shown (subseq text start (min (length text) (+ start maxc)))))
+    (draw-text cv shown x y color)
+    (when caret
+      (fill-rect cv (+ x (* (- caret start) *font-w*)) (1- y) 1 (+ *font-h* 2) +ctrl-ink+))))
+
+(defun paint-textbox (cv x y w h value password-p &optional caret)
   (fill-rect cv x y w h '(255 255 255))
-  (%ctrl-frame cv x y w h +ctrl-border+)
+  (%ctrl-frame cv x y w h (if caret +ctrl-ink+ +ctrl-border+))   ; focused field: darker frame
   (let ((text (if password-p (make-string (length value) :initial-element #\*) value)))
-    (%ctrl-text-fit cv text (+ x 4) (+ y (round (- h *font-h*) 2)) (- w 8) +ctrl-ink+)))
+    (%ctrl-text-fit cv text (+ x 4) (+ y (round (- h *font-h*) 2)) (- w 8) +ctrl-ink+ caret)))
+
+(defun %split-lines (text)
+  (let ((lines '()) (start 0))
+    (loop for i from 0 below (length text)
+          when (char= (char text i) #\Newline)
+            do (push (subseq text start i) lines) (setf start (1+ i)))
+    (push (subseq text start) lines)
+    (nreverse lines)))
+
+(defun %caret-row-col (text caret)
+  "CARET as (row . column) once TEXT is broken at newlines."
+  (let ((row 0) (col 0))
+    (dotimes (i (min caret (length text)) (cons row col))
+      (if (char= (char text i) #\Newline)
+          (setf row (1+ row) col 0)
+          (incf col)))))
+
+(defun paint-textarea (cv x y w h text caret)
+  (fill-rect cv x y w h '(255 255 255))
+  (%ctrl-frame cv x y w h (if caret +ctrl-ink+ +ctrl-border+))
+  (let ((rows (max 1 (floor (- h 8) *font-h*)))
+        (maxc (max 0 (floor (- w 8) *font-w*)))
+        (crc (and caret (%caret-row-col text caret))))
+    ;; Enter inserts a newline in a <textarea>, so unlike an <input> this has to
+    ;; break lines itself — DRAW-TEXT would paint a newline as a stray glyph.
+    (loop for line in (%split-lines text)
+          for row from 0 below rows
+          for ly = (+ y 4 (* row *font-h*))
+          do (draw-text cv (subseq line 0 (min (length line) maxc)) (+ x 4) ly +ctrl-ink+)
+             (when (and crc (= row (car crc)) (<= (cdr crc) maxc))
+               (fill-rect cv (+ x 4 (* (cdr crc) *font-w*)) (1- ly) 1 (+ *font-h* 2) +ctrl-ink+)))))
+
+(defun caret-index-at (node value w dx dy)
+  "The offset in VALUE a click DX/DY pixels inside NODE's W-wide widget box
+   should put the caret at.  It lives beside the painters because it has to undo
+   exactly what they do — the 4px inset, the scroll that keeps an overflowing
+   field's tail visible, and (for a <textarea>) the line breaking."
+  (let ((maxc (max 0 (floor (- w 8) *font-w*)))
+        (col (max 0 (round (- dx 4) *font-w*))))
+    (if (string-equal (h:dnode-name node) "textarea")
+        (let* ((lines (%split-lines value))
+               (row (min (max 0 (floor (- dy 4) *font-h*)) (1- (length lines))))
+               (line (nth row lines)))
+          (+ (loop for i from 0 below row sum (1+ (length (nth i lines))))
+             (min (length line) col maxc)))
+        ;; an unfocused overflowing field shows its tail, so that is what the
+        ;; column the user aimed at is an offset into
+        (min (length value) (+ (%ctrl-scroll-start (length value) maxc nil) col)))))
 
 (defun paint-button (cv x y w h label)
   (fill-rect cv x y w h '(225 225 225))
@@ -782,10 +886,10 @@ The subtree is rendered through stencil+gesso during paint."
       (cond
         ((and (string= tag "input") (string= type "hidden")) nil)
         ((and (string= tag "input") (member type '("checkbox" "radio") :test #'string=))
-         (let ((ck (%ctrl-has node "checked")) (rnd (string= type "radio")))
+         (let ((ck (%ctrl-checked node)) (rnd (string= type "radio")))
            (mk 13 13 (lambda (cv x y bw bh) (declare (ignore bw bh)) (paint-checkbox cv x y ck rnd)))))
         ((or (string= tag "button") (member type '("submit" "reset" "button") :test #'string=))
-         (let* ((label (let ((v (if (string= tag "button") (%ctrl-text node) (%ctrl-attr node "value"))))
+         (let* ((label (let ((v (if (string= tag "button") (%ctrl-text node) (%ctrl-value node))))
                          (if (and v (plusp (length (string-trim " " v)))) (string-trim '(#\Space #\Newline #\Tab) v)
                              (cond ((string= type "submit") "Submit") ((string= type "reset") "Reset") (t "Button")))))
                 (w (+ 20 (* (length label) *font-w*))))
@@ -793,20 +897,22 @@ The subtree is rendered through stencil+gesso during paint."
         ((string= tag "textarea")
          (let* ((cols (or (%ctrl-int node "cols") 20)) (rows (or (%ctrl-int node "rows") 2))
                 (w (+ 8 (* cols *font-w*))) (th (+ 8 (* rows *font-h*)))
-                (text (%ctrl-text node)))
+                ;; a <textarea>'s default value is its child text, not an attr
+                (text (or (%ctrl-live-value node) (%ctrl-text node)))
+                (caret (%ctrl-caret node)))
            (mk w th (lambda (cv x y bw bh) (declare (ignore bw bh))
-                      (fill-rect cv x y (round w) (round th) '(255 255 255))
-                      (%ctrl-frame cv x y (round w) (round th) +ctrl-border+)
-                      (draw-text cv text (+ x 4) (+ y 4) +ctrl-ink+)))))
+                      (paint-textarea cv x y (round w) (round th) text caret)))))
         ((string= tag "select")
          (let* ((label (%select-label node)) (w (+ 34 (* (length label) *font-w*))))
            (mk w h (lambda (cv x y bw bh) (declare (ignore bw bh)) (paint-select cv x y (round w) (round h) label)))))
         (t                                                       ; text-like input
          (let* ((size (or (%ctrl-int node "size") 20))
                 (w (+ 8 (* size *font-w*)))
-                (pw (string= type "password")))
+                (pw (string= type "password"))
+                (value (%ctrl-value node))
+                (caret (%ctrl-caret node)))
            (mk w h (lambda (cv x y bw bh) (declare (ignore bw bh))
-                     (paint-textbox cv x y (round w) (round h) (%ctrl-attr node "value" "") pw)))))))))
+                     (paint-textbox cv x y (round w) (round h) value pw caret)))))))))
 
 (defun form-control-p (n)
   "True for a form control we draw as a native widget (excludes hidden inputs)."
@@ -814,6 +920,26 @@ The subtree is rendered through stencil+gesso during paint."
        (let ((tag (string-downcase (h:dnode-name n))))
          (or (member tag '("button" "textarea" "select") :test #'string=)
              (and (string= tag "input") (not (string= (%ctrl-type n) "hidden")))))))
+
+(defparameter +non-editable-input-types+
+  '("checkbox" "radio" "button" "submit" "reset" "image" "file" "hidden" "range" "color")
+  "Input types whose widget is not a text field — clicking them focuses, but
+   typing into them does not insert characters.")
+
+(defun text-editable-p (n)
+  "True when NODE is a control the user types free text into (a text-like
+   <input> or a <textarea>), so the shell should give it a caret."
+  (and (eq (h:dnode-kind n) :element)
+       (not (%ctrl-has n "disabled"))
+       (not (%ctrl-has n "readonly"))
+       (let ((tag (string-downcase (h:dnode-name n))))
+         (or (string= tag "textarea")
+             (and (string= tag "input")
+                  (not (member (%ctrl-type n) +non-editable-input-types+ :test #'string=)))))))
+
+(defun form-control-focusable-p (n)
+  "True when clicking NODE should move focus to it: an enabled form control."
+  (and (form-control-p n) (not (%ctrl-has n "disabled"))))
 
 (defun make-pseudo-node (content)
   "A synthetic inline element carrying generated CONTENT as its only text child,

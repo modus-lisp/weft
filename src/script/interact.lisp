@@ -18,19 +18,28 @@
    …) and dispatch it to NODE (a weft h:dnode).  BUTTON is the DOM button code
    (0 left, 1 middle, 2 right); CLIENT-X/CLIENT-Y are viewport coordinates
    exposed as event.clientX/clientY.  Returns T unless a listener called
-   preventDefault()."
+   preventDefault().
+
+   A left CLICK also runs the hit control's ACTIVATION BEHAVIOUR — the same
+   steps `click()' runs — so a real pointer toggles a checkbox, takes a radio
+   group and submits a form, instead of merely firing an event at them."
   (when node
-    (let* ((obj (make-event-object ctx type nil))
-           (ev (evt-of ctx obj)))
-      (setf (evt-bubbles ev) (and bubbles t)
-            (evt-cancelable ev) (and cancelable t)
-            (evt-trusted ev) t)
-      (when detail (setf (evt-detail ev) (num detail)))
-      (%put-own obj "button" (num button))
-      (%put-own obj "buttons" (num (if (zerop button) 1 0)))
-      (when client-x (%put-own obj "clientX" (num client-x)) (%put-own obj "pageX" (num client-x)))
-      (when client-y (%put-own obj "clientY" (num client-y)) (%put-own obj "pageY" (num client-y)))
-      (js:js-truthy (dispatch-event ctx node obj)))))
+    (flet ((fire ()
+             (let* ((obj (make-event-object ctx type nil))
+                    (ev (evt-of ctx obj)))
+               (setf (evt-bubbles ev) (and bubbles t)
+                     (evt-cancelable ev) (and cancelable t)
+                     (evt-trusted ev) t)
+               (when detail (setf (evt-detail ev) (num detail)))
+               (%put-own obj "button" (num button))
+               (%put-own obj "buttons" (num (if (zerop button) 1 0)))
+               (when client-x (%put-own obj "clientX" (num client-x)) (%put-own obj "pageX" (num client-x)))
+               (when client-y (%put-own obj "clientY" (num client-y)) (%put-own obj "pageY" (num client-y)))
+               (dispatch-event ctx node obj))))
+      (js:js-truthy
+       (if (and (string= type "click") (zerop button))
+           (activate-on-click ctx node #'fire)
+           (fire))))))
 
 (defun dispatch-keyboard-event (ctx node type
                                 &key (bubbles t) (cancelable t) key key-code char)

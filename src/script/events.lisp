@@ -113,6 +113,172 @@
 
 (defvar *label-activating* nil)
 
+;;; ---- activation behaviour (HTML §interactive-elements / activation) --------
+;;; A click on a form control does more than fire an event: a checkbox toggles,
+;;; a radio takes its group, a submit button submits.  HTML splits this into
+;;; three steps around the dispatch — PRE-click activation (which runs BEFORE
+;;; the event, so a handler reading `this.checked' sees the new value), the
+;;; activation behaviour proper (only if nothing called preventDefault), and the
+;;; canceled steps (which undo the pre-click change if it did).
+;;;
+;;; This lives here, once, because there are two callers: the `click()' method
+;;; and a TRUSTED click arriving from the shell (see INTERACT).  A private copy
+;;; per caller is exactly how the weft-checked bug in FORMS-CONSTRAINTS got in.
+(declaim (ftype function input-type checked-p set-checked set-attr remove-attr
+                         element-form-owner tree-root form-fire-submit
+                         node-disabled-p
+                         ;; EDITING is compiled after the IDL files (it needs
+                         ;; them), but focus/blur here and in DOM must commit a
+                         ;; pending edit before the blur event.
+                         commit-edit))
+
+(defun fire-at (ctx node type &key (bubbles t) (cancelable nil))
+  "Fire a plain event of TYPE at NODE.  Returns the event record."
+  (let* ((obj (make-event-object ctx type nil)) (ev (evt-of ctx obj)))
+    (setf (evt-bubbles ev) bubbles (evt-cancelable ev) cancelable (evt-trusted ev) t)
+    (dispatch-event ctx node obj)
+    ev))
+
+(defun activation-target (node)
+  "The element a click on NODE activates: NODE itself or the nearest ancestor
+   with activation behaviour, so clicking the text inside a <button> (or the
+   image in an <input type=image>) activates the control and not the text node.
+   NIL when nothing in the ancestor chain activates, or the control is disabled."
+  (loop for a = node then (h:dnode-parent a)
+        while a
+        when (and (eq (h:dnode-kind a) :element)
+                  (member (h:dnode-name a) '("input" "button") :test #'string=))
+          return (unless (dom:has-attribute a "disabled") a)))
+
+(defun radio-group-checked (node)
+  "The currently-checked member of NODE's radio group, or NIL."
+  (let ((name (dom:get-attribute node "name")) (root (tree-root node)))
+    (find-if (lambda (o) (and (string= (input-type o) "radio")
+                              (equal (dom:get-attribute o "name") name)
+                              (checked-p o)))
+             (dom:get-elements-by-tag-name root "input"))))
+
+(defun run-pre-click-activation (ctx target)
+  "HTML's pre-click activation steps: flip the control's state BEFORE the click
+   event is dispatched, so listeners observe what the user just did.  Returns a
+   token for RUN-CANCELED-ACTIVATION."
+  (let ((type (input-type target)))
+    (cond ((string= type "checkbox")
+           (let ((old (checked-p target)))
+             (set-checked ctx target (not old))
+             (list :checkbox old)))
+          ((string= type "radio")
+           ;; remember which member HELD the group, so a cancelled click puts it
+           ;; back rather than leaving the whole group unchecked
+           (let ((old (radio-group-checked target)))
+             (set-checked ctx target t)
+             (list :radio old)))
+          (t nil))))
+
+(defun run-canceled-activation (ctx target state)
+  "Undo RUN-PRE-CLICK-ACTIVATION after a listener called preventDefault()."
+  (case (first state)
+    (:checkbox (set-checked ctx target (second state)))
+    (:radio (let ((old (second state)))
+              (set-attr target "weft-checked" "0")
+              (when old (set-checked ctx old t))
+              (setf (context-dirty ctx) t)))))
+
+(defun run-form-reset (ctx form)
+  "Reset FORM: fire a cancelable `reset' event and, unless cancelled, drop every
+   control's dirty value/checkedness so each falls back to its default."
+  (when (and form (not (evt-default-prevented (fire-at ctx form "reset" :cancelable t))))
+    (dolist (tag '("input" "textarea" "select"))
+      (dolist (el (dom:get-elements-by-tag-name form tag))
+        (remhash el (context-input-values ctx))
+        (when (member (input-type el) '("checkbox" "radio") :test #'string=)
+          (remove-attr el "weft-checked"))))
+    (setf (context-dirty ctx) t)
+    t))
+
+(defun run-activation-behaviour (ctx target)
+  "The control's default action, run only when the click was not cancelled."
+  (let ((tag (h:dnode-name target)) (type (input-type target)))
+    (cond
+      ;; a toggled checkbox/radio reports the change to the page
+      ((member type '("checkbox" "radio") :test #'string=)
+       (fire-at ctx target "input")
+       (fire-at ctx target "change"))
+      ((or (and (string= tag "input") (member type '("submit" "image") :test #'string=))
+           (and (string= tag "button") (member type '("submit" "") :test #'string=)))
+       (let ((form (element-form-owner ctx target)))
+         (when form (form-fire-submit ctx form target))))
+      ((or (and (string= tag "input") (string= type "reset"))
+           (and (string= tag "button") (string= type "reset")))
+       (run-form-reset ctx (element-form-owner ctx target))))))
+
+;;; ---- focus (HTML §focus) ---------------------------------------------------
+;;; Nothing here knew what was focused, so keyboard events had nowhere to go but
+;;; the body and `document.activeElement' did not exist.  One slot on the context
+;;; plus HTML's focus update steps is the whole model.
+
+(defun body-element (ctx)
+  (let ((doc (context-document ctx)))
+    (and doc (or (first (dom:get-elements-by-tag-name doc "body"))
+                 (first (dom:get-elements-by-tag-name doc "html"))))))
+
+(defun focus-still-valid-p (ctx node)
+  "True while NODE can still hold focus: it is an element, it is not disabled
+   (directly or by a <fieldset> ancestor), and it is still in the document."
+  (and node (eq (h:dnode-kind node) :element)
+       (not (node-disabled-p node))
+       (eq (tree-root node) (context-document ctx))))
+
+(defun active-element (ctx)
+  "The focused element — `document.activeElement', which is the body when
+   nothing else holds focus.
+
+   HTML's focus fixup runs here: an element that becomes disabled, or that is
+   taken out of the document, loses focus.  It is checked on read because the
+   mutation that invalidates it happens somewhere else entirely — disabling a
+   <fieldset> disables everything nested inside it, and nothing tells us."
+  (let ((f (context-focus ctx)))
+    (unless (or (null f) (focus-still-valid-p ctx f))
+      (setf (context-focus ctx) nil (context-caret ctx) 0
+            (context-caret-anchor ctx) nil (context-edit-start ctx) nil
+            f nil))
+    (or f (body-element ctx))))
+
+(defun set-focus (ctx node)
+  "Move focus to NODE (NIL = back to the body), running HTML's focus update
+   steps: blur then focusout at the element losing focus, focus then focusin at
+   the one gaining it.  Committing a pending edit is the caller's job (see
+   COMMIT-EDIT in EDITING) — it must happen before the blur event."
+  (let ((old (context-focus ctx)))
+    ;; focus() on something that cannot be focused (disabled, detached) is a
+    ;; no-op, not a way to park focus on it.
+    (when (and node (not (focus-still-valid-p ctx node)))
+      (return-from set-focus nil))
+    (unless (eq old node)
+      (setf (context-focus ctx) node
+            (context-caret ctx) 0
+            (context-caret-anchor ctx) nil)
+      (when old
+        (fire-at ctx old "blur" :bubbles nil)
+        (fire-at ctx old "focusout"))
+      (when node
+        (fire-at ctx node "focus" :bubbles nil)
+        (fire-at ctx node "focusin"))
+      (setf (context-dirty ctx) t))
+    node))
+
+(defun activate-on-click (ctx node thunk)
+  "Run THUNK (which dispatches the click event) wrapped in NODE's activation
+   behaviour.  Returns what THUNK returned."
+  (let* ((target (activation-target node))
+         (state (and target (run-pre-click-activation ctx target)))
+         (result (funcall thunk)))
+    (when target
+      (if (js:js-truthy result)
+          (run-activation-behaviour ctx target)
+          (when state (run-canceled-activation ctx target state))))
+    result))
+
 (defun dispatch-event (ctx node evt-obj)
   (let ((ev (evt-of ctx evt-obj))
         (*ctx* ctx))

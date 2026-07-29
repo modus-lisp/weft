@@ -116,6 +116,10 @@
                                ;; Wave 10: disjoint per-unit files.
                                (:file "forms-files") (:file "forms-formaction")
                                (:file "forms-constraints") (:file "forms-form")
+                               ;; typing: caret + edits + input/change.  After
+                               ;; forms-form (it calls SUBMIT-BUTTON-P for
+                               ;; implicit submission), before the shell seam.
+                               (:file "editing")
                                (:file "bridge") (:file "interact")))))))
 
 (defsystem "weft/test"

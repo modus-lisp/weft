@@ -1314,6 +1314,23 @@ the context node when it is an element, else NIL (a document/fragment root makes
 (defun checked-p (node)
   (let ((wc (get-attr node "weft-checked")))
     (if wc (string= wc "1") (dom:has-attribute node "checked"))))
+
+(defun input-live-value (ctx node)
+  "NODE's LIVE value — the IDL `value' slot — when it has a dirty one, else NIL
+   meaning \"no live value, use the default\" (the `value' content attribute for
+   an <input>, the child text for a <textarea>).
+
+   This is what a shell binds WEFT.RENDER:*FORM-VALUE-FN* to.  The renderer
+   cannot read CONTEXT-INPUT-VALUES itself: weft/script depends on weft/render,
+   not the other way round, so without this hook the painter shows a control's
+   DEFAULT value forever and a script-set or typed value never appears."
+  (and ctx node (eq (h:dnode-kind node) :element)
+       (multiple-value-bind (v present) (gethash node (context-input-values ctx))
+         (and present v))))
+
+(defun live-form-value-fn (ctx)
+  "A (node -> value-or-NIL) closure over CTX, for WEFT.RENDER:*FORM-VALUE-FN*."
+  (lambda (node) (input-live-value ctx node)))
 (defun tree-root (node) (loop for a = node then (h:dnode-parent a)
                               when (null (h:dnode-parent a)) return a))
 (defun set-checked (ctx node checked)
@@ -2169,37 +2186,20 @@ the context node when it is an element, else NIL (a document/fragment root makes
       (v) (progn (set-attr (n this) "action" (jstr v)) (setf (context-dirty ctx) t)))
     (defgetset ctx ep "method" (this) (or (get-attr (n this) "method") "")
       (v) (progn (set-attr (n this) "method" (jstr v)) (setf (context-dirty ctx) t)))
-    ;; HTMLElement.click(): run the control's pre-click activation (toggle a
-    ;; checkbox, select a radio) then dispatch a bubbling, cancelable click; a
-    ;; submit control that isn't cancelled then fires the form's submit event.
+    ;; HTMLElement.click(): dispatch a bubbling, cancelable click wrapped in the
+    ;; control's activation behaviour (toggle a checkbox, take a radio group,
+    ;; submit or reset a form).  Those steps live in EVENTS so that this and a
+    ;; TRUSTED click from the shell (see INTERACT) run the very same code.
     (defmethod* ctx ep "click" 0 (this a)
-      (let* ((node (n this)) (tag (and (eq (h:dnode-kind node) :element) (h:dnode-name node)))
-             (type (and (member tag '("input" "button") :test #'equal) (input-type node)))
-             (old-checked (and (equal type "checkbox") (checked-p node))))
+      (let ((node (n this)))
         (unless (and (eq (h:dnode-kind node) :element)
                      (dom:has-attribute node "disabled"))
-          (cond ((equal type "checkbox") (set-checked ctx node (not old-checked)))
-                ((equal type "radio") (set-checked ctx node t)))
-          (let* ((ev (make-event-object ctx "click" nil)) (e (evt-of ctx ev)))
-            (setf (evt-bubbles e) t (evt-cancelable e) t (evt-trusted e) t)
-            (dispatch-event ctx node ev)
-            ;; Fire change/input events for checkbox/radio toggles
-            (when (and (equal type "checkbox") (not (evt-default-prevented e)))
-              (let* ((iev (make-event-object ctx "input" nil)) (ie (evt-of ctx iev)))
-                (setf (evt-bubbles ie) t (evt-cancelable ie) nil)
-                (dispatch-event ctx node iev))
-              (let* ((cev (make-event-object ctx "change" nil)) (ce (evt-of ctx cev)))
-                (setf (evt-bubbles ce) t (evt-cancelable ce) nil)
-                (dispatch-event ctx node cev)))
-            ;; default action for a submit button: fire the form's submit event
-            (when (and (or (and (equal tag "input") (member type '("submit" "image") :test #'equal))
-                           (and (equal tag "button") (equal type "submit")))
-                       (not (evt-default-prevented e)))
-              (let ((form (element-form-owner ctx node)))
-                (when form
-                  (let* ((sev (make-event-object ctx "submit" nil)) (se (evt-of ctx sev)))
-                    (setf (evt-bubbles se) t (evt-cancelable se) t)
-                    (dispatch-event ctx form sev))))))))
+          (activate-on-click
+           ctx node
+           (lambda ()
+             (let* ((ev (make-event-object ctx "click" nil)) (e (evt-of ctx ev)))
+               (setf (evt-bubbles e) t (evt-cancelable e) t (evt-trusted e) t)
+               (dispatch-event ctx node ev))))))
       js:*undefined*)
     ;; type/value reflections for form controls.
     (defgetset ctx ep "type" (this)
@@ -2385,8 +2385,20 @@ the context node when it is an element, else NIL (a document/fragment root makes
     ;; returning the exact numbers a test asserted; wave 7 added one returning
     ;; all zeros.  The zeros scored nothing — measured, TOTAL 705 either way —
     ;; and would have handed us passes on any test asserting a zero rect.)
+    ;; focus()/blur(): move the document's focus, firing HTML's focus update
+    ;; steps.  A shell routes keyboard input at whatever this leaves focused.
     (defmethod* ctx ep "focus" 0 (this a)
-      (declare (ignore this a))
+      (declare (ignore a))
+      (let ((node (n this)))
+        (unless (dom:has-attribute node "disabled")
+          (commit-edit ctx)
+          (set-focus ctx node)))
+      js:*undefined*)
+    (defmethod* ctx ep "blur" 0 (this a)
+      (declare (ignore a))
+      (when (eq (context-focus ctx) (n this))
+        (commit-edit ctx)
+        (set-focus ctx nil))
       js:*undefined*)
     ;; attachShadow: create a shadow root (DocumentFragment) for this element.
     ;; Minimal implementation — enough for the label-element WPT test.
@@ -2498,6 +2510,9 @@ the context node when it is an element, else NIL (a document/fragment root makes
                          (h:dnode-children (n this)))))
     (defget ctx dp "body" (this) (wrap ctx (find-tag (n this) "body")))
     (defget ctx dp "head" (this) (wrap ctx (find-tag (n this) "head")))
+    ;; activeElement: the focused element, or the body when nothing is focused.
+    (defget ctx dp "activeElement" (this) (declare (ignore this))
+      (wrap ctx (active-element ctx)))
     (defget ctx dp "forms" (this)
       (let ((node (n this)))
         (make-collection ctx (lambda () (dom:get-elements-by-tag-name node "form"))

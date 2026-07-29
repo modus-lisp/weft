@@ -50,6 +50,10 @@
   (blank-url-docs (make-hash-table :test 'eq)) ; document dnode -> t when its URL is "about:blank" (createHTMLDocument/createDocument)
   (xml-documents (make-hash-table :test 'eq)) ; document dnode -> t when it is an XMLDocument (createDocument; not a DOMParser result)
   (input-values (make-hash-table :test 'eq)) ; <input> node -> its independent value property
+  (focus nil)               ; the focused element dnode; NIL means the body (document.activeElement)
+  (caret 0)                 ; caret offset within the focused text control's value
+  (caret-anchor nil)        ; selection anchor offset, or NIL when there is no selection
+  (edit-start nil)          ; the focused control's value when it gained focus (for `change')
   (shadow-roots (make-hash-table :test 'eq)) ; element dnode -> shadow root (DocumentFragment dnode)
   (on-handlers (make-hash-table :test 'eq))  ; node -> (equal hash "type" -> handler fn)
   (write-buffers (make-hash-table :test 'eq)) ; document node -> pending document.write buffer (open())

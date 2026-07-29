@@ -749,9 +749,13 @@
    DOM (then drain timers + microtasks) before layout. Returns (values canvas
    context). BASE/LOADER configure the subresource pipeline; the remaining keys
    pass through to render-to-canvas.  A scriptless page renders byte-identically."
-  (let (ctx
-        (render-keys (loop for (k v) on keys by #'cddr
-                           unless (member k '(:base :loader)) collect k and collect v)))
+  (let* (ctx
+         (render-keys (loop for (k v) on keys by #'cddr
+                            unless (member k '(:base :loader)) collect k and collect v))
+         ;; CTX is created by the :before-layout callback below, i.e. before the
+         ;; painter ever calls this closure — so a value a script assigned gets
+         ;; painted, instead of the `value' content attribute (the DEFAULT value).
+         (r:*form-value-fn* (lambda (node) (input-live-value ctx node))))
     (values
      (apply #'r:render-to-canvas html css width
             :before-layout (lambda (doc)

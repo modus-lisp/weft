@@ -88,7 +88,7 @@
  ("selection-after-content-change.html" . 18)
  ("selection-not-application-textarea.html" . 1)
  ("selection-not-application.html" . 71)
- ("selection-start-end-extra.html" . 11) ("selection-start-end.html" . 1)
+ ("selection-start-end-extra.html" . 11) ("selection-start-end.html" . 45)
  ("selection-value-interactions.html" . 14) ("selection.html" . 42)
  ("setSelectionRange.html" . 1) ("textarea-maxlength.html" . 5)
  ("textarea-minlength.html" . 5) ("textarea-setcustomvalidity.html" . 1)

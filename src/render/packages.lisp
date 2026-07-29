@@ -25,4 +25,8 @@
            #:img-loading-lazy-p #:*lazy-image-lookahead* #:inview-lazy-image-urls
            #:*fetch-inview-lazy* #:*lazy-scroll-y* #:*lazy-image-overscan*
            #:lbox #:lbox-p #:lbox-x #:lbox-y #:lbox-w #:lbox-h
-           #:lbox-node #:lbox-kind #:lbox-children #:lbox-style))
+           #:lbox-node #:lbox-kind #:lbox-children #:lbox-style
+           ;; live form-control state: the shell binds this so a control's
+           ;; CURRENT value (script-set or typed) is painted, not its default
+           #:*form-value-fn* #:*form-caret-fn* #:form-control-p
+           #:form-control-focusable-p #:text-editable-p #:caret-index-at))

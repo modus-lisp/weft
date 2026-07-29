@@ -16,5 +16,14 @@
            ;; and pump one frame of the timer/animation clock
            #:dispatch-mouse-event #:dispatch-keyboard-event #:dispatch-simple-event
            #:pump-timers
+           ;; live form state, so the shell can bind WEFT.RENDER:*FORM-VALUE-FN*
+           ;; and have the painter show a control's CURRENT value, not its default
+           #:input-live-value #:live-form-value-fn
+           ;; focus + typing: the shell routes keys to the focused control and
+           ;; asks us to apply the edit, having first dispatched (and possibly
+           ;; had cancelled) the key event
+           #:active-element #:set-focus #:commit-edit #:text-control-p
+           #:control-value #:place-caret
+           #:handle-text-input #:handle-editing-key #:focus-caret #:live-form-caret-fn
            ;; Web Font Loader (WebFontConfig) convention, for the shell to replay
            #:web-font-config))

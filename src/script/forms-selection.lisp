@@ -28,13 +28,14 @@
 
 (defun install-forms-selection (ctx ep)
   (macrolet ((n (this) `(require-node ctx ,this)))
-    ;; Per-node selection state.  The initial selection is 0,0 — NOT the end of
-    ;; the value.  select-event.html asserts `clone.selectionEnd === 0' on a
-    ;; freshly cloned <textarea>foobar</textarea>, and defaulting to the value
-    ;; length made that read 6.
-    (let ((starts (make-hash-table :test 'eq))
-          (ends (make-hash-table :test 'eq))
-          (dirs (make-hash-table :test 'eq)))
+    ;; The selection lives on the CONTEXT (core.lisp), not in closure tables
+    ;; here: the caret the user drags and walks with the arrow keys IS this
+    ;; selection, and the editor (editing.lisp) has to read and write the same
+    ;; one.  The initial selection is 0,0 — NOT the end of the value.
+    ;; select-event.html asserts `clone.selectionEnd === 0' on a freshly cloned
+    ;; <textarea>foobar</textarea>, and defaulting to the value length made that
+    ;; read 6.
+    (progn
       (labels ((selection-supporting-p (node)
                  "Textual input types that support variable-length selection, plus textarea."
                  (or (string= (h:dnode-name node) "textarea")
@@ -43,9 +44,9 @@
                                   '("text" "search" "url" "tel" "password")
                                   :test #'equal))))
                (val-len (node) (length (selection-cur-value ctx node)))
-               (cur-start (node) (gethash node starts 0))
-               (cur-end (node) (gethash node ends 0))
-               (cur-dir (node) (or (gethash node dirs) "none"))
+               (cur-start (node) (nth-value 0 (node-selection ctx node)))
+               (cur-end (node) (nth-value 1 (node-selection ctx node)))
+               (cur-dir (node) (nth-value 2 (node-selection ctx node)))
                (set-selection-range (node start end dir)
                  "HTML \"set the selection range\": clamp START/END into the value,
                   normalise DIR, and queue a `select\' event ONLY IF the selection
@@ -59,12 +60,8 @@
                         (s (min e (min len (max 0 start))))
                         (d (if (member dir '("forward" "backward") :test #'equal)
                                dir "none")))
-                   (unless (and (eql s (cur-start node))
-                                (eql e (cur-end node))
-                                (equal d (cur-dir node)))
-                     (setf (gethash node starts) s
-                           (gethash node ends) e
-                           (gethash node dirs) d)
+                   (when (set-node-selection ctx node s e d)
+                     (setf (context-dirty ctx) t)   ; the caret is painted
                      (queue-select-event ctx node))))
                ;; Return the finished JS value: a number/string for a supporting
                ;; type, js:*null* otherwise (never (num null) — that would crash).

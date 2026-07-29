@@ -48,31 +48,63 @@
   (let ((v (get-attr node "maxlength")))
     (and v (ignore-errors (parse-integer (string-trim " " v) :junk-allowed t)))))
 
-(defun clamp-caret (ctx node)
-  (let ((n (length (control-value ctx node))))
-    (setf (context-caret ctx) (max 0 (min n (context-caret ctx))))))
+;;; ---- caret and selection ---------------------------------------------------
+;;; There is no separate caret: a caret is a COLLAPSED SELECTION, kept in the one
+;;; per-node table `input.selectionStart' reads (core.lisp).  DIRECTION says
+;;; which edge the user is moving; the other edge is the anchor a shift-arrow or
+;;; a drag pivots around.
+
+(defun selection-of (ctx node)
+  "NODE's selection clamped to its current value: (values start end direction).
+   Clamped on the way OUT because the value can shrink under a stored selection
+   — a script assigning a shorter one — and nothing tells us when it does."
+  (multiple-value-bind (s e d) (node-selection ctx node)
+    (let* ((n (length (control-value ctx node)))
+           (e (min n (max 0 e)))
+           (s (min e (max 0 s))))
+      (values s e d))))
 
 (defun caret-of (ctx node)
-  "The caret offset in NODE, clamped to its value."
-  (clamp-caret ctx node)
-  (context-caret ctx))
+  "Where NODE's caret sits: the moving edge of its selection."
+  (multiple-value-bind (s e d) (selection-of ctx node)
+    (if (equal d "backward") s e)))
+
+(defun anchor-of (ctx node)
+  "The fixed edge of NODE's selection — what a shift-arrow or a drag pivots around."
+  (multiple-value-bind (s e d) (selection-of ctx node)
+    (if (equal d "backward") e s)))
+
+(defun set-selection (ctx node start end dir)
+  "Store a clamped selection on NODE and ask for a repaint — it is painted, so
+   moving it changes the picture even when the value did not."
+  (let* ((n (length (control-value ctx node)))
+         (e (min n (max 0 end)))
+         (s (min e (max 0 start))))
+    (set-node-selection ctx node s e dir)
+    (setf (context-dirty ctx) t)
+    (values s e)))
 
 (defun place-caret (ctx node index)
-  "Put the caret at INDEX in NODE (clamped) — what a click inside a text control
-   does once the shell has turned the pixel it hit into an offset."
+  "Collapse NODE's selection at INDEX — what a click inside a text control does
+   once the shell has turned the pixel it hit into an offset."
   (when (and node (eq (context-focus ctx) node))
-    (setf (context-caret ctx) index
-          (context-caret-anchor ctx) nil)
-    (clamp-caret ctx node)
-    (setf (context-dirty ctx) t)
-    (context-caret ctx)))
+    (set-selection ctx node index index "none")
+    (caret-of ctx node)))
 
-(defun move-caret (ctx to)
-  "Set the caret to TO and ask for a repaint (the caret is painted, so moving it
-   changes the picture even though the value did not)."
-  (setf (context-caret ctx) to
-        (context-caret-anchor ctx) nil
-        (context-dirty ctx) t)
+(defun extend-selection-to (ctx node index)
+  "Move the selection's moving edge to INDEX, leaving the anchor where it is —
+   a shift-arrow, or a drag with the button still down."
+  (when (and node (eq (context-focus ctx) node))
+    (let ((a (anchor-of ctx node)))
+      (if (< index a)
+          (set-selection ctx node index a "backward")
+          (set-selection ctx node a index "forward")))
+    (caret-of ctx node)))
+
+(defun move-caret (ctx node to &optional extend)
+  "Move the caret to TO.  With EXTEND (shift held) the anchor stays and the
+   selection grows to TO; without it the selection collapses there."
+  (if extend (extend-selection-to ctx node to) (set-selection ctx node to to "none"))
   t)
 
 (defun note-edit-start (ctx node)
@@ -99,23 +131,26 @@
 ;;; ---- the edits -------------------------------------------------------------
 
 (defun handle-text-input (ctx text)
-  "Insert TEXT at the caret of the focused control.  Returns T when it edited."
+  "Insert TEXT at the caret of the focused control, REPLACING the selection if
+   there is one.  Returns T when it edited."
   (let ((node (editing-target ctx)))
     (when (and node (plusp (length text)))
-      (let* ((value (control-value ctx node))
-             (caret (caret-of ctx node))
-             (max (control-maxlength node)))
-        ;; maxlength is a UA-enforced limit on *user* input only — a script may
-        ;; still assign a longer value, which is why this is here and not in the
-        ;; value setter.
-        (when (and max (>= (length value) max))
-          (return-from handle-text-input nil))
-        (let ((new (concatenate 'string (subseq value 0 caret) text (subseq value caret))))
-          (note-edit-start ctx node)
-          (set-control-value ctx node (if max (subseq new 0 (min (length new) max)) new))
-          (setf (context-caret ctx) (+ caret (length text)))
-          (fire-input-event ctx node)
-          t)))))
+      (multiple-value-bind (from to) (selection-of ctx node)
+        (let* ((value (control-value ctx node))
+               (max (control-maxlength node)))
+          ;; maxlength is a UA-enforced limit on *user* input only — a script may
+          ;; still assign a longer value, which is why this is here and not in the
+          ;; value setter.  It is tested against the RESULT, not the current
+          ;; length: typing over a selection can leave a full field shorter, and
+          ;; refusing that would wedge the control at its limit.
+          (when (and max (>= (- (length value) (- to from)) max))
+            (return-from handle-text-input nil))
+          (let ((new (concatenate 'string (subseq value 0 from) text (subseq value to))))
+            (note-edit-start ctx node)
+            (set-control-value ctx node (if max (subseq new 0 (min (length new) max)) new))
+            (set-selection ctx node (+ from (length text)) (+ from (length text)) "none")
+            (fire-input-event ctx node)
+            t))))))
 
 (defun %delete-range (ctx node from to)
   (let ((value (control-value ctx node)))
@@ -123,7 +158,7 @@
       (note-edit-start ctx node)
       (set-control-value ctx node
                          (concatenate 'string (subseq value 0 from) (subseq value to)))
-      (setf (context-caret ctx) from)
+      (set-selection ctx node from from "none")
       (fire-input-event ctx node)
       t)))
 
@@ -141,34 +176,86 @@
             (form-fire-submit ctx form nil)))
       t)))
 
-(defun handle-editing-key (ctx key)
+(defun line-start (value index)
+  "The offset just after the newline preceding INDEX (0 on the first line)."
+  (let ((nl (position #\Newline value :end (min index (length value)) :from-end t)))
+    (if nl (1+ nl) 0)))
+
+(defun line-end (value index)
+  "The offset of the newline at or after INDEX, or the end of VALUE."
+  (or (position #\Newline value :start (min index (length value))) (length value)))
+
+(defun offset-by-line (value index delta)
+  "INDEX moved DELTA lines, keeping its column where the target line is long
+   enough.  On the first/last line the caret goes to the start/end instead —
+   what every text editor does, and what makes ArrowUp reachable at all."
+  (let* ((ls (line-start value index))
+         (col (- index ls)))
+    (if (minusp delta)
+        (if (zerop ls) 0
+            (let ((ps (line-start value (1- ls))))
+              (min (+ ps col) (1- ls))))
+        (let ((le (line-end value index)))
+          (if (>= le (length value)) (length value)
+              (min (+ (1+ le) col) (line-end value (1+ le))))))))
+
+(defun handle-editing-key (ctx key &key shift)
   "Apply the editing action for a non-printable KEY (\"Backspace\", \"ArrowLeft\",
-   \"Home\", \"Enter\", …) to the focused control.  Returns T when it changed the
-   value, the caret, or submitted — i.e. when the shell should repaint."
+   \"Home\", \"Enter\", …) to the focused control.  SHIFT extends the selection
+   instead of collapsing it.  Returns T when it changed the value, the selection,
+   or submitted — i.e. when the shell should repaint."
   (let ((node (editing-target ctx)))
     (when node
-      (let* ((value (control-value ctx node))
-             (caret (caret-of ctx node))
-             (n (length value)))
-        (cond
-          ((string= key "Backspace") (%delete-range ctx node (max 0 (1- caret)) caret))
-          ((string= key "Delete")    (%delete-range ctx node caret (min n (1+ caret))))
-          ((string= key "ArrowLeft")  (move-caret ctx (max 0 (1- caret))))
-          ((string= key "ArrowRight") (move-caret ctx (min n (1+ caret))))
-          ((string= key "Home")       (move-caret ctx 0))
-          ((string= key "End")        (move-caret ctx n))
-          ((string= key "Enter")
-           (if (string= (h:dnode-name node) "textarea")
-               (handle-text-input ctx (string #\Newline))
-               ;; a single-line field commits, then implicitly submits
-               (progn (commit-edit ctx) (implicit-submission ctx node) t)))
-          (t nil))))))
+      (multiple-value-bind (from to) (selection-of ctx node)
+        (let* ((value (control-value ctx node))
+               (caret (caret-of ctx node))
+               (multiline (string= (h:dnode-name node) "textarea"))
+               (n (length value))
+               (selected (< from to)))
+          (flet ((go-to (i) (move-caret ctx node i shift)))
+            (cond
+              ;; Backspace/Delete over a selection remove the selection itself —
+              ;; the character either side of it is not part of the edit.
+              ((string= key "Backspace")
+               (if selected (%delete-range ctx node from to)
+                   (%delete-range ctx node (max 0 (1- caret)) caret)))
+              ((string= key "Delete")
+               (if selected (%delete-range ctx node from to)
+                   (%delete-range ctx node caret (min n (1+ caret)))))
+              ;; A plain arrow against a selection collapses to its near edge
+              ;; rather than stepping a character from the moving one.
+              ((string= key "ArrowLeft")
+               (go-to (if (and selected (not shift)) from (max 0 (1- caret)))))
+              ((string= key "ArrowRight")
+               (go-to (if (and selected (not shift)) to (min n (1+ caret)))))
+              ((string= key "ArrowUp")
+               (and multiline (go-to (offset-by-line value caret -1))))
+              ((string= key "ArrowDown")
+               (and multiline (go-to (offset-by-line value caret 1))))
+              ((string= key "Home") (go-to (if multiline (line-start value caret) 0)))
+              ((string= key "End")  (go-to (if multiline (line-end value caret) n)))
+              ((string= key "Enter")
+               (if multiline
+                   (handle-text-input ctx (string #\Newline))
+                   ;; a single-line field commits, then implicitly submits
+                   (progn (commit-edit ctx) (implicit-submission ctx node) t)))
+              (t nil))))))))
 
 (defun focus-caret (ctx node)
-  "The caret offset to paint inside NODE, or NIL when it is not the focused
-   text control.  Bound into WEFT.RENDER:*FORM-CARET-FN* by the shell."
-  (and (eq (context-focus ctx) node) (text-control-p node)
-       (caret-of ctx node)))
+  "What to paint inside NODE: (values caret selection-start selection-end), or
+   NIL when it is not the focused text control.  Bound into
+   WEFT.RENDER:*FORM-CARET-FN* by the shell — one hook, because the caret and
+   the highlight are two views of the same selection and the painter should not
+   have to ask twice and hope the answers agree."
+  (when (and (eq (context-focus ctx) node) (text-control-p node))
+    (multiple-value-bind (s e) (selection-of ctx node)
+      (values (caret-of ctx node) s e))))
 
 (defun live-form-caret-fn (ctx)
   (lambda (node) (focus-caret ctx node)))
+
+(defun select-all (ctx node)
+  "Select NODE's whole value — Ctrl-A, and what focusing a field by Tab does."
+  (when (and node (text-control-p node))
+    (set-selection ctx node 0 (length (control-value ctx node)) "forward")
+    t))

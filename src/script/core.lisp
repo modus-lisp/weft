@@ -51,8 +51,11 @@
   (xml-documents (make-hash-table :test 'eq)) ; document dnode -> t when it is an XMLDocument (createDocument; not a DOMParser result)
   (input-values (make-hash-table :test 'eq)) ; <input> node -> its independent value property
   (focus nil)               ; the focused element dnode; NIL means the body (document.activeElement)
-  (caret 0)                 ; caret offset within the focused text control's value
-  (caret-anchor nil)        ; selection anchor offset, or NIL when there is no selection
+  ;; Text selection per control: node -> (start end . direction).  ONE table,
+  ;; because there is one selection — `input.selectionStart' and the caret the
+  ;; user watches move under the arrow keys are the same thing, and storing them
+  ;; separately is how they drift apart.  A caret is the collapsed case (s = e).
+  (selections (make-hash-table :test 'eq))
   (edit-start nil)          ; the focused control's value when it gained focus (for `change')
   (shadow-roots (make-hash-table :test 'eq)) ; element dnode -> shadow root (DocumentFragment dnode)
   (on-handlers (make-hash-table :test 'eq))  ; node -> (equal hash "type" -> handler fn)
@@ -99,6 +102,26 @@
 
 (defun proto (ctx key) (getf (context-protos ctx) key))
 (defun (setf proto) (v ctx key) (setf (getf (context-protos ctx) key) v))
+
+;;; ---- text selection state (shared by the IDL and the editor) ---------------
+;;; Raw storage only: no clamping, because the length to clamp against is a
+;;; control's current value and computing that needs the forms code, which is
+;;; loaded much later.  Both callers clamp on the way in.
+
+(defun node-selection (ctx node)
+  "NODE's stored selection as (values start end direction).  An untouched
+   control reads 0, 0, \"none\" — HTML's initial selection is collapsed at the
+   START of the value, not at its end."
+  (let ((s (gethash node (context-selections ctx))))
+    (if s (values (first s) (second s) (cddr s)) (values 0 0 "none"))))
+
+(defun set-node-selection (ctx node start end dir)
+  "Store NODE's selection.  Returns T only when it actually MOVED — the
+   fire-if-changed test the `select' event depends on."
+  (multiple-value-bind (os oe od) (node-selection ctx node)
+    (unless (and (eql os start) (eql oe end) (equal od dir))
+      (setf (gethash node (context-selections ctx)) (list* start end dir))
+      t)))
 
 (defun make-validity-state (ctx)
   "A fresh, empty ValidityState host object.  The caller puts the eleven flags;

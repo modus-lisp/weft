@@ -739,10 +739,12 @@ The subtree is rendered through stencil+gesso during paint."
 (defun %ctrl-has (node name) (and (assoc name (h:dnode-attrs node) :test #'string-equal) t))
 
 (defvar *form-caret-fn* nil
-  "Optional (node -> offset) hook returning the caret offset to paint inside a
-   text control, or NIL when it is not the focused one.  Same reason as
-   *FORM-VALUE-FN*: focus lives in the scripting context, which render cannot
-   see.  Unbound, no caret is drawn — a still image has nothing blinking in it.")
+  "Optional hook, (node -> (values caret selection-start selection-end)),
+   describing what to paint inside a text control, or NIL when it is not the
+   focused one.  Same reason as *FORM-VALUE-FN*: focus lives in the scripting
+   context, which render cannot see.  Unbound, no caret is drawn — a still image
+   has nothing blinking in it.  ONE hook for both, because the caret and the
+   highlight are two views of one selection; asking twice invites two answers.")
 
 (defun %ctrl-live-value (node)
   "NODE's live value from the shell's hook, or NIL when there is no hook / no
@@ -750,7 +752,11 @@ The subtree is rendered through stencil+gesso during paint."
   (and *form-value-fn* (funcall *form-value-fn* node)))
 
 (defun %ctrl-caret (node)
-  (and *form-caret-fn* (funcall *form-caret-fn* node)))
+  "(values caret selection), where SELECTION is the (start . end) range to
+   highlight or NIL when it is collapsed — a caret with nothing selected."
+  (when *form-caret-fn*
+    (multiple-value-bind (caret s e) (funcall *form-caret-fn* node)
+      (values caret (and caret s e (< s e) (cons s e))))))
 
 (defun %ctrl-value (node)
   "What an <input>'s box should display: the live value if the shell has one,
@@ -766,6 +772,9 @@ The subtree is rendered through stencil+gesso during paint."
 
 (defparameter +ctrl-border+ '(130 130 130))
 (defparameter +ctrl-ink+    '(20 20 20))
+(defparameter +ctrl-select-bg+ '(180 210 255)
+  "The selection highlight: painted UNDER the glyphs, so the text stays its own
+   colour and a one-colour font needs no inverse-video path.")
 (defun %ctrl-frame (cv x y w h color)               ; a 1px rectangle outline
   (fill-rect cv x y w 1 color) (fill-rect cv x (+ y h -1) w 1 color)
   (fill-rect cv x y 1 h color) (fill-rect cv (+ x w -1) y 1 h color))
@@ -778,21 +787,34 @@ The subtree is rendered through stencil+gesso during paint."
           ((null caret) over)
           (t (max 0 (min over (- caret maxc)))))))
 
-(defun %ctrl-text-fit (cv text x y w color &optional caret)
+(defun %sel-columns (sel start maxc &optional (limit maxc))
+  "SEL, a (start . end) offset range, as the (values from to) COLUMNS it covers
+   in a run that begins at offset START and is MAXC columns wide — or NIL when
+   none of it is on screen."
+  (when sel
+    (let ((a (max 0 (min maxc (- (car sel) start))))
+          (b (max 0 (min maxc limit (- (cdr sel) start)))))
+      (when (< a b) (values a b)))))
+
+(defun %ctrl-text-fit (cv text x y w color &optional caret sel)
   "Draw TEXT clipped to inner width W, scrolled so CARET (if any) is visible,
-   and draw the caret itself as a 1px bar."
+   highlight SEL under it, and draw the caret itself as a 1px bar."
   (let* ((maxc (max 0 (floor w *font-w*)))
          (start (%ctrl-scroll-start (length text) maxc caret))
          (shown (subseq text start (min (length text) (+ start maxc)))))
+    (multiple-value-bind (a b) (%sel-columns sel start maxc (length shown))
+      (when a
+        (fill-rect cv (+ x (* a *font-w*)) (1- y) (* (- b a) *font-w*) (+ *font-h* 2)
+                   +ctrl-select-bg+)))
     (draw-text cv shown x y color)
     (when caret
       (fill-rect cv (+ x (* (- caret start) *font-w*)) (1- y) 1 (+ *font-h* 2) +ctrl-ink+))))
 
-(defun paint-textbox (cv x y w h value password-p &optional caret)
+(defun paint-textbox (cv x y w h value password-p &optional caret sel)
   (fill-rect cv x y w h '(255 255 255))
   (%ctrl-frame cv x y w h (if caret +ctrl-ink+ +ctrl-border+))   ; focused field: darker frame
   (let ((text (if password-p (make-string (length value) :initial-element #\*) value)))
-    (%ctrl-text-fit cv text (+ x 4) (+ y (round (- h *font-h*) 2)) (- w 8) +ctrl-ink+ caret)))
+    (%ctrl-text-fit cv text (+ x 4) (+ y (round (- h *font-h*) 2)) (- w 8) +ctrl-ink+ caret sel)))
 
 (defun %split-lines (text)
   (let ((lines '()) (start 0))
@@ -810,26 +832,40 @@ The subtree is rendered through stencil+gesso during paint."
           (setf row (1+ row) col 0)
           (incf col)))))
 
-(defun paint-textarea (cv x y w h text caret)
+(defun paint-textarea (cv x y w h text caret &optional sel)
   (fill-rect cv x y w h '(255 255 255))
   (%ctrl-frame cv x y w h (if caret +ctrl-ink+ +ctrl-border+))
   (let ((rows (max 1 (floor (- h 8) *font-h*)))
         (maxc (max 0 (floor (- w 8) *font-w*)))
-        (crc (and caret (%caret-row-col text caret))))
+        (crc (and caret (%caret-row-col text caret)))
+        (off 0))                        ; value offset of the line being drawn
     ;; Enter inserts a newline in a <textarea>, so unlike an <input> this has to
     ;; break lines itself — DRAW-TEXT would paint a newline as a stray glyph.
+    ;; A selection spanning several lines is highlighted per line for the same
+    ;; reason: it is a run of offsets, not a rectangle.
     (loop for line in (%split-lines text)
           for row from 0 below rows
           for ly = (+ y 4 (* row *font-h*))
-          do (draw-text cv (subseq line 0 (min (length line) maxc)) (+ x 4) ly +ctrl-ink+)
+          do (multiple-value-bind (a b) (%sel-columns sel off maxc (length line))
+               (when a
+                 (fill-rect cv (+ x 4 (* a *font-w*)) (1- ly) (* (- b a) *font-w*)
+                            (+ *font-h* 2) +ctrl-select-bg+)))
+             (draw-text cv (subseq line 0 (min (length line) maxc)) (+ x 4) ly +ctrl-ink+)
              (when (and crc (= row (car crc)) (<= (cdr crc) maxc))
-               (fill-rect cv (+ x 4 (* (cdr crc) *font-w*)) (1- ly) 1 (+ *font-h* 2) +ctrl-ink+)))))
+               (fill-rect cv (+ x 4 (* (cdr crc) *font-w*)) (1- ly) 1 (+ *font-h* 2) +ctrl-ink+))
+             (incf off (1+ (length line))))))
 
-(defun caret-index-at (node value w dx dy)
+(defun caret-index-at (node value w dx dy &optional painted-caret)
   "The offset in VALUE a click DX/DY pixels inside NODE's W-wide widget box
    should put the caret at.  It lives beside the painters because it has to undo
    exactly what they do — the 4px inset, the scroll that keeps an overflowing
-   field's tail visible, and (for a <textarea>) the line breaking."
+   field's tail visible, and (for a <textarea>) the line breaking.
+
+   PAINTED-CARET is the caret that was in effect when the box the user clicked
+   was DRAWN (NIL if the field was not focused then).  It has to be the painted
+   one, not the current one: an overflowing field scrolls to its caret, so
+   reading the column against a scroll it was never drawn at lands the caret
+   somewhere the user did not point."
   (let ((maxc (max 0 (floor (- w 8) *font-w*)))
         (col (max 0 (round (- dx 4) *font-w*))))
     (if (string-equal (h:dnode-name node) "textarea")
@@ -838,9 +874,8 @@ The subtree is rendered through stencil+gesso during paint."
                (line (nth row lines)))
           (+ (loop for i from 0 below row sum (1+ (length (nth i lines))))
              (min (length line) col maxc)))
-        ;; an unfocused overflowing field shows its tail, so that is what the
-        ;; column the user aimed at is an offset into
-        (min (length value) (+ (%ctrl-scroll-start (length value) maxc nil) col)))))
+        (min (length value)
+             (+ (%ctrl-scroll-start (length value) maxc painted-caret) col)))))
 
 (defun paint-button (cv x y w h label)
   (fill-rect cv x y w h '(225 225 225))
@@ -898,10 +933,10 @@ The subtree is rendered through stencil+gesso during paint."
          (let* ((cols (or (%ctrl-int node "cols") 20)) (rows (or (%ctrl-int node "rows") 2))
                 (w (+ 8 (* cols *font-w*))) (th (+ 8 (* rows *font-h*)))
                 ;; a <textarea>'s default value is its child text, not an attr
-                (text (or (%ctrl-live-value node) (%ctrl-text node)))
-                (caret (%ctrl-caret node)))
-           (mk w th (lambda (cv x y bw bh) (declare (ignore bw bh))
-                      (paint-textarea cv x y (round w) (round th) text caret)))))
+                (text (or (%ctrl-live-value node) (%ctrl-text node))))
+           (multiple-value-bind (caret sel) (%ctrl-caret node)
+             (mk w th (lambda (cv x y bw bh) (declare (ignore bw bh))
+                        (paint-textarea cv x y (round w) (round th) text caret sel))))))
         ((string= tag "select")
          (let* ((label (%select-label node)) (w (+ 34 (* (length label) *font-w*))))
            (mk w h (lambda (cv x y bw bh) (declare (ignore bw bh)) (paint-select cv x y (round w) (round h) label)))))
@@ -909,10 +944,10 @@ The subtree is rendered through stencil+gesso during paint."
          (let* ((size (or (%ctrl-int node "size") 20))
                 (w (+ 8 (* size *font-w*)))
                 (pw (string= type "password"))
-                (value (%ctrl-value node))
-                (caret (%ctrl-caret node)))
-           (mk w h (lambda (cv x y bw bh) (declare (ignore bw bh))
-                     (paint-textbox cv x y (round w) (round h) value pw caret)))))))))
+                (value (%ctrl-value node)))
+           (multiple-value-bind (caret sel) (%ctrl-caret node)
+             (mk w h (lambda (cv x y bw bh) (declare (ignore bw bh))
+                       (paint-textbox cv x y (round w) (round h) value pw caret sel))))))))))
 
 (defun form-control-p (n)
   "True for a form control we draw as a native widget (excludes hidden inputs)."

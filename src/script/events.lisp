@@ -126,7 +126,7 @@
 ;;; per caller is exactly how the weft-checked bug in FORMS-CONSTRAINTS got in.
 (declaim (ftype function input-type checked-p set-checked set-attr remove-attr
                          element-form-owner tree-root form-fire-submit
-                         node-disabled-p
+                         node-disabled-p get-attr
                          ;; EDITING is compiled after the IDL files (it needs
                          ;; them), but focus/blur here and in DOM must commit a
                          ;; pending edit before the blur event.
@@ -239,9 +239,7 @@
    <fieldset> disables everything nested inside it, and nothing tells us."
   (let ((f (context-focus ctx)))
     (unless (or (null f) (focus-still-valid-p ctx f))
-      (setf (context-focus ctx) nil (context-caret ctx) 0
-            (context-caret-anchor ctx) nil (context-edit-start ctx) nil
-            f nil))
+      (setf (context-focus ctx) nil (context-edit-start ctx) nil f nil))
     (or f (body-element ctx))))
 
 (defun set-focus (ctx node)
@@ -255,9 +253,10 @@
     (when (and node (not (focus-still-valid-p ctx node)))
       (return-from set-focus nil))
     (unless (eq old node)
-      (setf (context-focus ctx) node
-            (context-caret ctx) 0
-            (context-caret-anchor ctx) nil)
+      ;; The selection is NOT reset here: it lives per node and survives losing
+      ;; focus, which is what `input.selectionStart' reading back what you left
+      ;; there depends on.
+      (setf (context-focus ctx) node)
       (when old
         (fire-at ctx old "blur" :bubbles nil)
         (fire-at ctx old "focusout"))
@@ -266,6 +265,64 @@
         (fire-at ctx node "focusin"))
       (setf (context-dirty ctx) t))
     node))
+
+;;; ---- sequential focus navigation (HTML §focus, the Tab order) --------------
+
+(defun tabindex-of (node)
+  "NODE's tabindex as an integer, or NIL when it has none (or an unparseable
+   one, which HTML says to ignore rather than treat as 0)."
+  (let ((v (get-attr node "tabindex")))
+    (and v (ignore-errors (parse-integer (string-trim '(#\Space #\Tab #\Newline) v))))))
+
+(defun sequentially-focusable-p (node)
+  "True when Tab should be able to land on NODE: something focusable by default
+   (an enabled form control, or a link with an href) or made focusable by a
+   tabindex — but never one with a NEGATIVE tabindex, which is HTML's way of
+   saying \"focusable by script and by click, but skipped by the keyboard\"."
+  (and (eq (h:dnode-kind node) :element)
+       (let ((ti (tabindex-of node)))
+         (and (not (and ti (minusp ti)))
+              (or ti
+                  (and (not (node-disabled-p node))
+                       (let ((tag (string-downcase (h:dnode-name node))))
+                         (or (member tag '("button" "select" "textarea") :test #'string=)
+                             (and (string= tag "input")
+                                  (not (string-equal (or (input-type node) "") "hidden")))
+                             (and (string= tag "a") (get-attr node "href"))))))))))
+
+(defun focus-order (ctx)
+  "Every sequentially focusable element, in HTML's tab order: the positive
+   tabindexes first in ascending order, then everything else in tree order.
+   Ties inside a tabindex value keep tree order, so the walk has to be stable."
+  (let ((doc (context-document ctx)) (found '()))
+    (labels ((walk (n)
+               (when (eq (h:dnode-kind n) :element)
+                 (when (sequentially-focusable-p n) (push n found)))
+               (map nil #'walk (h:dnode-children n))))
+      (when doc (walk doc)))
+    (let ((in-order (nreverse found)))
+      (stable-sort in-order #'<
+                   :key (lambda (n)
+                          (let ((ti (tabindex-of n)))
+                            ;; positives sort among themselves; 0/absent all
+                            ;; land in one bucket after them
+                            (if (and ti (plusp ti)) ti most-positive-fixnum)))))))
+
+(defun focus-navigate (ctx forward)
+  "Move focus one step along the tab order (FORWARD nil = Shift-Tab) and return
+   the element that got it, or NIL when there is nothing focusable.  Wraps at
+   either end — a browser would go to the chrome instead, but a shell with no
+   chrome to reach has nowhere else to send it."
+  (let* ((order (focus-order ctx)))
+    (when order
+      (let* ((cur (context-focus ctx))
+             (pos (position cur order))
+             (n (length order))
+             (next (cond ((null pos) (if forward 0 (1- n)))
+                         (forward (mod (1+ pos) n))
+                         (t (mod (1- pos) n)))))
+        (set-focus ctx (nth next order))
+        (nth next order)))))
 
 (defun activate-on-click (ctx node thunk)
   "Run THUNK (which dispatches the click event) wrapped in NODE's activation

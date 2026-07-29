@@ -22,8 +22,8 @@
            ;; focus + typing: the shell routes keys to the focused control and
            ;; asks us to apply the edit, having first dispatched (and possibly
            ;; had cancelled) the key event
-           #:active-element #:set-focus #:commit-edit #:text-control-p
-           #:control-value #:place-caret
+           #:active-element #:set-focus #:focus-navigate #:commit-edit #:text-control-p
+           #:control-value #:place-caret #:extend-selection-to #:selection-of #:select-all
            #:handle-text-input #:handle-editing-key #:focus-caret #:live-form-caret-fn
            ;; Web Font Loader (WebFontConfig) convention, for the shell to replay
            #:web-font-config))

@@ -406,6 +406,25 @@ Returns NIL at end of stream with no bytes read."
              (let ((te (get-header headers "transfer-encoding")))
                (and te (search "chunked" te :test #'char-equal)))))))
 
+(define-condition connection-closed-early (error)
+  ((url :initarg :url :reader connection-closed-early-url)
+   (cause :initarg :cause :initform nil :reader connection-closed-early-cause))
+  (:report (lambda (c s)
+             (format s "weft.fetch: peer closed before answering ~a~@[ (~a)~]"
+                     (connection-closed-early-url c)
+                     (connection-closed-early-cause c))))
+  (:documentation "The peer accepted the connection and then closed it without sending
+a status line.  It answered NOTHING, so it did nothing, which is what makes this
+distinct from every other transport error: an idempotent request may simply be sent
+again.  A pooled socket the server timed out is the familiar cause; a tunnel or load
+balancer that drops the first connection after an idle period is the other, and that
+one arrives on a FRESH socket, so 'only retry pooled' does not cover it."))
+
+(defvar *transport-tries* 3
+  "How many times SOCKET-TRANSPORT will send an idempotent request before giving up.
+One try for a pooled socket that has gone stale, one for a front end that drops the
+first connection after idling, and the original.")
+
 (defun socket-transport (method url req-headers)
   "One HTTP/1.1 exchange to URL over a pooled raw socket (http) or seal TLS stream
 (https).  Connections are kept alive and reused per host; a connection-level failure
@@ -422,34 +441,49 @@ Set-Cookie stored."
          (ck (cookie-header host path https))
          (all-headers (if ck (cons (cons "Cookie" ck) req-headers) req-headers)))
     (flet ((exchange (stream)
-             (write-request stream method host path all-headers)
-             (let ((line (read-header-line stream)))
+             ;; Everything up to the status line is the "peer said nothing" window, and
+             ;; how that arrives is a matter of timing — EOF on the read, a reset while
+             ;; reading, a broken pipe while writing.  They mean one thing to the caller,
+             ;; so they are one condition; past the status line an error is a real error.
+             (let ((line (handler-case
+                             (progn (write-request stream method host path all-headers)
+                                    (read-header-line stream))
+                           (connection-closed-early (e) (error e))
+                           (error (e) (error 'connection-closed-early :url url :cause e)))))
                ;; No status line means the peer closed the connection before
                ;; answering — a keep-alive socket the server timed out since we
                ;; pooled it.  Signal so the loop retries fresh instead of returning
                ;; an empty 0-status response.
                (unless (and line (position #\Space line))
-                 (error "weft.fetch: no HTTP status line (stale/closed connection)"))
+                 (error 'connection-closed-early :url url))
                (let* ((status (parse-status-line line))
                       (headers (read-headers stream))
                       (body (read-body stream headers method status)))
                  (store-cookies headers host)
                  (values (make-response :status status :headers headers :body body :url url)
                          (keep-alive-p headers))))))
-      (labels ((attempt (stream pooled)
+      (labels ((idempotent-p ()
+                 (member method '("GET" "HEAD" "OPTIONS") :test #'string-equal))
+               (attempt (stream pooled tries)
                  (handler-case
                      (multiple-value-bind (resp keep) (exchange stream)
                        (release-stream scheme host port stream keep)
                        resp)
                    (error (e)
                      (ignore-errors (close stream))
-                     ;; only a *reused* socket is expected to have gone stale — retry it
-                     ;; once on a fresh connection; a fresh failure is a real error.
-                     (if pooled
-                         (attempt (open-stream-for scheme host port *read-timeout*) nil)
+                     ;; A *reused* socket is expected to go stale, so any failure on one
+                     ;; retries.  A fresh socket retries only when the peer closed before
+                     ;; answering and the request was idempotent — nothing was answered,
+                     ;; so re-sending cannot repeat an effect.  Anything else on a fresh
+                     ;; connection is a real error and is reported as one.
+                     (if (and (plusp tries)
+                              (or pooled
+                                  (and (typep e 'connection-closed-early) (idempotent-p))))
+                         (attempt (open-stream-for scheme host port *read-timeout*)
+                                  nil (1- tries))
                          (error e))))))
         (multiple-value-bind (stream pooled) (acquire-stream scheme host port *read-timeout*)
-          (attempt stream pooled))))))
+          (attempt stream pooled (max 0 (1- *transport-tries*))))))))
 
 (defvar *http-transport* #'socket-transport
   "Function (method url req-headers) -> RESPONSE.  The default is a pure-CL

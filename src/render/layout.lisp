@@ -9,7 +9,7 @@
 (in-package #:weft.render)
 
 (defstruct lbox x y w h style node kind children marker img vpaint baseline rel collapse)   ; kind :block | :line; img = decoded IMG; vpaint = (cv x y w h) replaced-content painter; baseline = px offset from a :line box's top to its shared baseline (CSS 2.1 10.8); rel = (dx . dy) inline relative-positioning visual shift for an atomic (§9.4.3); collapse = (bt br bb bl) resolved collapsed-border widths for a border-collapse table cell (half a shared internal border, full an outer one, CSS 2.1 §17.6.2) — read by PAD-BOX/PAINT-BORDERS in place of the cell's own uniform border when set
-(defstruct frag x w text style node (dx 0) (dy 0))         ; a positioned styled text run on a line; node = source DOM element (for hit-testing); dx/dy = inline relative-positioning visual shift (§9.4.3)
+(defstruct frag x w text style node (dx 0) (dy 0) snode soff slen space)  ; a positioned styled text run on a line; node = source DOM element (for hit-testing); dx/dy = inline relative-positioning visual shift (§9.4.3); snode/soff/slen = the source TEXT node and the [soff,soff+slen) character range of its data this run came from (selection coordinates — see selection.lisp); space = T when collapsible whitespace preceded the run in the source (the join a text extraction has to put back)
 
 ;;; Cumulative inline relative-positioning offset (CSS 2.1 §9.4.3) in effect while
 ;;; COLLECT-WORDS walks an inline run: a (dx . dy) visual shift compounded from the
@@ -183,8 +183,9 @@ boundary — \"see \" <a>x</a> stays \"see x\" — while genuinely adjacent runs
 horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP."
   (let ((words '()) (pend nil) (pend-px 0)        ; whitespace + inline-margin px before next token
         (floats '()) (blocks '()))                ; float / block-level descendants hoisted out
-    (labels ((emit1 (payload meta node)
-               (push (list payload meta pend pend-px node *inline-rel*) words) (setf pend nil pend-px 0))
+    (labels ((emit1 (payload meta node &optional snode soff slen)
+               (push (list payload meta pend pend-px node *inline-rel* snode soff slen) words)
+               (setf pend nil pend-px 0))
              (amargin (cs side)                      ; atomic's OWN horizontal margin px (may be negative)
                (let ((v (if (eq side :left) (css:cstyle-margin-left cs) (css:cstyle-margin-right cs))))
                  (if (numberp v) v 0)))
@@ -200,29 +201,42 @@ horizontal margins on the enclosing element(s).  Use TOK-META/TOK-SPACE/TOK-GAP.
              (iedge (cs side)                        ; inline horizontal margin px on :left / :right
                (let ((v (if (eq side :left) (css:cstyle-margin-left cs) (css:cstyle-margin-right cs))))
                  (if (numberp v) (max 0 v) 0)))
-             (emit-text (s style node)
-               (let ((b (make-string-output-stream)) (any nil))
+             ;; SNODE is the DOM text node S is the data of; WSTART/WEND track the
+             ;; source range of the word being accumulated, so each token can say
+             ;; which characters of which node produced it.  That is the only thing
+             ;; a selection can be anchored to that survives a relayout — line
+             ;; breaking changes with the width, source offsets do not.
+             (emit-text (s style node &optional snode)
+               (let ((b (make-string-output-stream)) (any nil) (wstart 0) (wend 0))
                  (flet ((flush () (when any
                                     (emit1 (apply-text-transform (get-output-stream-string b)
                                                                  (and style (css:cstyle-text-transform style))
                                                                  node)
-                                           style node)
+                                           style node snode wstart (- wend wstart))
                                     (setf any nil b (make-string-output-stream)))))
                    ;; white-space:pre-line / pre-wrap preserve newlines as forced
                    ;; line breaks (emitted as a :break token); other whitespace still
                    ;; collapses to a single inter-word space.
                    (let ((keep-nl (and style (member (css:cstyle-white-space style)
                                                      '("pre-line" "pre-wrap") :test #'string=))))
-                     (loop for c across s do
+                     (loop for i from 0 below (length s)
+                           for c = (char s i) do
                        (cond
                          ((and keep-nl (char= c #\Newline)) (flush) (push (list :break nil nil 0 node) words))
                          ((member c '(#\Space #\Tab #\Newline #\Return)) (flush) (setf pend t))
-                         ((format-control-p c) nil)   ; invisible bidi/format control: no glyph
-                         (t (write-char c b) (setf any t)))))
+                         ;; invisible bidi/format control: no glyph, but it is a
+                         ;; source character inside the word, so the range covers it
+                         ((format-control-p c) (when any (setf wend (1+ i))))
+                         (t (unless any (setf wstart i))
+                            (write-char c b) (setf any t) (setf wend (1+ i))))))
                    (flush))))
              (rec (n owner onode)
                (case (h:dnode-kind n)
-                 (:text (emit-text (h:dnode-data n) owner onode))
+                 ;; N itself — the text node — is what a selection anchors to; ONODE
+                 ;; is the element whose style the run wears.  (::before/::after
+                 ;; content below passes no text node: generated content has no
+                 ;; source characters, so it is not selectable and does not copy.)
+                 (:text (emit-text (h:dnode-data n) owner onode n))
                  (:element
                   (let* ((cs (or (st styles n) owner))
                          ;; compound this element's own inline relative offset (CSS 2.1
@@ -381,15 +395,18 @@ remainder (CSS 2.1 §5.12.2).  Returns the possibly-modified WORDS list."
             (when (plusp k)
               (let* ((head (subseq word 0 k)) (tail (subseq word k))
                      ;; head token: inherits SPACE/GAP/NODE/REL of the original,
-                     ;; carries FL-CS as its style.
+                     ;; carries FL-CS as its style.  The source range splits at K
+                     ;; too, so a selection over a ::first-letter paragraph still
+                     ;; extracts the word whole.
                      (head-tok (list head fl-cs (tok-space tok) (tok-gap tok)
-                                      (tok-node tok) (tok-rel tok))))
+                                      (tok-node tok) (tok-rel tok)
+                                      (tok-snode tok) (tok-soff tok)
+                                      (let ((sl (tok-slen tok))) (and sl (min k sl))))))
                 (if (zerop (length tail))
                     (setf (car cell) head-tok)
                     ;; splice: head then tail (tail keeps original style; no leading
                     ;; space/gap between the two halves of one word).
-                    (let ((tail-tok (list tail (tok-meta tok) nil 0
-                                          (tok-node tok) (tok-rel tok))))
+                    (let ((tail-tok (tok-rest tok tail k)))
                       (setf (car cell) head-tok (cdr cell) (cons tail-tok (cdr cell)))))))
             (return))
         ;; a leading atomic/break before any text: first-letter does not apply
@@ -407,6 +424,34 @@ remainder (CSS 2.1 §5.12.2).  Returns the possibly-modified WORDS list."
 (defun tok-rel (tok) (sixth tok))       ; inline relative-position (dx . dy) shift, or NIL (§9.4.3)
 (defun tok-dx (tok) (let ((r (tok-rel tok))) (if r (car r) 0)))
 (defun tok-dy (tok) (let ((r (tok-rel tok))) (if r (cdr r) 0)))
+;; Source provenance (positions 6-8), read with NTH so the shorter :BREAK and
+;; :ATOMIC tokens — which have no source text — answer NIL rather than signal.
+(defun tok-snode (tok) (nth 6 tok))     ; the DOM TEXT node this word came from
+(defun tok-soff (tok) (nth 7 tok))      ; its offset in that node's data
+(defun tok-slen (tok) (nth 8 tok))      ; how many source characters it spans
+
+(defun tok-rest (tok payload consumed)
+  "TOK requeued with PAYLOAD as its remaining text, after CONSUMED source
+characters were placed on the line just closed.  A remainder is a continuation of
+one word, so it carries no leading space and no gap; its source range is the tail
+of TOK's."
+  (list payload (tok-meta tok) nil 0 (tok-node tok) (tok-rel tok)
+        (tok-snode tok)
+        (let ((so (tok-soff tok))) (and so (+ so consumed)))
+        (let ((sl (tok-slen tok))) (and sl (max 0 (- sl consumed))))))
+
+(defun tok-frag (tok x w text &key (skip 0) take)
+  "A FRAG for TEXT drawn at X with width W, tagged with the slice of TOK's source
+range it represents: SKIP characters in, TAKE characters long (the rest of the
+range by default).  Every text frag is built here so the source tag cannot drift
+from the glyphs — hit-testing and extraction both read it."
+  (let ((so (tok-soff tok)) (sl (tok-slen tok)))
+    (make-frag :x x :w w :text text :style (tok-meta tok) :node (tok-node tok)
+               :dx (tok-dx tok) :dy (tok-dy tok) :space (tok-space tok)
+               :snode (tok-snode tok)
+               :soff (and so (+ so skip))
+               :slen (and sl (let ((avail (max 0 (- sl skip))))
+                               (if take (min take avail) avail))))))
 
 (defun img-attr-num (node name)
   (let ((v (cdr (assoc name (h:dnode-attrs node) :test #'string-equal))))
@@ -1433,10 +1478,11 @@ text-align.  Returns (values line-boxes total-height)."
                       (try-hyphenate (car wd) (tok-meta wd) (- avail (- cx lx) sw))
                     (when prefix
                       (when (and (> sw 0) (> (- cx lx) 0)) (incf cx sw))
-                      (push (make-frag :x cx :w (word-w prefix (tok-meta wd)) :text prefix
-                                       :style (tok-meta wd) :node (tok-node wd)
-                                       :dx (tok-dx wd) :dy (tok-dy wd)) cur)
-                      (setf (aref ws i) (list rest (tok-meta wd) nil 0 (tok-node wd) (tok-rel wd))))))
+                      ;; PREFIX ends in the inserted U+2010, which is not a source
+                      ;; character: it consumes one FEWER than it paints.
+                      (let ((used (max 0 (1- (length prefix)))))
+                        (push (tok-frag wd cx (word-w prefix (tok-meta wd)) prefix :take used) cur)
+                        (setf (aref ws i) (tok-rest wd rest used))))))
                 (return))
               ;; leading advance: collapsible whitespace is dropped at line start, but
               ;; a leading inline margin (TOK-GAP) still offsets the first item.
@@ -1452,10 +1498,9 @@ text-align.  Returns (values line-boxes total-height)."
                         (hyphenation-lang-ok-p (tok-node wd))
                         (nth-value 0 (try-hyphenate (car wd) (tok-meta wd) room)))
                    (multiple-value-bind (prefix rest) (try-hyphenate (car wd) (tok-meta wd) room)
-                     (push (make-frag :x cx :w (word-w prefix (tok-meta wd)) :text prefix
-                                      :style (tok-meta wd) :node (tok-node wd)
-                                      :dx (tok-dx wd) :dy (tok-dy wd)) cur)
-                     (setf (aref ws i) (list rest (tok-meta wd) nil 0 (tok-node wd) (tok-rel wd)))
+                     (let ((used (max 0 (1- (length prefix)))))   ; the hyphen glyph is not source text
+                       (push (tok-frag wd cx (word-w prefix (tok-meta wd)) prefix :take used) cur)
+                       (setf (aref ws i) (tok-rest wd rest used)))
                      (return)))
                   ;; word-break:break-all (break anywhere) or overflow-wrap:break-word
                   ;; on a word too wide to fit any line: place the char-prefix that fits
@@ -1470,13 +1515,13 @@ text-align.  Returns (values line-boxes total-height)."
                      (cond
                        ((zerop (length prefix))          ; nothing fits: wrap if the line has content
                         (if cur (return)
-                            (progn (push (make-frag :x cx :w ww :text (car wd) :style (tok-meta wd) :node (tok-node wd)
-                                                    :dx (tok-dx wd) :dy (tok-dy wd)) cur)
+                            (progn (push (tok-frag wd cx ww (car wd)) cur)
                                    (incf cx ww) (incf i))))
-                       (t (push (make-frag :x cx :w (word-w prefix (tok-meta wd)) :text prefix :style (tok-meta wd) :node (tok-node wd)
-                                           :dx (tok-dx wd) :dy (tok-dy wd)) cur)
+                       (t (push (tok-frag wd cx (word-w prefix (tok-meta wd)) prefix
+                                          :take (length prefix))
+                                cur)
                           (cond ((plusp (length rest))
-                                 (setf (aref ws i) (list rest (tok-meta wd) nil 0 (tok-node wd) (tok-rel wd)))
+                                 (setf (aref ws i) (tok-rest wd rest (length prefix)))
                                  (return))               ; remainder -> next line
                                 (t (incf cx (word-w prefix (tok-meta wd))) (incf i)))))))
                   (atomic
@@ -1485,16 +1530,14 @@ text-align.  Returns (values line-boxes total-height)."
                      (setf (lbox-rel lb) (tok-rel wd))
                      (setf line-h (max line-h (lbox-h lb))) (push lb cur))
                    (incf cx ww) (incf i))
-                  (t (push (make-frag :x cx :w ww :text (car wd) :style (tok-meta wd) :node (tok-node wd)
-                                      :dx (tok-dx wd) :dy (tok-dy wd)) cur)
+                  (t (push (tok-frag wd cx ww (car wd)) cur)
                      (incf cx ww) (incf i))))))))
           (when (and (null cur) (not broke))     ; one item too wide for the band: force it
             (let* ((wd (aref ws i)))
               (if (eq (car wd) :atomic) (let ((lb (tok-meta wd))) (shift-box lb (round (- lx (lbox-x lb))) 0)
                                           (setf (lbox-rel lb) (tok-rel wd))
                                           (setf line-h (max line-h (lbox-h lb))) (push lb cur))
-                  (push (make-frag :x lx :w (word-w (car wd) (tok-meta wd)) :text (car wd) :style (tok-meta wd) :node (tok-node wd)
-                                   :dx (tok-dx wd) :dy (tok-dy wd)) cur))
+                  (push (tok-frag wd lx (word-w (car wd) (tok-meta wd)) (car wd)) cur))
               (incf i)))
           (let* ((items (nreverse cur))
                  (lastx (if items
@@ -1649,14 +1692,15 @@ text-align.  Returns (values line-boxes total-height)."
       (rec node))))
 
 (defun collect-styled (node styles default-style)
-  "Walk NODE's subtree preserving whitespace, returning a list of (TEXT STYLE NODE)
-runs — each text node tagged with its nearest element's computed style.  Lets the
-<pre> fast path keep per-token colour (syntax-highlighted <span>s) instead of
-flattening every token to the pre's own colour."
+  "Walk NODE's subtree preserving whitespace, returning a list of
+(TEXT STYLE ELEMENT TEXT-NODE) runs — each text node tagged with its nearest
+element's computed style.  Lets the <pre> fast path keep per-token colour
+(syntax-highlighted <span>s) instead of flattening every token to the pre's own
+colour, and lets a selection name the text node a run came from."
   (let ((out '()))
     (labels ((rec (n st onode)
                (case (h:dnode-kind n)
-                 (:text (push (list (h:dnode-data n) st onode) out))
+                 (:text (push (list (h:dnode-data n) st onode n) out))
                  (:element (let ((cs (or (st styles n) st)))
                              (loop for c across (h:dnode-children n) do (rec c cs n)))))))
       (rec node default-style node))
@@ -2304,7 +2348,11 @@ Returns (values lbox advance-height)."
                            children)
                      (setf frags '() lx cx col 0) (incf yy lh) (incf content-h lh)))
             (dolist (seg segs)
-              (destructuring-bind (txt st snode) seg
+              (destructuring-bind (txt st snode tnode) seg
+               ;; SOFF walks TXT as the lines are cut, so each frag can name the
+               ;; source characters it shows.  SLEN is the RAW line length, not the
+               ;; tab-expanded one — extraction hands back the source, tabs and all.
+               (let ((soff 0))
                 (loop for raw in (split-newlines txt) for i from 0 do
                   (when (plusp i) (emit-line))                 ; newline -> next line (resets COL)
                   ;; expand tabs to the next 8-column stop (COL tracks the visual
@@ -2314,8 +2362,11 @@ Returns (values lbox advance-height)."
                                 (setf col nc) ex)))
                    (when (plusp (length part))
                     (let ((ww (word-w part st)))
-                      (push (make-frag :x lx :w ww :text part :style st :node snode) frags)
-                      (incf lx ww)))))))
+                      (push (make-frag :x lx :w ww :text part :style st :node snode
+                                       :snode tnode :soff soff :slen (length raw))
+                            frags)
+                      (incf lx ww))))
+                  (incf soff (1+ (length raw)))))))
             (emit-line)))
         (let* ((content-final (if (numberp exp-h)
                                   (if border-box (- exp-h pt pb bt bb) exp-h)  ; explicit height wins (§10.7)
@@ -6342,6 +6393,16 @@ mix(backdrop, blend(backdrop, source), coverage*ALPHA)."
                                            (blend-channel mode kb (cc ab))
                                            (min 255 (max 0 (round (* 255.0 cov alpha)))))))))))))))))))))
 
+(defvar *selection-highlight* nil
+  "Line box -> list of (X0 . X1) document-space intervals to fill behind the text,
+   or NIL when nothing is selected.  Built by SELECTION-HIGHLIGHT-MAP (selection.lisp)
+   and bound around a paint; declared here because the painter reads it and
+   selection.lisp is compiled after layout.")
+
+(defparameter *selection-color* '(180 210 255)
+  "The document selection highlight — the same blue the form controls use, so one
+   page does not show two kinds of selected text.")
+
 (defun paint-box (cv lb)
   (handler-case (%paint-box cv lb) (error () nil)))
 (defun %paint-box (cv lb)
@@ -6519,6 +6580,17 @@ mix(backdrop, blend(backdrop, source), coverage*ALPHA)."
          ;; this box's own overflow (CSS-UI §outline; CSS 2.1 appendix E step 10).
          (when (and cs vis) (paint-outline cv lb cs)))))
       (:line
+       ;; Document selection highlight (see selection.lisp).  It goes UNDER the
+       ;; glyphs, so the text keeps its own colour and no inverse-video path is
+       ;; needed — the same choice the form-control highlight makes.  The map is
+       ;; keyed by line box and built once per paint; when nothing is selected the
+       ;; special is NIL and this costs one read and one branch per line, leaving
+       ;; an unselected page byte-identical.
+       (when *selection-highlight*
+         (dolist (iv (gethash lb *selection-highlight*))
+           (fill-rect cv (round (car iv)) (lbox-y lb)
+                      (max 1 (round (- (cdr iv) (car iv)))) (lbox-h lb)
+                      *selection-color*)))
        (loop for cell on (lbox-children lb)
              for it = (car cell)
              do (if (frag-p it)

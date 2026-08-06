@@ -32,4 +32,13 @@
            #:form-control-focusable-p #:text-editable-p #:caret-index-at
            ;; the open <select> popup: no layout box (it overlaps the page and
            ;; vanishes on pick), so the shell paints and hit-tests it itself
-           #:select-menu-geometry #:paint-select-menu #:select-menu-row-at))
+           #:select-menu-geometry #:paint-select-menu #:select-menu-row-at
+           ;; document text selection: hit-test a point to a character, hold the
+           ;; range, paint it under the glyphs, extract the string (selection.lisp)
+           #:text-selection #:text-selection-p #:make-text-selection
+           #:text-selection-anchor-node #:text-selection-anchor-offset
+           #:text-selection-focus-node #:text-selection-focus-offset
+           #:selection-collapsed-p #:selection-extend #:text-position-at
+           #:selection-text #:selection-highlight-map #:select-all-position
+           #:*selection-highlight* #:*selection-color*
+           #:canvas-background))

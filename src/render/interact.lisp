@@ -73,10 +73,29 @@
 ;;; RENDER-TO-CANVAS's layout+paint but takes an already-parsed DOC and returns
 ;;; (values canvas root-box styles).
 
+(defun canvas-background (doc styles)
+  "The colour the canvas starts as: the root element's background, or the body's
+   when the root is transparent (CSS 2.1 §14.2 propagation)."
+  (let* ((html (css:query-select doc "html"))
+         (body (css:query-select doc "body"))
+         (hbg (let ((cs (and html (gethash html styles)))) (and cs (css:cstyle-background cs))))
+         (bbg (let ((cs (and body (gethash body styles)))) (and cs (css:cstyle-background cs)))))
+    (or hbg bbg)))
+
 (defun render-document (doc &key (width 1024) (css "") (min-height 200)
-                                 (max-height 20000) viewport-height (scroll-y 0) scroll-to)
+                                 (max-height 20000) viewport-height (scroll-y 0) scroll-to
+                                 selection)
   "Cascade + lay out + paint an already-parsed DOC at WIDTH px.  Returns
-   (values CANVAS ROOT-BOX STYLES).
+   (values CANVAS ROOT-BOX STYLES REPAINT).
+
+   SELECTION, when given, is a TEXT-SELECTION whose highlight is painted under the
+   glyphs (selection.lisp).  REPAINT is a closure of one optional selection that
+   paints the SAME box tree onto a fresh canvas of the same size — the seam a shell
+   drags a selection through.  A selection changes no geometry, so re-running the
+   cascade and the layout for one would be paying for everything to change one
+   rectangle; and because REPAINT closes over the very bindings this render used
+   (background, height model, clip) the two cannot drift apart the way a separate
+   entry point taking the same arguments again eventually would.
 
    Two height models, chosen the same way as RENDER-TO-CANVAS so the reader-view
    service and the conformance harness agree:
@@ -115,14 +134,23 @@
              ;; canvas background propagation (CSS 2.1 14.2): the root element's
              ;; background paints the canvas; only when the root is transparent does
              ;; the body's background propagate up in its place.
-             (bg (let* ((html (css:query-select doc "html"))
-                        (hbg (let ((cs (and html (gethash html styles)))) (and cs (css:cstyle-background cs))))
-                        (bbg (let ((cs (and body (gethash body styles)))) (and cs (css:cstyle-background cs)))))
-                   (or hbg bbg)))
+             (bg (progn body (canvas-background doc styles)))
              (cv (make-canvas width height (if bg (rgb bg) '(255 255 255)))))
         (when (and root (plusp sy)) (shift-box root 0 (- sy)))
         (note-progress :painting)
-        (if vph
-            (let ((*clip* (clip-intersect 0 0 width vph))) (paint-box cv root))
-            (paint-box cv root))
-        (values cv root styles)))))
+        (flet ((paint-onto (target sel)
+                 ;; The selection map is built from ROOT after layout and before
+                 ;; paint, so a caller gets a highlighted page in ONE pass.  With no
+                 ;; SEL the special stays NIL and the painter takes exactly the path
+                 ;; it always did — an unselected page is byte-identical.
+                 (let ((*selection-highlight*
+                         (and sel (ignore-errors (selection-highlight-map root sel)))))
+                   (if vph
+                       (let ((*clip* (clip-intersect 0 0 width vph))) (paint-box target root))
+                       (paint-box target root)))))
+          (paint-onto cv selection)
+          (values cv root styles
+                  (lambda (&optional sel)
+                    (let ((c2 (make-canvas width height (if bg (rgb bg) '(255 255 255)))))
+                      (paint-onto c2 sel)
+                      c2))))))))

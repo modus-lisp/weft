@@ -81,7 +81,8 @@
                                (:file "text") (:file "hyphen-en") (:file "hyphenate")
                                (:file "case-map")
                                (:file "first-letter-punct")
-                               (:file "layout") (:file "grid") (:file "interact")))))))
+                               (:file "layout") (:file "grid")
+                               (:file "selection") (:file "interact")))))))
 
 ;; The scripting seam: binds shuttle (a pure-CL JavaScript engine) to the weft
 ;; DOM so inline <script> can read and mutate the live tree, with the change

@@ -6586,9 +6586,17 @@ mix(backdrop, blend(backdrop, source), coverage*ALPHA)."
        ;; keyed by line box and built once per paint; when nothing is selected the
        ;; special is NIL and this costs one read and one branch per line, leaving
        ;; an unselected page byte-identical.
+       ;;
+       ;; The intervals are LINE-RELATIVE, so LBOX-X goes back on here.  The map was
+       ;; built before the paint started, and an opacity group, a rasterised
+       ;; transform, a mask, a filter or a blend renders its subtree by SHIFT-BOXing
+       ;; it into an offscreen buffer's frame — which moves this line box and its
+       ;; frags but could never reach into a map that had already been built.  Adding
+       ;; the line's CURRENT x is what keeps the rectangle under the glyphs in the
+       ;; frame the painter is actually in.
        (when *selection-highlight*
          (dolist (iv (gethash lb *selection-highlight*))
-           (fill-rect cv (round (car iv)) (lbox-y lb)
+           (fill-rect cv (round (+ (lbox-x lb) (car iv))) (lbox-y lb)
                       (max 1 (round (- (cdr iv) (car iv)))) (lbox-h lb)
                       *selection-color*)))
        (loop for cell on (lbox-children lb)

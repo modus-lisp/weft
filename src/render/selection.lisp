@@ -259,17 +259,28 @@
           (push (cons (car iv) (cdr iv)) out)))))
 
 (defun selection-highlight-map (root sel)
-  "SEL as a line-box -> list of (X0 . X1) document-space intervals, ready to bind to
+  "SEL as a line-box -> list of (X0 . X1) intervals, ready to bind to
    *SELECTION-HIGHLIGHT* around a paint; NIL when nothing is selected.  One entry
    per line, because a selection is a run of characters and not a rectangle — the
-   last line of a wrapped paragraph stops where the text does."
+   last line of a wrapped paragraph stops where the text does.
+
+   The intervals are measured FROM THE LINE BOX'S OWN X, not from the page's left
+   edge, and the painter adds LBOX-X back.  That is not a detail: the map is built
+   once, before the paint, while a paint moves boxes underneath it.  Group opacity,
+   a rasterised transform, a mask, a filter and a blend all render their subtree
+   into an offscreen buffer by SHIFT-BOXing it into that buffer's frame and back
+   again, so a line's absolute x is only true until the first such layer starts
+   painting — but its offset WITHIN its own line box never moves.  Holding the
+   distance from the line rather than from the page is what makes one stored map
+   correct in every frame the painter puts the line in."
   (let ((runs (text-runs root)))
     (multiple-value-bind (i a j b) (selection-span runs sel)
       (when i
         (let ((map (make-hash-table :test 'eq)))
           (do-selected-runs (r lo hi runs i a j b)
-            (let ((fr (trun-frag r)))
-              (push (cons (frag-x-at fr lo) (frag-x-at fr hi))
+            (let* ((fr (trun-frag r))
+                   (ox (lbox-x (trun-line r))))
+              (push (cons (- (frag-x-at fr lo) ox) (- (frag-x-at fr hi) ox))
                     (gethash (trun-line r) map))))
           (maphash (lambda (line ivs)
                      (setf (gethash line map) (%merge-intervals ivs (%line-space-tolerance line))))

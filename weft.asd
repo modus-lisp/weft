@@ -129,6 +129,7 @@
                                               (:file "fetch-test") (:file "html-test")
                                               (:file "tree-test")
                                               (:file "dom-test") (:file "css-test") (:file "selector-test")
+                                              (:file "selection-test")
                                               (:file "acid-test") (:file "acid2-conformance"))))
   :perform (test-op (o c)
              (let ((url-ok (uiop:symbol-call :weft.test :run))
@@ -141,8 +142,11 @@
                    (acid-ok (zerop (nth-value 1 (uiop:symbol-call :weft.acid.test :run))))
                    ;; Acid2 pixel + geometry vs the vendored real-browser ground truth
                    (acid2-ok (zerop (nth-value 1 (uiop:symbol-call :weft.acid2.conformance :run))))
-                   (sel-ok (zerop (nth-value 1 (uiop:symbol-call :weft.css.select-test :run)))))
+                   (sel-ok (zerop (nth-value 1 (uiop:symbol-call :weft.css.select-test :run))))
+                   ;; text selection: the highlight under the glyphs, and the string behind it
+                   (text-sel-ok (zerop (nth-value 1 (uiop:symbol-call :weft.render.selection-test :run)))))
                ;; tree construction is in progress — run for visibility, don't gate on it yet
                (uiop:symbol-call :weft.html.tree-test :run)
-               (unless (and url-ok enc-ok fetch-ok html-ok dom-ok css-ok sel-ok acid-ok acid2-ok)
+               (unless (and url-ok enc-ok fetch-ok html-ok dom-ok css-ok sel-ok text-sel-ok
+                            acid-ok acid2-ok)
                  (error "weft: gate failures")))))

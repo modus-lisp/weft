@@ -4,7 +4,7 @@
 # Isolation contract (same as the CSS worker):
 #   - edits ONLY $WD/src/script/forms-<unit>.lisp inside its own copy.
 #   - the oracle loads "weft/script" via (:tree "$WD") :ignore-inherited-config,
-#     so ASDF can NEVER fall through to /home/claude/weft.
+#     so ASDF can NEVER fall through to the canonical weft checkout.
 #   - a per-worker XDG_CACHE_HOME isolates fasls; the final re-check wipes it so a
 #     stale fasl can't fake a low failure count.
 set -u

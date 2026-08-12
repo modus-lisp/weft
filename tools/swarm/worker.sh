@@ -5,7 +5,7 @@
 #   - the worker edits ONLY files inside its own copy $WD = <wave-dir>/<unit>.
 #   - the oracle loads "weft" via (:tree "$WD") :ignore-inherited-configuration,
 #     so ASDF resolves ONLY the worker copy and can NEVER fall through to the
-#     main /home/claude/weft. (A stub in $WD fails even if main is correct.)
+#     main weft checkout. (A stub in $WD fails even if main is correct.)
 #   - a fresh per-worker XDG_CACHE_HOME is wiped before every load, so a stale
 #     fasl can never yield a false "0 failed".
 set -u

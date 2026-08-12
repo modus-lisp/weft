@@ -10,7 +10,7 @@
 #   and record per-variant model/time/iters/cost for the evaluation.
 set -u
 WAVE="$1"; POOL="${2:-9}"
-SRC=/home/claude/weft; SELF="$(cd "$(dirname "$0")" && pwd)"; CANON=/home/claude/weft
+SELF="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$SELF/../.." && pwd)"; CANON="$SRC"
 FLASH="deepseek/deepseek-v4-flash"; PRO="${STRONG_MODEL:-deepseek/deepseek-v4-pro}"
 
 # unit  subdir  editfile  element

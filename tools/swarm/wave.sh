@@ -5,7 +5,7 @@
 # inspect/vectors/css/<unit>.json and a stub src/css/<unit>.lisp wired into weft.asd)
 set -u
 WAVE="$1"; MANIFEST="$2"; PAR="${3:-6}"
-SRC=/home/claude/weft; SELF="$(cd "$(dirname "$0")" && pwd)"
+SELF="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$SELF/../.." && pwd)"
 rm -rf "$WAVE"; mkdir -p "$WAVE"
 units=()
 while IFS='|' read -r unit sem; do

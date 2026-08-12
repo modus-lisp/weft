@@ -2,13 +2,13 @@
 # Forms swarm wave.  Usage: forms-wave.sh <wave-dir> [parallelism] [unit ...]
 # With no units, runs all under tools/swarm/forms-tasks/*.md.
 #
-# Per unit: copies /home/claude/weft -> <wave-dir>/<unit>, assembles
+# Per unit: copies the weft checkout -> <wave-dir>/<unit>, assembles
 # <wave-dir>/<unit>.task.md = shared header (paths + oracle + rules) + the
 # per-unit spec (forms-tasks/<unit>.md), then runs a DeepSeek worker that edits
 # ONLY src/script/forms-<unit>.lisp and loops the oracle.
 set -u
 WAVE="$1"; PAR="${2:-6}"; shift 2 || shift $#
-SRC=/home/claude/weft; SELF="$(cd "$(dirname "$0")" && pwd)"
+SELF="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$SELF/../.." && pwd)"
 TASKS="$SELF/forms-tasks"
 units=("$@")
 if [ ${#units[@]} -eq 0 ]; then

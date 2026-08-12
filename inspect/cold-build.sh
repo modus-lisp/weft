@@ -16,12 +16,12 @@
 # It only surfaced days later, when an unrelated weft.asd edit invalidated the
 # cache.  A warm cache is not a build.
 #
-#   ./cold-build.sh [repo]        (default /home/claude/weft)
+#   ./cold-build.sh [repo]        (default: the checkout this script lives in)
 #
 # Exits 0 iff every system compiles clean from scratch.  Run it before accepting
 # a merge, alongside nonforms-gate.sh.
 set -uo pipefail
-REPO="${1:-/home/claude/weft}"
+REPO="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$REPO" || exit 1
 
 # A private XDG_CACHE_HOME is what makes this cold: ASDF derives its output

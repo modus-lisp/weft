@@ -2,6 +2,7 @@
 # Collect passing worker files into main, verifying each is non-stub + balanced.
 # Usage: collect.sh <wave-dir> <unit>...
 set -u
+CANON="$(cd "$(dirname "$0")/../.." && pwd)"   # the weft checkout these tools live in
 WAVE="$1"; shift
 for u in "$@"; do
   f="$WAVE/$u/src/css/$u.lisp"
@@ -29,5 +30,5 @@ print(d)
 PY
 )
   if [ "$bal" != "0" ]; then echo "$u: SKIP (paren imbalance $bal)"; continue; fi
-  cp "$f" "/home/claude/weft/src/css/$u.lisp"; echo "$u: COLLECTED"
+  cp "$f" "$CANON/src/css/$u.lisp"; echo "$u: COLLECTED"
 done

@@ -7,11 +7,11 @@
 # a parser change that cost tree-test 332 -> 330; nothing in the oracle noticed.
 # Run this against canon after every merge.
 #
-#   ./nonforms-gate.sh [repo]     (default /home/claude/weft)
+#   ./nonforms-gate.sh [repo]     (default: the checkout this script lives in)
 #
 # To baseline a clean tree instead, point it at a detached worktree and scope
 # ASDF to it, or the global local-projects symlink resolves `weft' back to canon:
-#   git -C /home/claude/weft worktree add --detach /tmp/clean HEAD
+#   git -C <weft> worktree add --detach /tmp/clean HEAD
 #   CL_SOURCE_REGISTRY='(:source-registry (:tree "/tmp/clean/") :ignore-inherited-configuration)' \
 #     ./nonforms-gate.sh /tmp/clean
 #
@@ -25,7 +25,7 @@
 # The 10 tree-test failures are long-standing (isindex, the </style> --> family,
 # frameset trailing text); they are the baseline, not a regression.
 set -uo pipefail
-REPO="${1:-/home/claude/weft}"
+REPO="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 cd "$REPO" || exit 1
 
 # Two things that each cost a debugging round the first time:

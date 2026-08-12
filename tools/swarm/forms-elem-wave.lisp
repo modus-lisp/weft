@@ -28,7 +28,13 @@
 
 ;;; ---- configuration --------------------------------------------------------
 
-(defparameter *src*    "/home/claude/weft")
+;; The weft checkout these tools live in (tools/swarm/ -> repo root).  No trailing
+;; slash: every use below is "~a/..." or `git -C`.
+(defparameter *src*    (string-right-trim "/" (namestring
+                                               (merge-pathnames
+                                                "../../" (make-pathname
+                                                          :name nil :type nil
+                                                          :defaults *load-truename*)))))
 (defparameter *operandi-root*
   (or (uiop:getenv "OPERANDI_ROOT")
       (error "OPERANDI_ROOT must be set to the operandi checkout")))
@@ -664,7 +670,7 @@ guess which of the files to read.
   ;; registry any sbcl the worker starts itself resolves "weft" through
   ;; ~/quicklisp/local-projects/weft.asd, a symlink to the canonical tree, so its
   ;; edits appear to do nothing and it goes looking for the "real" file to fix.
-  ;; Three of five workers found /home/claude/weft that way and wrote to it,
+  ;; Three of five workers found the canonical checkout that way and wrote to it,
   ;; leaving canon dirty and making `git apply' fail for every arm that won.
   ;; The ORACLE_ vars are EXPORTED INTO THE AGENT, not just used by our own
   ;; scoring runs, so that every oracle run the arm makes itself also snapshots

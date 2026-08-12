@@ -4,7 +4,7 @@
 # Usage: forms-merge.sh <wave-dir> [unit ...]
 set -u
 WAVE="$1"; shift || true
-CANON=/home/claude/weft
+CANON="$(cd "$(dirname "$0")/../.." && pwd)"
 units=("$@"); [ ${#units[@]} -eq 0 ] && units=(valueasnumber valueasdate stepupdown selection validity labels)
 
 canon_oracle() { # $1=unit  -> prints the UNIT line (uses canonical tree, its own cache)

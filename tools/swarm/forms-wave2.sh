@@ -9,8 +9,8 @@
 # variant (fewest failed) and re-verify it in canonical weft.
 set -u
 WAVE="$1"; POOL="${2:-8}"; shift 2 || shift $#
-SRC=/home/claude/weft; SELF="$(cd "$(dirname "$0")" && pwd)"; TASKS="$SELF/forms-tasks"
-CANON=/home/claude/weft
+SELF="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$SELF/../.." && pwd)"; TASKS="$SELF/forms-tasks"
+CANON="$SRC"
 units=("$@"); [ ${#units[@]} -eq 0 ] && units=(valueasnumber valueasdate stepupdown selection)
 
 # The friction round 1 hit (API discovery + chasing date math) — answer it up front.

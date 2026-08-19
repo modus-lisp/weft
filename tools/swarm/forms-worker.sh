@@ -8,6 +8,7 @@
 #   - a per-worker XDG_CACHE_HOME isolates fasls; the final re-check wipes it so a
 #     stale fasl can't fake a low failure count.
 set -u
+WPT_ROOT="${WPT_ROOT:-$HOME/wpt}"
 unit="$1"; WAVE="$2"; MODEL="${3:-deepseek/deepseek-v4-flash}"
 OPERANDI_ROOT="${OPERANDI_ROOT:?set to the operandi checkout}"
 WD="$WAVE/$unit"; CACHE="$WAVE/.cache-$unit"
@@ -20,7 +21,7 @@ timeout "${WORKER_TIMEOUT:-1200}" sbcl --non-interactive --load "$OPERANDI_ROOT/
 
 # Independent re-check: wiped cache, isolated registry.
 rm -rf "$CACHE"
-( cd "$WD" && XDG_CACHE_HOME="$CACHE" CL_SOURCE_REGISTRY="$REG" WPT_ROOT=/home/claude/wpt \
+( cd "$WD" && XDG_CACHE_HOME="$CACHE" CL_SOURCE_REGISTRY="$REG" WPT_ROOT=$WPT_ROOT \
   sbcl --dynamic-space-size 4096 --non-interactive \
     --load inspect/forms-oracle.lisp \
     --eval "(weft.forms-oracle:run \"$unit\")" ) > "$WAVE/$unit.result" 2>&1

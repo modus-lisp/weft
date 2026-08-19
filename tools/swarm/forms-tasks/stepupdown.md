@@ -1,6 +1,6 @@
 Implement the `stepUp(n)` and `stepDown(n)` methods on `<input>`.
 
-WPT files (READ them under /home/claude/wpt/html/semantics/forms/the-input-element/):
+WPT files (READ them under $WPT_ROOT/html/semantics/forms/the-input-element/):
   input-stepup.html, input-stepdown.html, input-stepdown-02.html
 
 Both are methods taking an optional integer `n` (default 1); stepDown(n) ==

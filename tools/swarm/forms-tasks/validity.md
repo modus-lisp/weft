@@ -2,7 +2,7 @@ Implement constraint validation on `<input>`:
   validity (ValidityState object), willValidate, validationMessage,
   checkValidity(), reportValidity(), setCustomValidity(message).
 
-WPT files (READ them under /home/claude/wpt/html/semantics/forms/the-input-element/):
+WPT files (READ them under $WPT_ROOT/html/semantics/forms/the-input-element/):
   input-validity.html, input-checkvalidity.html, input-setcustomvalidity.html,
   input-validationmessage.html
 (These currently error out entirely because the whole API is missing — even a

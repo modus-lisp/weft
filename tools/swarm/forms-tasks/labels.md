@@ -1,6 +1,6 @@
 Implement the `labels` IDL attribute on `<input>` (and other labelable controls).
 
-WPT file (READ it): /home/claude/wpt/html/semantics/forms/the-input-element/input-labels.html
+WPT file (READ it): $WPT_ROOT/html/semantics/forms/the-input-element/input-labels.html
 
 `labels` returns a live NodeList of the `<label>` elements associated with the
 control (empty for a non-labelable type: hidden).  A label is associated when:

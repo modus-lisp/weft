@@ -8,6 +8,7 @@
 # without oversubscribing.  After the wave, for each unit we KEEP the best
 # variant (fewest failed) and re-verify it in canonical weft.
 set -u
+WPT_ROOT="${WPT_ROOT:-$HOME/wpt}"
 WAVE="$1"; POOL="${2:-8}"; shift 2 || shift $#
 SELF="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$SELF/../.." && pwd)"; TASKS="$SELF/forms-tasks"
 CANON="$SRC"
@@ -68,7 +69,7 @@ for unit in "${units[@]}"; do
   for v in a b c; do
     jobid="$unit-$v"; jobs+=("$jobid")
     WD="$WAVE/$jobid"; cp -r "$SRC" "$WD"; rm -rf "$WD/.git"; find "$WD" -name '*.fasl' -delete
-    ORACLE="cd $WD && XDG_CACHE_HOME=$WAVE/.cache-$jobid CL_SOURCE_REGISTRY='(:source-registry (:tree \"$WD\") :ignore-inherited-configuration)' WPT_ROOT=/home/claude/wpt sbcl --dynamic-space-size 4096 --non-interactive --load inspect/forms-oracle.lisp --eval '(weft.forms-oracle:run \"$unit\")' 2>&1 | tail -14"
+    ORACLE="cd $WD && XDG_CACHE_HOME=$WAVE/.cache-$jobid CL_SOURCE_REGISTRY='(:source-registry (:tree \"$WD\") :ignore-inherited-configuration)' WPT_ROOT=$WPT_ROOT sbcl --dynamic-space-size 4096 --non-interactive --load inspect/forms-oracle.lisp --eval '(weft.forms-oracle:run \"$unit\")' 2>&1 | tail -14"
     {
       cat <<HDR
 # Forms swarm (round 2) unit: $unit  — variant $v
@@ -134,9 +135,9 @@ for unit in "${units[@]}"; do
   if [ -n "$best" ] && [ -f "$best" ]; then
     dst="$CANON/src/script/forms-$unit.lisp"
     bak="/tmp/forms2-backup-$unit.lisp"; cp "$dst" "$bak"
-    before="$( ( cd "$CANON" && WPT_ROOT=/home/claude/wpt sbcl --dynamic-space-size 4096 --non-interactive --load inspect/forms-oracle.lisp --eval "(weft.forms-oracle:run \"$unit\")" 2>&1 ) | grep -E '^UNIT ' | tail -1 )"
+    before="$( ( cd "$CANON" && WPT_ROOT=$WPT_ROOT sbcl --dynamic-space-size 4096 --non-interactive --load inspect/forms-oracle.lisp --eval "(weft.forms-oracle:run \"$unit\")" 2>&1 ) | grep -E '^UNIT ' | tail -1 )"
     cp "$best" "$dst"
-    after="$( ( cd "$CANON" && WPT_ROOT=/home/claude/wpt sbcl --dynamic-space-size 4096 --non-interactive --load inspect/forms-oracle.lisp --eval "(weft.forms-oracle:run \"$unit\")" 2>&1 ) | grep -E '^UNIT ' | tail -1 )"
+    after="$( ( cd "$CANON" && WPT_ROOT=$WPT_ROOT sbcl --dynamic-space-size 4096 --non-interactive --load inspect/forms-oracle.lisp --eval "(weft.forms-oracle:run \"$unit\")" 2>&1 ) | grep -E '^UNIT ' | tail -1 )"
     bf="$(failnum "$before")"; af="$(failnum "$after")"
     if [ -z "$af" ] || [ "${af:-999}" -gt "${bf:-999}" ]; then
       cp "$bak" "$dst"; echo "  -> canonical: REVERTED ($before -> ${after:-LOAD-FAIL})"

@@ -2,6 +2,7 @@
 # Round-2 forms worker (unit + variant). Args: <jobid> <unit> <wave-dir> [model]
 # jobid = "<unit>-<variant>"; edits $WD/src/script/forms-<unit>.lisp; oracle runs <unit>.
 set -u
+WPT_ROOT="${WPT_ROOT:-$HOME/wpt}"
 jobid="$1"; unit="$2"; WAVE="$3"; MODEL="${4:-deepseek/deepseek-v4-flash}"
 OPERANDI_ROOT="${OPERANDI_ROOT:?set to the operandi checkout}"
 WD="$WAVE/$jobid"; CACHE="$WAVE/.cache-$jobid"
@@ -13,7 +14,7 @@ timeout "${WORKER_TIMEOUT:-2400}" sbcl --non-interactive --load "$OPERANDI_ROOT/
   > "$WAVE/$jobid.log" 2>&1
 
 rm -rf "$CACHE"
-( cd "$WD" && XDG_CACHE_HOME="$CACHE" CL_SOURCE_REGISTRY="$REG" WPT_ROOT=/home/claude/wpt \
+( cd "$WD" && XDG_CACHE_HOME="$CACHE" CL_SOURCE_REGISTRY="$REG" WPT_ROOT=$WPT_ROOT \
   sbcl --dynamic-space-size 4096 --non-interactive \
     --load inspect/forms-oracle.lisp \
     --eval "(weft.forms-oracle:run \"$unit\")" ) > "$WAVE/$jobid.result" 2>&1

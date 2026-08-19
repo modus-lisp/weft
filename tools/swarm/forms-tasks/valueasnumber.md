@@ -1,6 +1,6 @@
 Implement the `valueAsNumber` IDL attribute (getter + setter) on `<input>`.
 
-WPT files under /home/claude/wpt/html/semantics/forms/the-input-element/ that the
+WPT files under $WPT_ROOT/html/semantics/forms/the-input-element/ that the
 oracle runs (READ them for exact expectations):
   input-valueasnumber.html, input-valueasnumber-stepping.html,
   input-valueasnumber-typeerror.html, input-valueasnumber-invalidstateerr.html

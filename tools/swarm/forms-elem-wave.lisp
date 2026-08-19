@@ -38,7 +38,8 @@
 (defparameter *operandi-root*
   (or (uiop:getenv "OPERANDI_ROOT")
       (error "OPERANDI_ROOT must be set to the operandi checkout")))
-(defparameter *wpt*    "/home/claude/wpt")
+(defparameter *wpt*    (or (uiop:getenv "WPT_ROOT")
+                           (namestring (merge-pathnames "wpt" (user-homedir-pathname)))))
 
 ;;; Wave 6 onward the arms are spread across UNITS rather than across variants of
 ;;; the same unit.  Waves 1-5 ran 2 units x 3 variants because there was nothing

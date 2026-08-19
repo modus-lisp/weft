@@ -3,12 +3,13 @@
 # compiles and improves (or holds) the unit's oracle vs the current tree.
 # Usage: forms-merge.sh <wave-dir> [unit ...]
 set -u
+WPT_ROOT="${WPT_ROOT:-$HOME/wpt}"
 WAVE="$1"; shift || true
 CANON="$(cd "$(dirname "$0")/../.." && pwd)"
 units=("$@"); [ ${#units[@]} -eq 0 ] && units=(valueasnumber valueasdate stepupdown selection validity labels)
 
 canon_oracle() { # $1=unit  -> prints the UNIT line (uses canonical tree, its own cache)
-  ( cd "$CANON" && WPT_ROOT=/home/claude/wpt sbcl --dynamic-space-size 4096 --non-interactive \
+  ( cd "$CANON" && WPT_ROOT=$WPT_ROOT sbcl --dynamic-space-size 4096 --non-interactive \
       --load inspect/forms-oracle.lisp --eval "(weft.forms-oracle:run \"$1\")" 2>&1 ) | grep -E '^UNIT ' | tail -1
 }
 failnum() { sed -n 's/.*, \([0-9]*\) failed.*/\1/p' <<<"$1"; }

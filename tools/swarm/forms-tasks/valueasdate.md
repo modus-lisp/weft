@@ -1,6 +1,6 @@
 Implement the `valueAsDate` IDL attribute (getter + setter) on `<input>`.
 
-WPT files (READ them under /home/claude/wpt/html/semantics/forms/the-input-element/):
+WPT files (READ them under $WPT_ROOT/html/semantics/forms/the-input-element/):
   input-valueasdate.html, input-valueasdate-typeerror.html,
   input-valueasdate-invalidstateerr.html, input-valueasdate-stepping.html,
   datetime-local-valueasdate.html
@@ -36,5 +36,5 @@ Notes:
   helpers. 86400000 ms/day, 3600000 ms/hour.
 - To read a Date's getTime, first find shuttle's method-call export:
   run `grep -n "defun js-invoke\|js-call-method\|js-call\b\|call-method" ` over
-  /home/claude/shuttle/src/value.lisp and use whatever exists; fall back to
+  ../shuttle/src/value.lisp and use whatever exists; fall back to
   (js:to-number (js:js-invoke d "valueOf" nil)).

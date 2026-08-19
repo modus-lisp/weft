@@ -4,6 +4,7 @@
 # <subdir>, then an independent re-check.  Emits an instrumented result line
 # (unit result + model + wall-seconds + cost) for the mechanism evaluation.
 set -u
+WPT_ROOT="${WPT_ROOT:-$HOME/wpt}"
 jobid="$1"; subdir="$2"; WAVE="$3"; MODEL="${4:-deepseek/deepseek-v4-flash}"
 OPERANDI_ROOT="${OPERANDI_ROOT:?set to the operandi checkout}"
 WD="$WAVE/$jobid"; CACHE="$WAVE/.cache-$jobid"
@@ -18,7 +19,7 @@ end=$(date +%s)
 
 # independent re-check: wiped cache, isolated registry
 rm -rf "$CACHE"
-( cd "$WD" && XDG_CACHE_HOME="$CACHE" CL_SOURCE_REGISTRY="$REG" WPT_ROOT=/home/claude/wpt WPT_SUBDIR="$subdir" \
+( cd "$WD" && XDG_CACHE_HOME="$CACHE" CL_SOURCE_REGISTRY="$REG" WPT_ROOT=$WPT_ROOT WPT_SUBDIR="$subdir" \
   sbcl --dynamic-space-size 4096 --non-interactive --load inspect/wpt-oracle.lisp ) > "$WAVE/$jobid.result" 2>&1
 
 cost=$(grep -aoE '[0-9.]+¢' "$WAVE/$jobid.log" | tail -1)

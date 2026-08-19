@@ -9,6 +9,7 @@
 #   passed), re-verify it in canonical (keep only if it strictly increases passes),
 #   and record per-variant model/time/iters/cost for the evaluation.
 set -u
+WPT_ROOT="${WPT_ROOT:-$HOME/wpt}"
 WAVE="$1"; POOL="${2:-9}"
 SELF="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$SELF/../.." && pwd)"; CANON="$SRC"
 FLASH="deepseek/deepseek-v4-flash"; PRO="${STRONG_MODEL:-deepseek/deepseek-v4-pro}"
@@ -28,13 +29,13 @@ for spec in "${UNITS[@]}"; do
     jobid="$unit-$v"; model="$FLASH"; [ "$v" = c ] && model="$PRO"
     jobs+=("$jobid|$subdir|$model")
     WD="$WAVE/$jobid"; cp -r "$SRC" "$WD"; rm -rf "$WD/.git"; find "$WD" -name '*.fasl' -delete
-    ORACLE="cd $WD && XDG_CACHE_HOME=$WAVE/.cache-$jobid CL_SOURCE_REGISTRY='(:source-registry (:tree \"$WD\") :ignore-inherited-configuration)' WPT_ROOT=/home/claude/wpt WPT_SUBDIR=$subdir sbcl --dynamic-space-size 4096 --non-interactive --load inspect/wpt-oracle.lisp 2>&1 | tail -3"
+    ORACLE="cd $WD && XDG_CACHE_HOME=$WAVE/.cache-$jobid CL_SOURCE_REGISTRY='(:source-registry (:tree \"$WD\") :ignore-inherited-configuration)' WPT_ROOT=$WPT_ROOT WPT_SUBDIR=$subdir sbcl --dynamic-space-size 4096 --non-interactive --load inspect/wpt-oracle.lisp 2>&1 | tail -3"
     cat > "$WAVE/$jobid.task.md" <<TASK
 # WPT swarm unit: <$element> element IDL  (variant $v)
 
 Improve the weft web engine (pure Common Lisp; JS on the in-tree shuttle engine)
 to pass more of the WPT test suite under:
-  /home/claude/wpt/$subdir
+  $WPT_ROOT/$subdir
 READ the failing .html test files there to see exactly what is asserted.
 
 ## Edit ONLY this one file
@@ -80,7 +81,7 @@ printf '%s\n' "${jobs[@]}" | xargs -P "$POOL" -I{} bash -c \
 echo "=== WPT WAVE COMPLETE — keep-best + merge ==="
 failnum() { sed -n 's/.*, \([0-9]*\) failed.*/\1/p' <<<"$1"; }
 passnum() { sed -n 's/.* \([0-9]*\) passed,.*/\1/p' <<<"$1"; }
-oracle_canon() { WPT_ROOT=/home/claude/wpt WPT_SUBDIR="$1" sbcl --dynamic-space-size 4096 --non-interactive \
+oracle_canon() { WPT_ROOT=$WPT_ROOT WPT_SUBDIR="$1" sbcl --dynamic-space-size 4096 --non-interactive \
   --load "$CANON/inspect/wpt-oracle.lisp" 2>&1 | grep -E '^UNIT ' | tail -1; }
 for spec in "${UNITS[@]}"; do
   IFS='|' read -r unit subdir editfile element <<<"$spec"

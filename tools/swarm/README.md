@@ -13,8 +13,9 @@ weft with:
 
 `:ignore-inherited-configuration` is load-bearing: with `:inherit-configuration`
 (or a bare `(:tree ...)`, which ASDF rejects) the worker could resolve the MAIN
-`/home/claude/weft` system instead of its copy, so edits to `$WD` had no effect
-and "passes" were against main. Proof the isolation holds — a stub in the copy
+`weft` checkout the swarm was launched from instead of its copy, so edits to
+`$WD` had no effect and "passes" were against main. Proof the isolation holds —
+a stub in the copy
 fails even when main is correct:
 
     # main src/css/cursor.lisp = working parser; $WD copy = stub

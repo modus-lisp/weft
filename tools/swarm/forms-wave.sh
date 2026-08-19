@@ -7,6 +7,7 @@
 # per-unit spec (forms-tasks/<unit>.md), then runs a DeepSeek worker that edits
 # ONLY src/script/forms-<unit>.lisp and loops the oracle.
 set -u
+WPT_ROOT="${WPT_ROOT:-$HOME/wpt}"
 WAVE="$1"; PAR="${2:-6}"; shift 2 || shift $#
 SELF="$(cd "$(dirname "$0")" && pwd)"; SRC="$(cd "$SELF/../.." && pwd)"
 TASKS="$SELF/forms-tasks"
@@ -19,7 +20,7 @@ for unit in "${units[@]}"; do
   WD="$WAVE/$unit"
   cp -r "$SRC" "$WD"
   rm -rf "$WD/.git"; find "$WD" -name '*.fasl' -delete
-  ORACLE="cd $WD && XDG_CACHE_HOME=$WAVE/.cache-$unit CL_SOURCE_REGISTRY='(:source-registry (:tree \"$WD\") :ignore-inherited-configuration)' WPT_ROOT=/home/claude/wpt sbcl --dynamic-space-size 4096 --non-interactive --load inspect/forms-oracle.lisp --eval '(weft.forms-oracle:run \"$unit\")' 2>&1 | tail -14"
+  ORACLE="cd $WD && XDG_CACHE_HOME=$WAVE/.cache-$unit CL_SOURCE_REGISTRY='(:source-registry (:tree \"$WD\") :ignore-inherited-configuration)' WPT_ROOT=$WPT_ROOT sbcl --dynamic-space-size 4096 --non-interactive --load inspect/forms-oracle.lisp --eval '(weft.forms-oracle:run \"$unit\")' 2>&1 | tail -14"
   {
     cat <<HDR
 # Forms swarm unit: $unit

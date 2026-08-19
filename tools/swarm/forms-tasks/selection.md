@@ -2,7 +2,7 @@ Implement the text-selection API on `<input>`:
   selectionStart, selectionEnd, selectionDirection (get/set),
   setSelectionRange(start, end, [direction]), select(), setRangeText(...).
 
-WPT file (READ it): /home/claude/wpt/html/semantics/forms/the-input-element/selection.html
+WPT file (READ it): $WPT_ROOT/html/semantics/forms/the-input-element/selection.html
 
 These apply only to inputs that "support selection": text, search, tel, url,
 password (NOT number, email, date, etc.).  For an input that does NOT support

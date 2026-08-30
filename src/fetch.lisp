@@ -383,7 +383,7 @@ Returns NIL at end of stream with no bytes read."
    anything.
 
    Left NIL, everything pools together exactly as before.  Bind it to something that
-   names the caller (postern:principal is one) to keep them apart.")
+   names the caller (cl-transport.gate:principal is one) to keep them apart.")
 
 (defun pool-key (scheme host port)
   (format nil "~@[~a|~]~(~a~)://~a:~a"

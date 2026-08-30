@@ -18,6 +18,8 @@
            #:fetch #:fetch-text
            ;; per-context cookie jar — bind *COOKIE-JAR* to isolate a browsing context
            #:cookie-jar #:make-cookie-jar #:cookie-jar-cookies #:*cookie-jar* #:*enable-cookies*
+           ;; and the same idea for the connection pool: who a socket may be reused by
+           #:*pool-partition*
            #:get-header #:content-type-charset #:decompress-body #:body-text))
 (in-package #:weft.fetch)
 
@@ -368,7 +370,25 @@ Returns NIL at end of stream with no bytes read."
 (defvar *reuse-connections* t)
 (defparameter *pool-max-idle* 4 "Idle connections kept per host.")
 
-(defun pool-key (scheme host port) (format nil "~(~a~)://~a:~a" scheme host port))
+(defvar *pool-partition* nil
+  "NIL, or a function of no arguments returning a string that a pooled connection
+   belongs to.  Connections are only ever handed back to the same partition.
+
+   WHY THIS EXISTS.  A pool keyed on the destination alone will hand a live socket
+   opened by one part of the image to any other part that later wants the same host,
+   which quietly breaks two things.  It defeats any policy applied when connections
+   are OPENED — an outbound gate sees the first connect and never the reuse, so the
+   second caller travels on the first one's permission — and it shares one TLS session
+   and one server-side connection between callers that may have no business sharing
+   anything.
+
+   Left NIL, everything pools together exactly as before.  Bind it to something that
+   names the caller (postern:principal is one) to keep them apart.")
+
+(defun pool-key (scheme host port)
+  (format nil "~@[~a|~]~(~a~)://~a:~a"
+          (and *pool-partition* (ignore-errors (funcall *pool-partition*)))
+          scheme host port))
 
 (defun acquire-stream (scheme host port timeout)
   "An idle pooled stream for the host if any (reused), else a fresh one.  Returns

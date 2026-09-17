@@ -723,6 +723,19 @@
         (member (string-downcase (string-trim '(#\Space #\Tab #\Newline #\Return) type))
                 +classic-js-types+ :test #'string=))))
 
+(defun script-label (ctx script)
+  "Which script this is, for an error message: its src, or `inline #N' by document order."
+  (or (let ((src (dom:get-attribute script "src")))
+        (and src (plusp (length src)) src))
+      ;; Document order, via the same accessor EXECUTE-ALL-SCRIPTS walks, so the number in an
+      ;; error matches the number you count down the page.
+      (let ((n 0) (hit nil))
+        (dolist (s (ignore-errors
+                    (dom:get-elements-by-tag-name (context-document ctx) "script")))
+          (incf n)
+          (when (eq s script) (setf hit n)))
+        (and hit (format nil "script #~d" hit)))))
+
 (defun execute-script (ctx script)
   "Run one classic-JavaScript SCRIPT node once against CTX's realm.  Marks it so
    it never runs twice (re-insertion is a no-op); a script error is reported but
@@ -738,7 +751,13 @@
           (unwind-protect
                (handler-case (js:eval-script (context-realm ctx) source)
                  (js:shuttle-error (e)
-                   (format *error-output* "~&weft.script: uncaught ~a~%" e))
+                   ;; SAY WHICH SCRIPT.  "uncaught TypeError: reading 'split'" names a symptom and
+                   ;; not a suspect: a page runs thirty scripts and the message fits any of them,
+                   ;; so the first move in every investigation was bisecting by hand to find out
+                   ;; which one.  The src (or the inline block's index) costs nothing to carry and
+                   ;; turns that into reading a line.
+                   (format *error-output* "~&weft.script: uncaught ~a~@[  [~a]~]~%"
+                           e (script-label ctx script)))
                  (error (e)
                    (format *error-output* "~&weft.script: script error: ~a~%" e)))
             (setf (context-current-script ctx) saved)))

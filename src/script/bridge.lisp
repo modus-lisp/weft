@@ -739,7 +739,17 @@
                     (dom:get-elements-by-tag-name (context-document ctx) "script")))
           (incf n)
           (when (eq s script) (setf hit n)))
-        (and hit (format nil "script #~d" hit)))))
+        (and hit
+             ;; AN INJECTED SCRIPT HAS NO OTHER NAME.  The page ships 34 <script> elements and the
+             ;; failures are in #38 -- a script another script created, so there is nothing in the
+             ;; HTML to look up and the index alone is a dead end.  Its first line is the only
+             ;; handle it has; one line of it is enough to recognise and short enough to read.
+             (let* ((txt (or (ignore-errors (dom:text-content script)) ""))
+                    (one (string-trim '(#\Space #\Tab #\Newline #\Return)
+                                      (subseq txt 0 (min 70 (length txt))))))
+               (if (plusp (length one))
+                   (format nil "script #~d: ~a…" hit (substitute #\Space #\Newline one))
+                   (format nil "script #~d" hit)))))))
 
 (defun execute-script (ctx script)
   "Run one classic-JavaScript SCRIPT node once against CTX's realm.  Marks it so

@@ -3313,8 +3313,19 @@ TypeError that ends the script and everything it was going to define."
    the element) so a script can populate it (Acid3's getTestDocument)."
   (if (member (h:dnode-name element) '("iframe" "object" "frame") :test #'string=)
       (let ((doc (or (gethash element (context-iframe-docs ctx))
-                     (let ((d (h:make-document)))
-                       (h:dom-append d (h:make-element "html"))
+                     ;; HTML, HEAD AND BODY -- an `about:blank' document is not an empty one.  A
+                     ;; browser seeds a fresh frame with all three, and scripts rely on it without
+                     ;; looking: the Cloudflare challenge injector on slashdot.org writes
+                     ;;   b.getElementsByTagName('head')[0].appendChild(d)
+                     ;; into a frame it has just created.  With only <html> that subscript is
+                     ;; undefined and the script dies on `.appendChild' -- having already passed
+                     ;; the `if (b)' guard, because the DOCUMENT was there and only its shape was
+                     ;; wrong.  That is the expensive kind of missing: it defeats the check the
+                     ;; page actually wrote.
+                     (let ((d (h:make-document)) (html (h:make-element "html")))
+                       (h:dom-append d html)
+                       (h:dom-append html (h:make-element "head"))
+                       (h:dom-append html (h:make-element "body"))
                        (setf (gethash element (context-iframe-docs ctx)) d)
                        d))))
         (wrap ctx doc))

@@ -63,7 +63,15 @@
                   (funcall cb)
                   (js:invoke (context-realm ctx) cb js:*undefined* (timer-args tm))))
           (js:shuttle-error (e)
-            (format *error-output* "~&weft.script: uncaught in timer: ~a~%" e))
+            ;; WHOSE TIMER.  A callback has no URL and no place in the document, so "in timer"
+            ;; named nothing at all; its function name, when it has one, is the only identity it
+            ;; carries into the queue.
+            (format *error-output* "~&weft.script: uncaught in timer~@[ (~a)~]: ~a~%"
+                    (let ((cb (timer-callback tm)))
+                      (and (not (functionp cb))
+                           (let ((n (ignore-errors (js:to-string (js:js-get cb "name")))))
+                             (and (stringp n) (plusp (length n)) n))))
+                    e))
           (error (e)
             (format *error-output* "~&weft.script: timer error: ~a~%" e)))
         (js:drain-microtasks)))

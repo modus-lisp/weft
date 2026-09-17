@@ -782,6 +782,83 @@ the context node when it is an element, else NIL (a document/fragment root makes
     (dolist (tk tokens (nreverse out))
       (unless (gethash tk seen) (setf (gethash tk seen) t) (push tk out)))))
 
+(defun %dataset-attr-name (key)
+  "A dataset KEY as its content-attribute name: `fooBar' -> `data-foo-bar'.
+
+WHATWG HTML's rule, and the direction that matters here -- an uppercase letter becomes a hyphen
+and its lowercase.  A key already containing a hyphen has no attribute (the spec throws
+SyntaxError); this returns NIL and the caller answers undefined rather than inventing one."
+  (when (and (stringp key) (not (find #\- key)))
+    (with-output-to-string (o)
+      (write-string "data-" o)
+      (loop for c across key
+            do (if (upper-case-p c)
+                   (progn (write-char #\- o) (write-char (char-downcase c) o))
+                   (write-char c o))))))
+
+(defun %dataset-key-name (attr)
+  "A `data-foo-bar' attribute as its dataset key, `fooBar', or NIL if it is not a data attribute."
+  (when (and (stringp attr) (> (length attr) 5) (string= "data-" attr :end2 5))
+    (let ((rest (subseq attr 5)) (up nil))
+      (with-output-to-string (o)
+        (loop for c across rest
+              do (cond ((char= c #\-) (setf up t))
+                       (up (write-char (char-upcase c) o) (setf up nil))
+                       (t (write-char c o))))))))
+
+(defun make-dataset (ctx node)
+  "A live DOMStringMap over NODE's data-* attributes (HTML §dataset).
+
+LIVE, like classList beside it: every read and write goes to the attribute, so a script that sets
+`el.dataset.x' and another that reads `getAttribute(\"data-x\")' see one fact rather than two.
+
+IT IS NOT AN OPTIONAL CONVENIENCE.  Scripts reach it without checking -- slashdot's floating-unit.js
+says `scriptTag.dataset.source' outright -- so an absent `dataset' is not a missing feature but a
+TypeError that ends the script and everything it was going to define."
+  (let ((realm (context-realm ctx)))
+    (js:make-host-object realm
+      :proto (js:eval-script realm "Object.prototype")
+      :get (lambda (o key rcv) (declare (ignore o rcv))
+             (let* ((key (js:to-property-key key))
+                    (attr (and (stringp key) (%dataset-attr-name key)))
+                    (v (and attr (get-attr node attr))))
+               (if v v js:*undefined*)))
+      :has (lambda (o key) (declare (ignore o))
+             (let* ((key (js:to-property-key key))
+                    (attr (and (stringp key) (%dataset-attr-name key))))
+               (and attr (dom:has-attribute node attr) t)))
+      :set (lambda (o key v rcv) (declare (ignore o rcv))
+             (let* ((key (js:to-property-key key))
+                    (attr (and (stringp key) (%dataset-attr-name key))))
+               (when attr
+                 (set-attr node attr (jstr v))
+                 (setf (context-dirty ctx) t))
+               js:*true*))
+      :delete (lambda (o key) (declare (ignore o))
+                (let* ((key (js:to-property-key key))
+                       (attr (and (stringp key) (%dataset-attr-name key))))
+                  (when attr (remove-attr node attr)
+                        (setf (context-dirty ctx) t))
+                  js:*true*))
+      ;; Enumerable, because `Object.keys(el.dataset)' and `for...in' are how scripts discover
+      ;; what a tag was annotated with.
+      ;;
+      ;; BOTH TRAPS, and the second is the one that actually makes them visible: Object.keys asks
+      ;; for the key list and then asks each key for a DESCRIPTOR, keeping only the enumerable
+      ;; ones.  With [[OwnPropertyKeys]] alone every key is reported and then silently dropped, so
+      ;; the map reads correctly by name and enumerates as empty -- which is worse than either
+      ;; working or failing, because the first test anyone writes is `dataset.foo'.
+      :own-keys (lambda (o) (declare (ignore o))
+                  (remove nil (mapcar (lambda (a) (%dataset-key-name (car a)))
+                                      (h:dnode-attrs node))))
+      :get-own-property
+      (lambda (o key) (declare (ignore o))
+        (let* ((key (js:to-property-key key))
+               (attr (and (stringp key) (%dataset-attr-name key)))
+               (v (and attr (get-attr node attr))))
+          (when v
+            (js::make-prop :value v :enumerable t :configurable t :writable t)))))))
+
 (defun make-class-list (ctx node)
   "A live DOMTokenList over NODE's class attribute (DOM §DOMTokenList): reads and
    writes the attribute on every operation so it always reflects the current value.
@@ -1882,6 +1959,14 @@ the context node when it is an element, else NIL (a document/fragment root makes
               (js:put this "__weft_classList" tl :enumerable nil :configurable t)
               tl)))
       (v) (progn (set-attr (n this) "class" (jstr v)) (setf (context-dirty ctx) t)))
+    ;; dataset: a live DOMStringMap, memoized so el.dataset === el.dataset (SameObject).
+    (defgetset ctx ep "dataset" (this)
+      (let ((existing (js:js-get this "__weft_dataset")))
+        (if (js:js-object-p existing) existing
+            (let ((ds (make-dataset ctx (n this))))
+              (js:put this "__weft_dataset" ds :enumerable nil :configurable t)
+              ds)))
+      (v) (declare (ignore v)))
     ;; Reflected IDL attributes whose property name differs from the content
     ;; attribute (DOM2 HTML): htmlFor<->for, httpEquiv<->http-equiv.
     (defgetset ctx ep "name" (this) (or (get-attr (n this) "name") "")

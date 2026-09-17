@@ -150,6 +150,11 @@
     (js:define-global realm "parent" window)
     (js:define-global realm "top" window)
     (js:define-global realm "frames" window)
+    ;; window.name: a STRING, empty by default, and writable.  It is the oldest piece of
+    ;; cross-navigation storage there is, and scripts use it without checking -- Matomo's overlay
+    ;; detector does `T.name.split("###")' on it outright, so undefined is not a missing feature
+    ;; but a TypeError that ends the script.
+    (js:define-global realm "name" "")
     ;; navigator — the fields feature-detecting scripts read.
     (let ((nav (js:make-object :proto (js:eval-script realm "Object.prototype"))))
       (js:put nav "userAgent" "Mozilla/5.0 (weft)")

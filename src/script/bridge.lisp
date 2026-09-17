@@ -167,6 +167,35 @@
               (js:native-function realm "sendBeacon"
                 (lambda (this args) (declare (ignore this args)) js:*true*) 1))
       (js:define-global realm "navigator" nav))
+    ;; screen + the window metrics, because scripts SIZE THEMSELVES against these and read them
+    ;; BARE.  `screen.width` with no `screen` is a ReferenceError, which kills the whole script and
+    ;; everything it was going to define -- slashdot.org hit exactly that.  A missing
+    ;; `window.innerWidth` is gentler (undefined, not a throw) and still wrong: layout code that
+    ;; branches on it takes the wrong branch silently.
+    ;;
+    ;; THE WIDTH IS THE ONE WE ARE ACTUALLY LAYING OUT AT, not a plausible-looking constant: the
+    ;; context already carries it and the cascade already uses it for media queries, so a script
+    ;; asking how wide the page is gets the same answer the stylesheet got.  Height is derived from
+    ;; it at 16:10 rather than invented per-caller -- a static render has no window to measure, and
+    ;; one arbitrary-but-consistent number beats three that disagree.
+    (let* ((w (context-width ctx))
+           (h (max 1 (round (* w 10) 16))))
+      (js:define-global realm "innerWidth" (num w))
+      (js:define-global realm "innerHeight" (num h))
+      (js:define-global realm "outerWidth" (num w))
+      (js:define-global realm "outerHeight" (num h))
+      (js:define-global realm "scrollX" (num 0)) (js:define-global realm "pageXOffset" (num 0))
+      (js:define-global realm "scrollY" (num 0)) (js:define-global realm "pageYOffset" (num 0))
+      (js:define-global realm "devicePixelRatio" (num 1))
+      (let ((scr (js:make-object :proto (js:eval-script realm "Object.prototype"))))
+        (js:put scr "width" (num w))       (js:put scr "height" (num h))
+        ;; availWidth/Height are the screen minus system furniture; a render has none, so they are
+        ;; the screen.  Saying so is better than omitting them: a script that reads one and gets
+        ;; undefined does arithmetic on NaN and lays out at zero.
+        (js:put scr "availWidth" (num w))  (js:put scr "availHeight" (num h))
+        (js:put scr "availLeft" (num 0))   (js:put scr "availTop" (num 0))
+        (js:put scr "colorDepth" (num 24)) (js:put scr "pixelDepth" (num 24))
+        (js:define-global realm "screen" scr)))
     ;; location — parsed from the document base URL.
     (let ((loc (make-location ctx)))
       (js:define-global realm "location" loc)

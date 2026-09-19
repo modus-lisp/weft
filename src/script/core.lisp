@@ -27,6 +27,12 @@
   (css "")                  ; author CSS string (for getComputedStyle recompute)
   (styles (make-hash-table :test 'eq)) ; document dnode -> its computed-style hash
   (width 800)               ; layout width used for style resolution
+  (layout nil)              ; cached layout tree root (an r:lbox), laid out on
+                            ; demand by ENSURE-LAYOUT and dropped when the DOM
+                            ; changes -- see geometry.lisp
+  (scroll-y 0)              ; the shell's current vertical scroll, so a viewport
+                            ; rect can be document-y minus this.  weft renders at
+                            ; 0; a shell that scrolls (loom) sets it.
   (timers nil)              ; pending macrotasks: list of TIMER structs
   (timer-seq 0)             ; monotonic timer id source
   (now 0)                   ; virtual clock (ms) for the timer queue

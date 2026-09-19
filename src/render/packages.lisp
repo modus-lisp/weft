@@ -11,7 +11,7 @@
    #:decode-image #:decode-image-bytes #:rgba-canvas->img #:base64-decode)
   (:export #:canvas #:make-canvas #:canvas-width #:canvas-height
            #:fill-rect #:draw-text #:write-png #:canvas->png
-           #:layout-tree #:render-to-png #:render-to-canvas #:canvas-ink #:canvas-pixels
+           #:layout-tree #:layout-document #:render-to-png #:render-to-canvas #:canvas-ink #:canvas-pixels
            #:element-canvas #:*element-canvas*
            ;; network image loading + cache (bind *IMAGE-LOADER* to a fetcher)
            #:*image-loader* #:*image-store* #:clear-image-cache #:*image-fetch-deadline*
@@ -26,6 +26,9 @@
            #:*fetch-inview-lazy* #:*lazy-scroll-y* #:*lazy-image-overscan*
            #:lbox #:lbox-p #:lbox-x #:lbox-y #:lbox-w #:lbox-h
            #:lbox-node #:lbox-kind #:lbox-children #:lbox-style
+           ;; text fragments on a line box: an inline element has no box of its
+           ;; own, so its geometry IS its fragments (see INTERACT's frag hit-test)
+           #:frag #:frag-p #:frag-x #:frag-w #:frag-node #:frag-dx #:frag-dy
            ;; live form-control state: the shell binds this so a control's
            ;; CURRENT value (script-set or typed) is painted, not its default
            #:*form-value-fn* #:*form-caret-fn* #:form-control-p

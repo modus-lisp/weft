@@ -2462,14 +2462,30 @@ TypeError that ends the script and everything it was going to define."
         (insert-adjacent ctx element where text)
         (setf (context-dirty ctx) t)
         js:*undefined*))
+    ;; getBoundingClientRect / getClientRects: THE RECT NOW COMES FROM THE LAYOUT
+    ;; TREE, which is the condition this file set for adding it at all — "a
+    ;; fabricated rect is worse than a missing method because no caller can tell
+    ;; it is a guess" (wave 6 returned the numbers a test asserted; wave 7
+    ;; returned zeros; both scored nothing, measured, TOTAL 705 either way).
+    ;; geometry.lisp lays the document out on demand and reads the boxes the
+    ;; renderer produced; the only zero rect it can return is for a node that has
+    ;; no box at all, which is what the spec says an unrendered node measures.
+    (defmethod* ctx ep "getBoundingClientRect" 0 (this a)
+      (declare (ignore a))
+      (multiple-value-bind (x y w h) (node-bounding-rect ctx (n this))
+        (make-dom-rect ctx x y w h)))
+    (defmethod* ctx ep "getClientRects" 0 (this a)
+      (declare (ignore a))
+      ;; One rect per box the element got: a block has one, an inline broken
+      ;; across lines has one per line -- which is the difference between this and
+      ;; getBoundingClientRect's single union.
+      (let ((sy (context-scroll-y ctx)))
+        (make-rect-list ctx (mapcar (lambda (r)
+                                      (list (first r) (- (second r) sy)
+                                            (third r) (fourth r)))
+                                    (node-document-rects ctx (n this))))))
     ;; focus() is a no-op: weft has no focus model, and the callers in this corpus
-    ;; only need it not to throw.  Deliberately NOT paired with a
-    ;; getBoundingClientRect stub — a rect is a VALUE, and a fabricated one is
-    ;; worse than a missing method because no caller can tell it is a guess.
-    ;; When this arrives it must come from the layout tree.  (Wave 6 added one
-    ;; returning the exact numbers a test asserted; wave 7 added one returning
-    ;; all zeros.  The zeros scored nothing — measured, TOTAL 705 either way —
-    ;; and would have handed us passes on any test asserting a zero rect.)
+    ;; only need it not to throw.
     ;; focus()/blur(): move the document's focus, firing HTML's focus update
     ;; steps.  A shell routes keyboard input at whatever this leaves focused.
     (defmethod* ctx ep "focus" 0 (this a)

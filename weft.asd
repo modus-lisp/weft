@@ -92,7 +92,9 @@
   :components ((:module "src" :components
                 ((:module "script" :serial t
                   :components ((:file "packages") (:file "core") (:file "timers")
-                               (:file "events") (:file "cssom") (:file "dom")
+                               (:file "events") (:file "cssom")
+                               (:file "geometry")   ; layout read from script
+                               (:file "dom")
                                (:file "mutation")
                                (:file "canvas") (:file "svg")
                                (:file "traversal") (:file "range") (:file "xml") (:file "loader")

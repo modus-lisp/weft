@@ -82,6 +82,35 @@
          (bbg (let ((cs (and body (gethash body styles)))) (and cs (css:cstyle-background cs)))))
     (or hbg bbg)))
 
+(defun layout-document (doc &key (width 1024) (css "") viewport-height)
+  "Cascade and lay DOC out WITHOUT painting.  Returns (values ROOT-BOX STYLES).
+
+   The geometry half of RENDER-DOCUMENT, for a caller that wants boxes rather than
+   pixels: getBoundingClientRect has to answer BETWEEN paints, and a script may ask
+   before anything has been painted at all.  RENDER-DOCUMENT remains the only path
+   that paints; this runs the same three steps -- parse the sheet, cascade, lay out
+   with container queries -- in the same order, so the two cannot report different
+   geometry for the same document and width.
+
+   A shell that has ALREADY laid the document out should hand that box tree to the
+   script context instead of calling this: re-laying out would be both wasted work
+   and a second opinion, and the rectangle a script reads ought to be the one the
+   user is looking at."
+  (let* ((css::*viewport-w* (float width))
+         (css::*viewport-h* (float (or viewport-height 600)))
+         (*element-canvas* (make-hash-table :test 'eq))
+         (sheet (css:parse-stylesheet
+                 (concatenate 'string (or css "") (string #\Newline)
+                              (collect-stylesheets doc))))
+         (styles (progn (load-font-faces sheet) (css:compute-styles doc sheet)))
+         (viewport-p (and viewport-height (root-clips-p doc styles)))
+         (vph (and viewport-p (round viewport-height))))
+    (multiple-value-bind (root adv styles2)
+        (layout-with-container-queries doc styles sheet width vph nil
+                                       (and viewport-height (round viewport-height)))
+      (declare (ignore adv))
+      (values root (or styles2 styles)))))
+
 (defun render-document (doc &key (width 1024) (css "") (min-height 200)
                                  (max-height 20000) viewport-height (scroll-y 0) scroll-to
                                  selection)

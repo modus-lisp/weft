@@ -50,6 +50,7 @@
               Math.round(r.width),Math.round(r.height),
               el.offsetLeft,el.offsetTop,el.offsetWidth,el.offsetHeight,
               el.clientLeft,el.clientTop,el.clientWidth,el.clientHeight,
+              el.scrollWidth,el.scrollHeight,
               el.offsetParent ? pathOf(el.offsetParent) : '-'].join('\\t'));
   }
   document.body.setAttribute('data-gbcr', out.join('\\n'));
@@ -64,7 +65,8 @@
 
 (defparameter *fields*
   '("x" "y" "w" "h" "offsetLeft" "offsetTop" "offsetWidth" "offsetHeight"
-    "clientLeft" "clientTop" "clientWidth" "clientHeight")
+    "clientLeft" "clientTop" "clientWidth" "clientHeight"
+    "scrollWidth" "scrollHeight")
   "The numeric columns, in dump order.  Named so a divergence is reported as the
    METRIC that disagrees rather than as a row of numbers -- offsetTop being wrong
    and clientHeight being wrong are different bugs.")
@@ -88,10 +90,10 @@
       (format t "  !! script error: ~a~%" (loom:page-js-error pg)))
     (loop for line in (split-on #\Newline (or dump ""))
           for f = (split-on #\Tab line)
-          when (= (length f) 14)
+          when (= (length f) 16)
             collect (cons (first f)
-                          (append (mapcar #'parse-integer (subseq f 1 13))
-                                  (list (nth 13 f)))))))
+                          (append (mapcar #'parse-integer (subseq f 1 15))
+                                  (list (nth 15 f)))))))
 
 (defun chrome-rows (tsv)
   "The reference dump, as a hash of file -> (path -> (x y w h))."
@@ -102,10 +104,10 @@
              (setf (gethash current by-file) (make-hash-table :test 'equal)))
             ((and current (find #\Tab line))
              (let ((f (split-on #\Tab line)))
-               (when (= (length f) 14)
+               (when (= (length f) 16)
                  (setf (gethash (first f) (gethash current by-file))
-                       (append (mapcar #'parse-integer (subseq f 1 13))
-                               (list (nth 13 f)))))))))))
+                       (append (mapcar #'parse-integer (subseq f 1 15))
+                               (list (nth 15 f)))))))))))
 
 (defparameter *by-field* (make-hash-table :test 'equal)
   "metric name -> how many elements disagree on it.")
@@ -140,7 +142,7 @@
                    ;; offsetParent is an identity, not a number: it matches exactly
                    ;; or it does not, and naming a different ancestor is a real bug
                    ;; however close the numbers happen to land.
-                   (let ((pa (nth 12 (cdr row))) (pb (nth 12 w)))
+                   (let ((pa (nth 14 (cdr row))) (pb (nth 14 w)))
                      (unless (equal pa pb)
                        (push (list "offsetParent" pa pb) bad)
                        (incf (gethash "offsetParent" *by-field* 0))))

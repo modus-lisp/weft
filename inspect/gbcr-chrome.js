@@ -40,6 +40,7 @@ const DUMP = () => {
               Math.round(r.width), Math.round(r.height),
               el.offsetLeft, el.offsetTop, el.offsetWidth, el.offsetHeight,
               el.clientLeft, el.clientTop, el.clientWidth, el.clientHeight,
+              el.scrollWidth, el.scrollHeight,
               el.offsetParent ? pathOf(el.offsetParent) : '-'].join('\t'));
   }
   return out.join('\n');

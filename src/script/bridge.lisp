@@ -183,14 +183,28 @@
     ;; asking how wide the page is gets the same answer the stylesheet got.  Height is derived from
     ;; it at 16:10 rather than invented per-caller -- a static render has no window to measure, and
     ;; one arbitrary-but-consistent number beats three that disagree.
+    ;; ... AND WHEN THE SHELL HAS A REAL VIEWPORT, that is the height, rather than
+    ;; the 16:10 guess.  The guess exists because a static render has no window to
+    ;; measure; a shell that HAS one should not be second-guessed by it.
     (let* ((w (context-width ctx))
-           (h (max 1 (round (* w 10) 16))))
+           (h (or (and (context-viewport-height ctx) (round (context-viewport-height ctx)))
+                  (max 1 (round (* w 10) 16)))))
       (js:define-global realm "innerWidth" (num w))
       (js:define-global realm "innerHeight" (num h))
       (js:define-global realm "outerWidth" (num w))
       (js:define-global realm "outerHeight" (num h))
       (js:define-global realm "scrollX" (num 0)) (js:define-global realm "pageXOffset" (num 0))
-      (js:define-global realm "scrollY" (num 0)) (js:define-global realm "pageYOffset" (num 0))
+      ;; scrollY is a POSITION and it moves: an accessor reads the shell's current
+      ;; scroll every time rather than freezing whatever it was at load.  Bare
+      ;; `scrollY` resolves here too -- unqualified lookup falls back to the global
+      ;; object, so an accessor on it is found the same way a value would be.
+      (let ((g (js:eval-script realm "globalThis")))
+        (dolist (name '("scrollY" "pageYOffset"))
+          (js:put-accessor g name
+            :get (js:native-function realm (concatenate 'string "get " name)
+                   (lambda (this args) (declare (ignore this args))
+                     (num (context-scroll-y ctx))) 0)
+            :enumerable nil :configurable t)))
       (js:define-global realm "devicePixelRatio" (num 1))
       (let ((scr (js:make-object :proto (js:eval-script realm "Object.prototype"))))
         (js:put scr "width" (num w))       (js:put scr "height" (num h))

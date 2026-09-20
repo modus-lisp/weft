@@ -245,3 +245,57 @@
          (values bl bt
                  (max 0 (round (- (r:lbox-w box) bl br)))
                  (max 0 (round (- (r:lbox-h box) bt bb)))))))))
+
+;;; ---- the scrolling area ----------------------------------------------------
+;;; scrollWidth/scrollHeight are the size of what an element COULD scroll over:
+;;; its padding box, enlarged to contain every descendant box that overflows it.
+;;; So they equal clientWidth/clientHeight exactly when nothing overflows, which is
+;;; the common case and the one that must not drift from the client* answer.
+;;;
+;;; scrollTop/scrollLeft are a POSITION, not a size, and weft has no per-element
+;;; scroll containers -- it lays a page out whole and the shell blits a slice.  So
+;;; an ordinary element is never scrolled and answers 0, while the ROOT element
+;;; reports the shell's own scroll, which is the document scroll a page reads as
+;;; document.documentElement.scrollTop.
+
+(defun %subtree-extent (box right bottom)
+  "(values right bottom) extended to cover everything laid out inside BOX, in
+   document coordinates -- the far corner of its scrolling area.
+
+   THE SEED IS THE PADDING BOX, not the border box, and the caller supplies it: the
+   scrolling area is the union of an element's PADDING box with its descendants'
+   border boxes, so seeding with the border box made every bordered element's
+   scrollWidth/scrollHeight too large by exactly one border width -- 213 against
+   Chrome's 210 on a 3px border, 322 against 320 on a 2px one.  Off by a border is
+   the kind of wrong that looks like rounding."
+  (let ((right right) (bottom bottom))
+    (labels ((walk (b)
+               (when (r:lbox-p b)
+                 (setf right (max right (+ (r:lbox-x b) (r:lbox-w b)))
+                       bottom (max bottom (+ (r:lbox-y b) (r:lbox-h b))))
+                 (dolist (c (r:lbox-children b)) (walk c)))))
+      (dolist (c (r:lbox-children box)) (walk c)))
+    (values right bottom)))
+
+(defun node-scroll-metrics (ctx node)
+  "(values scroll-left scroll-top scroll-width scroll-height) for NODE."
+  (let ((box (%node-lbox ctx node)))
+    (if (null box)
+        (values 0 0 0 0)
+        (multiple-value-bind (bt br bb bl) (%border-widths box)
+          (declare (ignorable bb))
+          (multiple-value-bind (right bottom)
+              (%subtree-extent box
+                               (- (+ (r:lbox-x box) (r:lbox-w box)) br)
+                               (- (+ (r:lbox-y box) (r:lbox-h box))
+                                  (nth-value 2 (%border-widths box))))
+            (let* ((root-p (string= (%tag-name node) "html"))
+                   ;; the padding edge is where a scrolling area starts
+                   (px (+ (r:lbox-x box) bl))
+                   (py (+ (r:lbox-y box) bt))
+                   (cw (max 0 (round (- (r:lbox-w box) bl br))))
+                   (ch (nth-value 3 (node-client-metrics ctx node))))
+              (values 0
+                      (if root-p (round (context-scroll-y ctx)) 0)
+                      (max cw (round (- right px)))
+                      (max ch (round (- bottom py))))))))))

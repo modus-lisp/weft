@@ -299,3 +299,44 @@
                       (if root-p (round (context-scroll-y ctx)) 0)
                       (max cw (round (- right px)))
                       (max ch (round (- bottom py))))))))))
+
+;;; ===========================================================================
+;;; Asking the shell to scroll
+;;; ===========================================================================
+;;; scrollIntoView and window.scrollTo are the one direction the script layer has
+;;; to push rather than read: everything else here answers a question about the
+;;; layout, while these ask for the viewport to MOVE.  Only the shell can do that
+;;; -- it owns the scroll position and the painting -- so the context carries a
+;;; hook it installs, and the fallback when there is no shell is to move our own
+;;; recorded scroll so that every rectangle read afterwards is consistent with the
+;;; scroll that was requested.  A scrollIntoView that silently did nothing would
+;;; leave a page measuring against a viewport it believes it moved.
+
+(defun request-scroll (ctx y)
+  "Ask for the viewport's top to be at document Y.  Returns the Y adopted."
+  (let ((y (max 0 (round y))))
+    (if (context-scroll-fn ctx)
+        (funcall (context-scroll-fn ctx) y)
+        (setf (context-scroll-y ctx) y))))
+
+(defun scroll-node-into-view (ctx node block)
+  "Scroll so NODE is visible.  BLOCK is :start, :end, :center or :nearest, the
+   CSSOM View alignments -- :nearest moves the minimum needed and is the only one
+   that may decide to do nothing at all."
+  (let ((box (%node-lbox ctx node)))
+    (when box
+      (let* ((top (r:lbox-y box))
+             (h (r:lbox-h box))
+             (bottom (+ top h))
+             (vh (or (context-viewport-height ctx)
+                     (let ((root (ensure-layout ctx))) (if root (r:lbox-h root) 0))))
+             (cur (context-scroll-y ctx)))
+        (request-scroll
+         ctx
+         (ecase block
+           (:start top)
+           (:end (- bottom vh))
+           (:center (- top (/ (- vh h) 2)))
+           (:nearest (cond ((< top cur) top)                    ; above the fold
+                           ((> bottom (+ cur vh)) (- bottom vh)) ; below it
+                           (t cur)))))))))                       ; already visible

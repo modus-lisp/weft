@@ -97,6 +97,7 @@
                                (:file "dom")
                                (:file "mutation")
                                (:file "intersection")
+                               (:file "resize")
                                (:file "canvas") (:file "svg")
                                (:file "traversal") (:file "range") (:file "xml") (:file "loader")
                                (:file "tables")

@@ -2496,6 +2496,24 @@ TypeError that ends the script and everything it was going to define."
       (metric "scrollTop"    node-scroll-metrics 1)
       (metric "scrollWidth"  node-scroll-metrics 2)
       (metric "scrollHeight" node-scroll-metrics 3))
+    ;; scrollIntoView(arg): true/absent aligns the top, false aligns the bottom,
+    ;; and an options object names the alignment outright.  The legacy boolean is
+    ;; still what most callers pass.
+    (defmethod* ctx ep "scrollIntoView" 0 (this a)
+      (let* ((v (arg a 0))
+             (block-align
+               (cond ((js:js-undefined-p v) :start)
+                     ((js:js-object-p v)
+                      (let ((b (js:js-get v "block")))
+                        (cond ((js:js-undefined-p b) :start)
+                              ((string= (jstr b) "end") :end)
+                              ((string= (jstr b) "center") :center)
+                              ((string= (jstr b) "nearest") :nearest)
+                              (t :start))))
+                     ((truthy v) :start)
+                     (t :end))))
+        (scroll-node-into-view ctx (n this) block-align)
+        js:*undefined*))
     (defget ctx ep "offsetParent" (this)
       (let ((p (%offset-parent-node ctx (n this))))
         (if p (wrap ctx p) js:*null*)))

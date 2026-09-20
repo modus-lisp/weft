@@ -249,7 +249,28 @@
       (js:define-global realm "localStorage" (storage))
       (js:define-global realm "sessionStorage" (storage)))
     ;; a few window methods real pages call
-    (dolist (m '("scrollTo" "scroll" "scrollBy" "focus" "blur" "print" "close" "open"
+    ;; scrollTo/scroll/scrollBy actually scroll now: they are REQUESTS to the shell
+    ;; (see REQUEST-SCROLL), and a page that scrolls itself and then measures should
+    ;; measure against the viewport it asked for.  Both call shapes are in the wild:
+    ;; scrollTo(x, y) and scrollTo({top: y}).
+    (flet ((scroll-arg-y (args relative)
+             (let* ((a0 (arg args 0))
+                    (y (cond ((and (js:js-object-p a0) (not (js:js-callable-p a0)))
+                              (let ((top (js:js-get a0 "top")))
+                                (if (js:js-undefined-p top) 0 (js:to-number top))))
+                             (t (js:to-number (arg args 1))))))
+               (+ (if relative (context-scroll-y ctx) 0)
+                  (if (realp y) y 0)))))
+      (dolist (m '("scrollTo" "scroll"))
+        (js:define-global realm m
+          (js:native-function realm m
+            (lambda (this args) (declare (ignore this))
+              (request-scroll ctx (scroll-arg-y args nil)) js:*undefined*) 2)))
+      (js:define-global realm "scrollBy"
+        (js:native-function realm "scrollBy"
+          (lambda (this args) (declare (ignore this))
+            (request-scroll ctx (scroll-arg-y args t)) js:*undefined*) 2)))
+    (dolist (m '("focus" "blur" "print" "close" "open"
                  "alert" "resizeTo" "moveTo"))
       (js:define-global realm m (js:native-function realm m (lambda (this args) (declare (ignore this args)) js:*undefined*) 0)))
     ;; requestIdleCallback (W3C Background Tasks): run the callback as a deferred
@@ -700,6 +721,7 @@
     (install-window-events ctx)
     (install-mutation-observer ctx)
     (install-intersection-observer ctx)
+    (install-resize-observer ctx)
     ;; Also set the GLOBAL value of *ctx* (not just the per-entry dynamic binding):
     ;; shuttle runs async-function bodies on a worker thread that does not inherit
     ;; the main thread's dynamic binding, so mutation sites reached from an async

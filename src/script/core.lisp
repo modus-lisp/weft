@@ -85,6 +85,11 @@
   (mo-regs (make-hash-table :test 'eq)) ; node -> list of MO-REG registered observers
   (io-list nil)             ; every IntersectionObserver in this context
   (io-objs (make-hash-table :test 'eq)) ; IO wrapper object -> its IO struct
+  (ro-list nil)             ; every ResizeObserver in this context
+  (ro-objs (make-hash-table :test 'eq)) ; RO wrapper object -> its RO struct
+  (scroll-fn nil)           ; the shell's "please scroll to Y" hook, when it has
+                            ; one: scrollIntoView and window.scrollTo are REQUESTS,
+                            ; and only the shell can actually move the viewport
   (mo-microtask-queued nil) ; the "mutation observer microtask queued" flag (DOM §4.3.3)
   (raf-count 0)             ; requestAnimationFrame frames served (budget vs runaway loops)
   (dirty nil))              ; a DOM mutation happened; styles cache is stale

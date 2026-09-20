@@ -606,13 +606,19 @@
           (getf (context-protos ctx) :html-tag-protos) tagmap)
     (nreverse ifaces)))
 
-(defun make-context (document &key (css "") (width 800) (base "") loader)
+(defun make-context (document &key (css "") (width 800) (base "") loader viewport-height)
   "Create a fresh scripting context for a parsed weft DOCUMENT: a realm with the
    full DOM/CSSOM/Events surface installed and document/window globals bound.
    BASE + LOADER supply the subresource pipeline (LOADER is (ctx url) -> (values
-   kind content); data: URLs are handled without it)."
+   kind content); data: URLs are handled without it).  VIEWPORT-HEIGHT, when the
+   shell has one, is what the root element's clientHeight reports."
   (let* ((realm (js:make-realm))
          (ctx (%make-context :realm realm :document document :css css :width width
+                             ;; INLINE SCRIPTS RUN BEFORE THE FIRST PAINT, so a
+                             ;; shell that only publishes its viewport when it
+                             ;; renders has not published anything yet when the
+                             ;; page's own scripts ask how tall the window is.
+                             :viewport-height viewport-height
                              :base base :loader loader))
          (op (js:eval-script realm "Object.prototype"))
          (np (js:make-object :proto op))     ; Node.prototype

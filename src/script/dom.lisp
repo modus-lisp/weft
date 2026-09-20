@@ -2474,6 +2474,27 @@ TypeError that ends the script and everything it was going to define."
       (declare (ignore a))
       (multiple-value-bind (x y w h) (node-bounding-rect ctx (n this))
         (make-dom-rect ctx x y w h)))
+    ;; ---- CSSOM View's integer box metrics -------------------------------
+    ;; Each names a DIFFERENT box of the same element, so they are not
+    ;; interchangeable with each other or with getBoundingClientRect: offset* is
+    ;; the border box (offsetTop measured from the offsetParent's PADDING edge, so
+    ;; that parent's border is subtracted), client* is the padding box, and
+    ;; clientTop/Left are the border widths themselves.  geometry.lisp works them
+    ;; out from the same boxes the renderer produced.
+    (macrolet ((metric (name fn nth)
+                 `(defget ctx ep ,name (this)
+                    (num (nth-value ,nth (,fn ctx (n this)))))))
+      (metric "offsetLeft"   node-offset-metrics 0)
+      (metric "offsetTop"    node-offset-metrics 1)
+      (metric "offsetWidth"  node-offset-metrics 2)
+      (metric "offsetHeight" node-offset-metrics 3)
+      (metric "clientLeft"   node-client-metrics 0)
+      (metric "clientTop"    node-client-metrics 1)
+      (metric "clientWidth"  node-client-metrics 2)
+      (metric "clientHeight" node-client-metrics 3))
+    (defget ctx ep "offsetParent" (this)
+      (let ((p (%offset-parent-node ctx (n this))))
+        (if p (wrap ctx p) js:*null*)))
     (defmethod* ctx ep "getClientRects" 0 (this a)
       (declare (ignore a))
       ;; One rect per box the element got: a block has one, an inline broken

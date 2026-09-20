@@ -118,3 +118,130 @@
     ;; [[Set]], so `length` does not follow the index writes and has to be set.
     (js:put arr "length" (num (length rects)))
     arr))
+
+;;; ===========================================================================
+;;; The offset* / client* family (CSSOM View)
+;;; ===========================================================================
+;;; These are the older, integer-rounded way to ask the same layout questions, and
+;;; they are still what a great deal of real code uses -- jQuery's .width(), any
+;;; hand-rolled positioning.  Each is a different BOX of the same element, so the
+;;; distinctions matter and are not interchangeable:
+;;;
+;;;   offsetWidth/Height   the BORDER box, rounded.  An LBOX already is the border
+;;;                        box (a 200px-wide div with 5px padding and a 3px border
+;;;                        lays out 216 wide), so these read straight off it.
+;;;   clientWidth/Height   the PADDING box: border box less the two border widths.
+;;;                        Zero for an element with no CSS box.
+;;;   clientTop/Left       the top and left BORDER widths themselves.
+;;;   offsetTop/Left       the element's border-box corner measured from the
+;;;                        offsetParent's PADDING edge -- so the parent's border is
+;;;                        subtracted, which is what makes it different from simply
+;;;                        differencing two getBoundingClientRect calls.
+
+(defun %node-lbox (ctx node)
+  "NODE's principal layout box, or NIL when it has none.  Descends through line
+   boxes too, since an atomic inline (inline-block, <img>, a form control) is a box
+   sitting on a line rather than a child of a block."
+  (let ((root (ensure-layout ctx)) (found nil))
+    (labels ((walk (b)
+               (when (and (null found) (r:lbox-p b))
+                 (if (eq (r:lbox-node b) node)
+                     (setf found b)
+                     (dolist (c (r:lbox-children b)) (walk c))))))
+      (when root (walk root)))
+    found))
+
+(defun %border-widths (box)
+  "(values top right bottom left) border widths of BOX, as integers."
+  (let ((cs (and box (r:lbox-style box))))
+    (if (null cs)
+        (values 0 0 0 0)
+        (values (round (css:cstyle-border-top-width cs))
+                (round (css:cstyle-border-right-width cs))
+                (round (css:cstyle-border-bottom-width cs))
+                (round (css:cstyle-border-left-width cs))))))
+
+(defun %offset-parent-node (ctx node)
+  "The element NODE's offsets are measured against: the nearest ANCESTOR that is
+   positioned, or a table cell or table, else the body.  NIL when NODE is the root,
+   is not rendered, or is itself fixed -- in which case offsets are measured from
+   the document origin."
+  (when (member (%tag-name node) '("html" "body") :test #'string=)
+    (return-from %offset-parent-node nil))
+  (let ((own (%node-lbox ctx node)))
+    (when (and own (r:lbox-style own)
+               (string-equal (or (css:cstyle-position (r:lbox-style own)) "static") "fixed"))
+      (return-from %offset-parent-node nil))
+    (loop for n = (h:dnode-parent node) then (h:dnode-parent n)
+          while n
+          when (eq (h:dnode-kind n) :element)
+            do (let* ((tag (string-downcase (or (h:dnode-name n) "")))
+                      (box (%node-lbox ctx n))
+                      (pos (and box (r:lbox-style box)
+                                (or (css:cstyle-position (r:lbox-style box)) "static"))))
+                 (when (and box
+                            (or (and pos (not (string-equal pos "static")))
+                                (member tag '("td" "th" "table" "body") :test #'string=)))
+                   (return n))))))
+
+(defun %tag-name (node)
+  (string-downcase (or (and (eq (h:dnode-kind node) :element) (h:dnode-name node)) "")))
+
+(defun %static-p (box)
+  (let ((cs (and box (r:lbox-style box))))
+    (or (null cs) (string-equal (or (css:cstyle-position cs) "static") "static"))))
+
+(defun node-offset-metrics (ctx node)
+  "(values offset-left offset-top offset-width offset-height) for NODE, all
+   integers, and all zero when NODE has no layout box.
+
+   THE ORIGIN IS NOT ALWAYS THE OFFSETPARENT, which is the part that surprises:
+     * the root element and the body report 0, whatever their boxes say -- body's
+       border box sits at y=10 on the corpus's first page and its offsetTop is
+       still 0;
+     * a STATICALLY positioned element whose offsetParent is the BODY is measured
+       from the initial containing block, i.e. in document coordinates, NOT from
+       the body's padding edge (CSSOM View).  Measuring from the body instead was
+       wrong for every ordinary element on an ordinary page -- 14 of 45 in the
+       corpus -- and wrong by exactly the body's own offset, which is the kind of
+       error that looks like a rounding problem until it is written down;
+     * otherwise the origin IS the offsetParent's padding edge: its border box
+       corner plus its own top/left border widths."
+  (let ((box (%node-lbox ctx node)))
+    (cond
+      ((null box) (values 0 0 0 0))
+      ((member (%tag-name node) '("html" "body") :test #'string=)
+       (values 0 0 (round (r:lbox-w box)) (round (r:lbox-h box))))
+      (t
+       (let* ((parent (%offset-parent-node ctx node))
+              (pbox (and parent (%node-lbox ctx parent)))
+              (from-icb (or (null pbox)
+                            (and (string= (%tag-name parent) "body") (%static-p box)))))
+         (multiple-value-bind (pt pr pb pl) (%border-widths pbox)
+           (declare (ignore pr pb))
+           (let ((ox (if from-icb 0 (+ (r:lbox-x pbox) pl)))
+                 (oy (if from-icb 0 (+ (r:lbox-y pbox) pt))))
+             (values (round (- (r:lbox-x box) ox))
+                     (round (- (r:lbox-y box) oy))
+                     (round (r:lbox-w box))
+                     (round (r:lbox-h box))))))))))
+
+(defun node-client-metrics (ctx node)
+  "(values client-left client-top client-width client-height) for NODE: the border
+   widths, and the padding box's size.
+
+   THE ROOT ELEMENT ANSWERS WITH THE VIEWPORT, not with its own box -- that is what
+   document.documentElement.clientHeight means, and it is how a page asks how tall
+   the window is.  We answer it only when the shell has told us the viewport
+   height; with no shell there is no window to report, and the element's own
+   padding box is the honest fallback rather than a made-up number."
+  (let ((box (%node-lbox ctx node)))
+    (cond
+      ((null box) (values 0 0 0 0))
+      ((and (string= (%tag-name node) "html") (context-viewport-height ctx))
+       (values 0 0 (round (context-width ctx)) (round (context-viewport-height ctx))))
+      (t
+       (multiple-value-bind (bt br bb bl) (%border-widths box)
+         (values bl bt
+                 (max 0 (round (- (r:lbox-w box) bl br)))
+                 (max 0 (round (- (r:lbox-h box) bt bb)))))))))

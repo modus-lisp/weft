@@ -30,6 +30,9 @@
   (layout nil)              ; cached layout tree root (an r:lbox), laid out on
                             ; demand by ENSURE-LAYOUT and dropped when the DOM
                             ; changes -- see geometry.lisp
+  (viewport-height nil)     ; the shell's viewport height, when it has one: the
+                            ; root element's clientHeight IS the viewport, which is
+                            ; how a page asks how tall the window is
   (scroll-y 0)              ; the shell's current vertical scroll, so a viewport
                             ; rect can be document-y minus this.  weft renders at
                             ; 0; a shell that scrolls (loom) sets it.

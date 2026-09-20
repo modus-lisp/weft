@@ -37,7 +37,10 @@ const DUMP = () => {
     // Document coordinates: weft reports an unscrolled page, so add the scroll
     // back rather than comparing two different origins.
     out.push([pathOf(el), Math.round(r.x + window.scrollX), Math.round(r.y + window.scrollY),
-              Math.round(r.width), Math.round(r.height)].join('\t'));
+              Math.round(r.width), Math.round(r.height),
+              el.offsetLeft, el.offsetTop, el.offsetWidth, el.offsetHeight,
+              el.clientLeft, el.clientTop, el.clientWidth, el.clientHeight,
+              el.offsetParent ? pathOf(el.offsetParent) : '-'].join('\t'));
   }
   return out.join('\n');
 };

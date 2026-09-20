@@ -47,7 +47,10 @@
     if(el.tagName==='SCRIPT'||el.tagName==='STYLE') continue;
     var r=el.getBoundingClientRect();
     out.push([pathOf(el),Math.round(r.x),Math.round(r.y),
-              Math.round(r.width),Math.round(r.height)].join('\\t'));
+              Math.round(r.width),Math.round(r.height),
+              el.offsetLeft,el.offsetTop,el.offsetWidth,el.offsetHeight,
+              el.clientLeft,el.clientTop,el.clientWidth,el.clientHeight,
+              el.offsetParent ? pathOf(el.offsetParent) : '-'].join('\\t'));
   }
   document.body.setAttribute('data-gbcr', out.join('\\n'));
 })();
@@ -59,6 +62,13 @@
   (loop with start = 0 for i = (position ch s :start start)
         collect (subseq s start i) do (if i (setf start (1+ i)) (loop-finish))))
 
+(defparameter *fields*
+  '("x" "y" "w" "h" "offsetLeft" "offsetTop" "offsetWidth" "offsetHeight"
+    "clientLeft" "clientTop" "clientWidth" "clientHeight")
+  "The numeric columns, in dump order.  Named so a divergence is reported as the
+   METRIC that disagrees rather than as a row of numbers -- offsetTop being wrong
+   and clientHeight being wrong are different bugs.")
+
 (defun weft-rows (file width)
   "FILE's rows as an alist of path -> (x y w h), measured through weft's own
    getBoundingClientRect."
@@ -69,15 +79,19 @@
                        (concatenate 'string (subseq html 0 pos)
                                     "<script>" *dump-js* "</script>" (subseq html pos))
                        (concatenate 'string html "<script>" *dump-js* "</script>")))
-         (pg (loom:load-page injected :width width))
+         ;; the same viewport Chrome was given: the root element's clientHeight IS
+         ;; the viewport height, so the two have to be told the same window.
+         (pg (loom:load-page injected :width width :viewport-height 2000))
          (body (weft.css:query-select (loom:page-doc pg) "body"))
          (dump (and body (weft.dom:get-attribute body "data-gbcr"))))
     (when (loom:page-js-error pg)
       (format t "  !! script error: ~a~%" (loom:page-js-error pg)))
     (loop for line in (split-on #\Newline (or dump ""))
           for f = (split-on #\Tab line)
-          when (= (length f) 5)
-            collect (cons (first f) (mapcar #'parse-integer (rest f))))))
+          when (= (length f) 14)
+            collect (cons (first f)
+                          (append (mapcar #'parse-integer (subseq f 1 13))
+                                  (list (nth 13 f)))))))
 
 (defun chrome-rows (tsv)
   "The reference dump, as a hash of file -> (path -> (x y w h))."
@@ -88,9 +102,13 @@
              (setf (gethash current by-file) (make-hash-table :test 'equal)))
             ((and current (find #\Tab line))
              (let ((f (split-on #\Tab line)))
-               (when (= (length f) 5)
+               (when (= (length f) 14)
                  (setf (gethash (first f) (gethash current by-file))
-                       (mapcar #'parse-integer (rest f))))))))))
+                       (append (mapcar #'parse-integer (subseq f 1 13))
+                               (list (nth 13 f)))))))))))
+
+(defparameter *by-field* (make-hash-table :test 'equal)
+  "metric name -> how many elements disagree on it.")
 
 (defun main ()
   (let* ((args (uiop:command-line-arguments))
@@ -112,17 +130,39 @@
             (cond
               ((null w) (incf extra))
               (t (incf total) (incf f-total)
-                 (if (every (lambda (a b) (<= (abs (- a b)) *tolerance*)) (cdr row) w)
-                     (progn (incf agree) (incf f-agree))
-                     (format t "~&  ~a  ~a~%     weft   ~{~5d~}~%     chrome ~{~5d~}~%"
-                             base (car row) (cdr row) w))))))
+                 (let ((bad '()))
+                   ;; the twelve numeric metrics, each named
+                   (loop for field in *fields*
+                         for a in (cdr row) for b in w
+                         do (when (> (abs (- a b)) *tolerance*)
+                              (push (list field a b) bad)
+                              (incf (gethash field *by-field* 0))))
+                   ;; offsetParent is an identity, not a number: it matches exactly
+                   ;; or it does not, and naming a different ancestor is a real bug
+                   ;; however close the numbers happen to land.
+                   (let ((pa (nth 12 (cdr row))) (pb (nth 12 w)))
+                     (unless (equal pa pb)
+                       (push (list "offsetParent" pa pb) bad)
+                       (incf (gethash "offsetParent" *by-field* 0))))
+                   (if (null bad)
+                       (progn (incf agree) (incf f-agree))
+                       (format t "~&  ~a  ~a~%~{     ~{~14a weft ~a  chrome ~a~}~%~}"
+                               base (car row) (nreverse bad))))))))
         (let ((seen (mapcar #'car got)))
           (maphash (lambda (k v) (declare (ignore v))
                      (unless (member k seen :test #'string=) (incf missing)))
                    want))
         (format t "~&~a: ~d/~d within ~dpx~%" base f-agree f-total *tolerance*)))
-    (format t "~&~%TOTAL ~d/~d elements agree within ~dpx (~,1f%)~@[  [~d chrome rows weft did not report]~]~@[  [~d weft rows chrome did not]~]~%"
+    (format t "~&~%TOTAL ~d/~d elements agree on EVERY metric within ~dpx (~,1f%)~@[  [~d chrome rows weft did not report]~]~@[  [~d weft rows chrome did not]~]~%"
             agree total *tolerance* (if (plusp total) (* 100.0 (/ agree total)) 0)
-            (and (plusp missing) missing) (and (plusp extra) extra))))
+            (and (plusp missing) missing) (and (plusp extra) extra))
+    ;; Per-metric, because an element counted wrong once may be wrong in only one
+    ;; of thirteen ways -- and which way says what to fix.
+    (let ((rows '()))
+      (maphash (lambda (k v) (push (cons k v) rows)) *by-field*)
+      (when rows
+        (format t "~&~%disagreements by metric (of ~d elements):~%" total)
+        (dolist (r (sort rows #'> :key #'cdr))
+          (format t "  ~14a ~d~%" (car r) (cdr r)))))))
 
 (main)

@@ -96,6 +96,7 @@
                                (:file "geometry")   ; layout read from script
                                (:file "dom")
                                (:file "mutation")
+                               (:file "intersection")
                                (:file "canvas") (:file "svg")
                                (:file "traversal") (:file "range") (:file "xml") (:file "loader")
                                (:file "tables")

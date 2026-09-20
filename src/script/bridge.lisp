@@ -699,6 +699,7 @@
     (install-performance ctx)
     (install-window-events ctx)
     (install-mutation-observer ctx)
+    (install-intersection-observer ctx)
     ;; Also set the GLOBAL value of *ctx* (not just the per-entry dynamic binding):
     ;; shuttle runs async-function bodies on a worker thread that does not inherit
     ;; the main thread's dynamic binding, so mutation sites reached from an async

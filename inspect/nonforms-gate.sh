@@ -48,9 +48,28 @@ run() {
     --eval "$form" 2>&1 | grep -Ei "passed|failed|PASS|FAIL|error" | tail -3
 }
 
+# A SCRIPT-STYLE GATE, run as one.  acid3.lisp is self-contained (it loads the
+# system and asserts its own score, exiting non-zero on a regression), so it is
+# invoked directly rather than through run(): loading it AND calling a form would
+# run the suite twice and the first run's exit would end this script.
+#
+# It belongs here because it is the only gate that exercises a page's JAVASCRIPT
+# against the weft-hosted shuttle end to end.  The suites above cover the parser,
+# the DOM and the scripting surface; none of them runs a real page's own script,
+# which is exactly the gap a global-scope bug lived in undetected -- Acid3's
+# `score` counter collided with its #score element and the engine silently lost
+# the variable.
+run_script() {
+  local label="$1" file="$2"
+  printf '\n=== %s ===\n' "$label"
+  timeout 1800 sbcl --control-stack-size 128 --dynamic-space-size 8192 \
+    --script "inspect/$file" 2>&1 | grep -Ei "gate:|FAILED|score" | tail -2
+}
+
 run "tree-test"     weft        tree-test.lisp     '(weft.html.tree-test:run)'
 run "html-test"     weft        html-test.lisp     '(weft.html.test:run)'
 run "dom-test"      weft        dom-test.lisp      '(weft.dom.test:run)'
 run "selector-test" weft        selector-test.lisp '(weft.css.select-test:run)'
 run "scripting-dom" weft/script scripting-dom.lisp '(weft.script.dom-test:run)'
 run "scripting-m1"  weft/script scripting-m1.lisp  '(weft.script.m1:run)'
+run_script "acid3"  acid3.lisp

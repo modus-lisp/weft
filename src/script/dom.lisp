@@ -1563,43 +1563,60 @@ TypeError that ends the script and everything it was going to define."
             (t (make-collection ctx (lambda () (window-named-elements ctx name))))))))
 
 (defun install-window-named-access (ctx window)
-  "Install HTML §7.3.3 named access on the global object WINDOW as a LOWEST-priority
-   fallback.  A real own or prototype property always wins; only a name that
-   resolves to nothing real falls through to a live document scan.  Wires both
-   entry points: `window.foo` (the [[Get]] trap) and the bare global `foo` (the
-   [[GetOwnProperty]] trap — the interpreter's unqualified-identifier resolution
-   consults js-get-own-property on the global to decide a name is a binding)."
-  (let ((internal (js::js-object-internal window)))
-    ;; [[Get]] — window.foo / foo["x"].  Ordinary chain first; only a genuinely
-    ;; absent property (undefined AND not present anywhere on the chain) falls back.
+  "HTML §7.3.3 named access, installed on a WINDOWPROPERTIES OBJECT PLACED IN
+   WINDOW'S PROTOTYPE CHAIN -- which is where HTML puts it, and the position is the
+   whole design.
+
+   It used to be a set of traps on the Window itself, arranged to defer to anything
+   real.  That works for reads and fails for DECLARATIONS: shuttle's
+   GlobalDeclarationInstantiation asks the global object whether it already has a
+   property before creating a binding, and a trap answering \"yes, here is a <div>\"
+   made `var score = 7` skip creating the variable entirely.  The page then had no
+   `score` at all -- reads returned the element, writes went nowhere.  Acid3 does
+   exactly that (a #score element and a `score` counter) and reported
+   `[object Object] / 100` for it.
+
+   In the prototype chain none of that arises.  An own property of the window -- a
+   var, a function declaration, a host global -- is found by ORDINARY LOOKUP before
+   the chain is ever walked, so shadowing is the language's, not a special case
+   anybody has to remember.  It also fixes a subtler one for free: `var score;` with
+   no initialiser is undefined and must SHADOW the element, where the old
+   fall-back-if-undefined trap handed the element back instead.
+
+   Three traps, because the ordinary paths read the property store directly rather
+   than through [[GetOwnProperty]]: [[Get]] for `window.foo` and the chain walk,
+   [[HasProperty]] for `\"foo\" in window` and for the global environment's
+   HasBinding (which is how a bare `foo` resolves), and [[GetOwnProperty]] for
+   getOwnPropertyDescriptor."
+  (let* ((realm (context-realm ctx))
+         (wp (js:make-object :proto (js::js-object-proto window)))
+         (internal (js::js-object-internal wp)))
+    (declare (ignorable realm))
     (setf (getf internal :get)
           (lambda (o key rcv)
             (let ((v (js::ordinary-get o key (or rcv o))))
               (if (js:js-undefined-p v)
                   (let ((k (js:to-property-key key)))
-                    (if (and (stringp k) (not (js::ordinary-has o k)))
-                        (or (window-named-value ctx k) v)
-                        v))
+                    (if (stringp k) (or (window-named-value ctx k) v) v))
                   v))))
-    ;; [[HasProperty]] — `"foo" in window`.
     (setf (getf internal :has)
           (lambda (o key)
             (or (js::ordinary-has o key)
                 (let ((k (js:to-property-key key)))
                   (and (stringp k) (window-named-value ctx k) t)))))
-    ;; [[GetOwnProperty]] — makes the bare identifier `foo` a resolvable global
-    ;; binding and backs getOwnPropertyDescriptor.  Ordinary own property first;
-    ;; else a configurable, non-enumerable named property (legacy unenumerable
-    ;; named properties).  KEY arrives already normalized (prop-key'd).
     (setf (getf internal :get-own-property)
           (lambda (o key)
-            (or (gethash key (js::js-object-props o))
+            (or (js::props-get o key)
                 (when (stringp key)
                   (let ((val (window-named-value ctx key)))
                     (when val
+                      ;; legacy unenumerable named properties
                       (js::make-prop :value val :enumerable nil
                                      :writable t :configurable t)))))))
-    (setf (js::js-object-internal window) internal)))
+    (setf (js::js-object-internal wp) internal)
+    ;; splice it in: window -> WindowProperties -> whatever window inherited before
+    (setf (js::js-object-proto window) wp)
+    wp))
 
 (defparameter +labelable-tags+
   '("button" "input" "select" "textarea" "fieldset" "output" "object" "meter" "progress"))

@@ -67,4 +67,30 @@
           (format t "  … (~a more; pass -v for all)~%" (- (length lines) 25))))
       (ignore-errors (parse-integer score)))))
 
-(run :verbose (member "-v" (uiop:command-line-arguments) :test #'string=))
+(defparameter +acid3-floor+ 100
+  "The score this gate refuses to drop below.
+
+   A CAVEAT THAT MATTERS: this is Acid3's SELF-REPORTED score, and 100 here is not
+   the same claim as \"weft passes Acid3\".  Several subtests check behaviours the
+   web has since retired, which a current browser also does not implement; the real
+   conformance claim is the Chrome-REFERENCED render, not this counter.  As a
+   REGRESSION floor it is still exactly right: whatever the number means, it must
+   not fall.")
+
+;; A GATE MUST BE ABLE TO FAIL.  This harness printed its score and returned it --
+;; and for a long time that score was the string \"[object Object]\", because a
+;; global `score` collided with the #score element and the engine lost the variable
+;; (fixed in shuttle: a declaration must ask about storage, not resolution).  The
+;; harness reported the nonsense happily and asserted only that the runner \"reached
+;; test 100\", which is a far weaker claim than it looks.  A wrong value that does
+;; not fail is worse than a crash: it reads as a working gate forever.
+(let ((score (run :verbose (member "-v" (uiop:command-line-arguments) :test #'string=))))
+  (cond
+    ((not (integerp score))
+     (format t "~&ACID3 GATE FAILED: score is not a number (~s) -- the page's own~%~
+                  counter did not survive being read.~%" score)
+     (uiop:quit 1))
+    ((< score +acid3-floor+)
+     (format t "~&ACID3 GATE FAILED: score ~d, floor ~d~%" score +acid3-floor+)
+     (uiop:quit 1))
+    (t (format t "~&Acid3 gate: PASS (score ~d >= floor ~d)~%" score +acid3-floor+))))

@@ -40,6 +40,9 @@
   (timer-seq 0)             ; monotonic timer id source
   (now 0)                   ; virtual clock (ms) for the timer queue
   (start-real-time (get-internal-real-time)) ; navigation-start (High Resolution Time origin)
+  (start-wall-ms (* 1000d0 (- (get-universal-time) 2208988800)) :type double-float)
+                            ; navigation-start as Unix-epoch ms, the origin the
+                            ; page's Date is measured from (see INSTALL-CLOCK)
   (perf-marks (make-hash-table :test 'equal)) ; performance.mark name -> most-recent start time (ms)
   (perf-entries nil)        ; performance timeline entries, oldest first (mark/measure host objects)
   (iframe-docs (make-hash-table :test 'eq)) ; iframe/object dnode -> its content document

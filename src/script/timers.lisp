@@ -123,3 +123,36 @@
         (js:native-function realm "cancelAnimationFrame"
           (lambda (this args) (declare (ignore this))
             (cancel-timer ctx (int-arg args 0)) js:*undefined*) 1)))))
+
+;;; ---- the clock a page observes -------------------------------------------
+;;; TIMERS RUN ON A VIRTUAL CLOCK, so Date must too, or the two disagree in a way
+;;; every page can see.  RUN-EVENT-LOOP fires a setTimeout by ADVANCING
+;;; CONTEXT-NOW rather than sleeping -- that is what makes a headless render finish
+;;; in seconds instead of honouring every delay a page asks for.  With a real-time
+;;; Date, a page's timers then complete while no measurable time passes, and any
+;;; duration measured across a timer comes back near zero.  Acid3 subtracts the
+;;; delays it requested from wall-clock and so printed a NEGATIVE total.
+;;;
+;;; The rule is MAX(virtual, real), not simply virtual: virtual time keeps the
+;;; page's own setTimeout arithmetic consistent, while real time keeps genuine
+;;; compute visible -- a script that spends four seconds in a loop with no timers
+;;; at all should not observe a frozen clock.  Taking the larger satisfies both and
+;;; is monotonic, which matters more than either: a clock that goes backwards
+;;; breaks retry backoff and animation pacing in ways that look like logic errors.
+(defun context-clock-ms (ctx)
+  "Unix-epoch milliseconds as CTX's page observes them."
+  (let ((real (* 1000d0 (/ (float (- (get-internal-real-time)
+                                     (context-start-real-time ctx)) 1d0)
+                           internal-time-units-per-second))))
+    (+ (context-start-wall-ms ctx)
+       (max (float (context-now ctx) 1d0) real))))
+
+(defun install-clock ()
+  "Point shuttle's Date at the CURRENT context's clock.  Set once, globally, but
+   it dispatches on *CTX* -- so two documents in one image each get their own
+   timeline, and code running with no context at all still gets the real clock."
+  (setf js:*clock-fn*
+        (lambda () (if *ctx* (context-clock-ms *ctx*) (current-real-ms)))))
+
+(defun current-real-ms ()
+  (* 1000d0 (- (get-universal-time) 2208988800)))

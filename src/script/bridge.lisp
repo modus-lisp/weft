@@ -719,6 +719,7 @@
     (install-globals ctx)
     (install-performance ctx)
     (install-window-events ctx)
+    (install-clock)
     (install-mutation-observer ctx)
     (install-intersection-observer ctx)
     (install-resize-observer ctx)

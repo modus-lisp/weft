@@ -57,11 +57,25 @@
 (defun node-document-rects (ctx node)
   "Every rectangle NODE occupies, in DOCUMENT coordinates, as a list of
    (x y w h).  Empty when the node was not laid out."
-  (let ((root (ensure-layout ctx))
-        (rects '()))
-    (labels ((walk (b)
+  (let* ((root (ensure-layout ctx))
+         (own-box-p (and (%node-lbox ctx node) t))
+         (rects '()))
+    (labels ((descendant-p (n)
+               ;; a box laid out for something INSIDE node
+               (loop for p = n then (h:dnode-parent p)
+                     while p when (eq p node) do (return t)))
+             (walk (b)
                (when (r:lbox-p b)
-                 (when (eq (r:lbox-node b) node)
+                 (when (if own-box-p
+                           (eq (r:lbox-node b) node)
+                           ;; NO BOX OF ITS OWN: some elements are never boxed by
+                           ;; the layout -- a <tbody> or <tr> is structure the table
+                           ;; algorithm walks through rather than a box it emits --
+                           ;; and their area is the union of the boxes inside them.
+                           ;; Falling back to descendant TEXT alone reported a
+                           ;; <tbody> as 79px wide (the width of its cells' text)
+                           ;; where the rows span 138.
+                           (and (r:lbox-node b) (descendant-p (r:lbox-node b))))
                    (push (list (r:lbox-x b) (r:lbox-y b) (r:lbox-w b) (r:lbox-h b))
                          rects))
                  (if (eq (r:lbox-kind b) :line)
@@ -151,6 +165,25 @@
       (when root (walk root)))
     found))
 
+(defun %principal-rect (ctx node)
+  "(values x y w h box) -- NODE's rectangle in document coordinates, and the LBOX
+   it came from when there is one.  An element the layout never boxes (a <tbody>,
+   a <tr>) has no box but does have an area: the union of what is inside it.  The
+   metric functions all need that fallback, or every one of them answers 0 for a
+   table row while getBoundingClientRect answers correctly -- two different answers
+   to the same question, from the same layout."
+  (let ((box (%node-lbox ctx node)))
+    (if box
+        (values (r:lbox-x box) (r:lbox-y box) (r:lbox-w box) (r:lbox-h box) box)
+        (let ((rects (node-document-rects ctx node)))
+          (if (null rects)
+              (values 0 0 0 0 nil)
+              (let ((x0 (reduce #'min rects :key #'first))
+                    (y0 (reduce #'min rects :key #'second))
+                    (x1 (reduce #'max rects :key (lambda (r) (+ (first r) (third r)))))
+                    (y1 (reduce #'max rects :key (lambda (r) (+ (second r) (fourth r))))))
+                (values x0 y0 (- x1 x0) (- y1 y0) nil)))))))
+
 (defun %border-widths (box)
   "(values top right bottom left) border widths of BOX, as integers."
   (let ((cs (and box (r:lbox-style box))))
@@ -207,11 +240,11 @@
        error that looks like a rounding problem until it is written down;
      * otherwise the origin IS the offsetParent's padding edge: its border box
        corner plus its own top/left border widths."
-  (let ((box (%node-lbox ctx node)))
+  (multiple-value-bind (bx by bw bh box) (%principal-rect ctx node)
     (cond
-      ((null box) (values 0 0 0 0))
+      ((and (null box) (zerop bw) (zerop bh)) (values 0 0 0 0))
       ((member (%tag-name node) '("html" "body") :test #'string=)
-       (values 0 0 (round (r:lbox-w box)) (round (r:lbox-h box))))
+       (values 0 0 (round bw) (round bh)))
       (t
        (let* ((parent (%offset-parent-node ctx node))
               (pbox (and parent (%node-lbox ctx parent)))
@@ -221,10 +254,8 @@
            (declare (ignore pr pb))
            (let ((ox (if from-icb 0 (+ (r:lbox-x pbox) pl)))
                  (oy (if from-icb 0 (+ (r:lbox-y pbox) pt))))
-             (values (round (- (r:lbox-x box) ox))
-                     (round (- (r:lbox-y box) oy))
-                     (round (r:lbox-w box))
-                     (round (r:lbox-h box))))))))))
+             (values (round (- bx ox)) (round (- by oy))
+                     (round bw) (round bh)))))))))
 
 (defun node-client-metrics (ctx node)
   "(values client-left client-top client-width client-height) for NODE: the border
@@ -235,16 +266,17 @@
    the window is.  We answer it only when the shell has told us the viewport
    height; with no shell there is no window to report, and the element's own
    padding box is the honest fallback rather than a made-up number."
-  (let ((box (%node-lbox ctx node)))
+  (multiple-value-bind (bx by bw bh box) (%principal-rect ctx node)
+    (declare (ignore bx by))
     (cond
-      ((null box) (values 0 0 0 0))
+      ((and (null box) (zerop bw) (zerop bh)) (values 0 0 0 0))
       ((and (string= (%tag-name node) "html") (context-viewport-height ctx))
        (values 0 0 (round (context-width ctx)) (round (context-viewport-height ctx))))
       (t
        (multiple-value-bind (bt br bb bl) (%border-widths box)
          (values bl bt
-                 (max 0 (round (- (r:lbox-w box) bl br)))
-                 (max 0 (round (- (r:lbox-h box) bt bb)))))))))
+                 (max 0 (round (- bw bl br)))
+                 (max 0 (round (- bh bt bb)))))))))
 
 ;;; ---- the scrolling area ----------------------------------------------------
 ;;; scrollWidth/scrollHeight are the size of what an element COULD scroll over:
@@ -279,21 +311,20 @@
 
 (defun node-scroll-metrics (ctx node)
   "(values scroll-left scroll-top scroll-width scroll-height) for NODE."
-  (let ((box (%node-lbox ctx node)))
-    (if (null box)
+  (multiple-value-bind (bx by bw bh box) (%principal-rect ctx node)
+    (if (and (null box) (zerop bw) (zerop bh))
         (values 0 0 0 0)
         (multiple-value-bind (bt br bb bl) (%border-widths box)
           (declare (ignorable bb))
           (multiple-value-bind (right bottom)
-              (%subtree-extent box
-                               (- (+ (r:lbox-x box) (r:lbox-w box)) br)
-                               (- (+ (r:lbox-y box) (r:lbox-h box))
-                                  (nth-value 2 (%border-widths box))))
+              (if box
+                  (%subtree-extent box (- (+ bx bw) br) (- (+ by bh) bb))
+                  (values (+ bx bw) (+ by bh)))
             (let* ((root-p (string= (%tag-name node) "html"))
                    ;; the padding edge is where a scrolling area starts
-                   (px (+ (r:lbox-x box) bl))
-                   (py (+ (r:lbox-y box) bt))
-                   (cw (max 0 (round (- (r:lbox-w box) bl br))))
+                   (px (+ bx bl))
+                   (py (+ by bt))
+                   (cw (max 0 (round (- bw bl br))))
                    (ch (nth-value 3 (node-client-metrics ctx node))))
               (values 0
                       (if root-p (round (context-scroll-y ctx)) 0)

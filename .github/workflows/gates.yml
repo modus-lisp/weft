@@ -22,7 +22,7 @@ jobs:
       # build rather than a missing line here.
       - name: Sibling checkouts
         run: |
-          for repo in brotli-pure cram gesso natrium pigment scribe seal shuttle stencil webp-pure zstd-pure; do
+          for repo in brotli-pure cram gesso natrium pigment reel scribe seal shuttle stencil webp-pure zstd-pure; do
             git clone --depth 1 -q https://github.com/modus-lisp/$repo.git "$repo"
           done
       - name: Install SBCL

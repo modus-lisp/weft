@@ -125,7 +125,9 @@
                                ;; forms-form (it calls SUBMIT-BUTTON-P for
                                ;; implicit submission), before the shell seam.
                                (:file "editing")
-                               (:file "bridge") (:file "interact")))))))
+                               (:file "bridge") (:file "interact")
+                               ;; after every global it names
+                               (:file "threads")))))))
 
 (defsystem "weft/test"
   :depends-on ("weft" "weft/fetch" "weft/render")

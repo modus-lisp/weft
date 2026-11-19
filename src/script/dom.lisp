@@ -340,6 +340,10 @@ children; a Text/Comment/CDATA/PI/DocumentType parent throws HierarchyRequestErr
    records (DOM §insert): a fragment first queues a removal record for its
    own emptied children, then PARENT gets one addition record for the inserted
    nodes; a single node's removal from an old parent is recorded by DOM-DETACH."
+  ;; DOM §pre-insert: \"If referenceChild is node, set it to node's next sibling.\"
+  ;; Inserting a node before ITSELF -- body.prepend(body.firstChild), which
+  ;; example.com's script does -- detached it and then looked for the gone REF.
+  (when (and ref (eq ref node)) (setq ref (node-next-sibling node)))
   (if (eq (h:dnode-kind node) :fragment)
       (let ((kids (and (mo-recording-p) (coerce (h:dnode-children node) 'list))))
         (when kids (mo-record-childlist node :removed kids))

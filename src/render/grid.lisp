@@ -541,7 +541,7 @@ its width, AVAIL-H its definite content height (px) when known else NIL."
                         cells)))))
           (setf cells (nreverse cells))
           ;; ---- row sizing ----
-          (let* ((nrows (max 1 (loop for cell in cells maximize (+ (third cell) (fifth cell)))))
+          (let* ((nrows (max 1 (or (loop for cell in cells maximize (+ (third cell) (fifth cell))) 0)))
                  (rbase (make-array nrows :initial-element 0.0))
                  (rflex (make-array nrows :initial-element nil))
                  (rfixed (make-array nrows :initial-element nil)))

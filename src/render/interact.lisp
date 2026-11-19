@@ -113,9 +113,18 @@
 
 (defun render-document (doc &key (width 1024) (css "") (min-height 200)
                                  (max-height 20000) viewport-height (scroll-y 0) scroll-to
-                                 selection)
+                                 selection band)
   "Cascade + lay out + paint an already-parsed DOC at WIDTH px.  Returns
-   (values CANVAS ROOT-BOX STYLES REPAINT).
+   (values CANVAS ROOT-BOX STYLES REPAINT CONTENT-HEIGHT BAND-TOP).
+
+   BAND, a list (TOP HEIGHT), paints only that band of a reader-view page: the canvas is
+   HEIGHT rows holding document rows TOP .. TOP+HEIGHT, while the layout is the whole
+   document's as always.  A long article's full-height canvas is tens of megabytes (a
+   Wikipedia article: 402 x 26790 x 3 bytes), more than a phone's page worker has; a band
+   around the viewport is a couple.  REPAINT then takes the band's top as its second
+   argument and repaints there from the same box tree -- which is how a shell scrolls past
+   the band without laying anything out again.  CONTENT-HEIGHT is what the canvas height
+   was without a band; BAND-TOP is where this canvas starts (0 without one).
 
    SELECTION, when given, is a TEXT-SELECTION whose highlight is painted under the
    glyphs (selection.lisp).  REPAINT is a closure of one optional selection that
@@ -155,9 +164,13 @@
                                        (and viewport-height (round viewport-height)))
       (declare (ignore adv))
       (let* ((content-h (if root (round (+ (lbox-y root) (lbox-h root) 8)) min-height))
-             (height (if vph vph (min max-height (max min-height content-h))))
+             (band (and band (not vph) band))
+             (height (cond (vph vph)
+                           (band (max 1 (round (second band))))
+                           (t (min max-height (max min-height content-h)))))
+             (band-top (if band (max 0 (round (first band))) 0))
              ;; reader-view only: clamp an extra scroll offset to the scrollable range
-             (sy (if (and (not vph) (plusp scroll-y))
+             (sy (if (and (not vph) (not band) (plusp scroll-y))
                      (max 0 (min (round scroll-y) (max 0 (- content-h height)))) 0))
              (body (css:query-select doc "body"))
              ;; canvas background propagation (CSS 2.1 14.2): the root element's
@@ -167,19 +180,30 @@
              (cv (make-canvas width height (if bg (rgb bg) '(255 255 255)))))
         (when (and root (plusp sy)) (shift-box root 0 (- sy)))
         (note-progress :painting)
-        (flet ((paint-onto (target sel)
+        (flet ((paint-onto (target sel &optional (top band-top))
                  ;; The selection map is built from ROOT after layout and before
                  ;; paint, so a caller gets a highlighted page in ONE pass.  With no
                  ;; SEL the special stays NIL and the painter takes exactly the path
                  ;; it always did — an unselected page is byte-identical.
                  (let ((*selection-highlight*
                          (and sel (ignore-errors (selection-highlight-map root sel)))))
-                   (if vph
-                       (let ((*clip* (clip-intersect 0 0 width vph))) (paint-box target root))
-                       (paint-box target root)))))
+                   (cond (vph
+                          (let ((*clip* (clip-intersect 0 0 width vph))) (paint-box target root)))
+                         ((and band root)
+                          ;; the band's rows at the canvas top: move the tree up, paint
+                          ;; clipped to the band, and put the tree back
+                          (shift-box root 0 (- top))
+                          (unwind-protect
+                               (let ((*clip* (clip-intersect 0 0 width height)))
+                                 (paint-box target root))
+                            (shift-box root 0 top)))
+                         (t (paint-box target root))))))
           (paint-onto cv selection)
           (values cv root styles
-                  (lambda (&optional sel)
+                  (lambda (&optional sel (top band-top))
                     (let ((c2 (make-canvas width height (if bg (rgb bg) '(255 255 255)))))
-                      (paint-onto c2 sel)
-                      c2))))))))
+                      (paint-onto c2 sel (if band (max 0 (round top)) band-top))
+                      c2))
+                  ;; without a band, the height a shell always took (the canvas's)
+                  (if band (max min-height content-h) height)
+                  band-top))))))

@@ -3761,7 +3761,7 @@ votearrow div) has no frag, so it must not join the baseline group."
 
 (defun cell-inline-content-height (lb)
   "Height of LB's inline content — its line boxes' extent measured from the cell top."
-  (- (loop for c in (lbox-children lb) maximize (+ (lbox-y c) (lbox-h c))) (lbox-y lb)))
+  (- (or (loop for c in (lbox-children lb) maximize (+ (lbox-y c) (lbox-h c))) 0) (lbox-y lb)))
 
 (defun cell-single-line-text-p (lb)
   "True when cell LB holds exactly one text-bearing line box — one clean baseline.  A
@@ -4282,10 +4282,15 @@ cell-lboxes content-height)."
                   ;; the baseline group = the single-line text cells; shorter cells align
                   ;; to its tallest.  A row taller than that group (a block/wrapped cell,
                   ;; or a distributed surplus) has no single baseline, so cells center.
-                  (let* ((bref (loop for lb in rowboxes
+                  ;; (OR ... 0): a MAXIMIZE that never runs is unspecified in CL -- SBCL
+                  ;; answers 0, modus NIL -- and a row with no single-line text cell
+                  ;; (HN's logo cell: a lone block <img>) is exactly that case.  NIL
+                  ;; here was a TYPE-ERROR that dropped the whole table on modus.
+                  (let* ((bref (or (loop for lb in rowboxes
                                      when (and (not (gethash lb span-set))
                                                (not (cell-lbox-valign-top-p lb)) (cell-single-line-text-p lb))
-                                     maximize (cell-inline-content-height lb)))
+                                     maximize (cell-inline-content-height lb))
+                                   0))
                          (center-mode (> rh2 (+ bref 1))))
                     (dolist (lb rowboxes)
                       (unless (gethash lb span-set)     ; rowspanning cells sized after the loop

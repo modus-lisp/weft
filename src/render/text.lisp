@@ -382,16 +382,12 @@ anything goes wrong; respects weft's *CLIP* rect per pixel."
                         (destructuring-bind (cov w h left top)
                             (glyph-raster segfont gid ppem sub)
                           (when cov
-                            (let ((ox (+ (floor (+ penx xoff)) left)) (oy (+ baseline top (- (round yoff)))))
-                              (dotimes (yy h)
-                                (let ((py (+ oy yy)))
-                                  (when (and (>= py cy0) (< py cy1))
-                                    (dotimes (xx w)
-                                      (let ((px (+ ox xx)))
-                                        (when (and (>= px cx0) (< px cx1))
-                                          (let ((c (* alpha (aref cov (+ (* yy w) xx)))))
-                                            (when (> c 0d0)
-                                              (scribe:blend-coverage scv px py c color)))))))))))
+                            ;; one call a glyph, not a pixel: what BLEND-COVERAGE looks up
+                            ;; (gamma, tables -- specials) is read once (scribe).
+                            (scribe:blend-coverage-glyph scv cov w h
+                                                         (+ (floor (+ penx xoff)) left)
+                                                         (+ baseline top (- (round yoff)))
+                                                         cx0 cy0 cx1 cy1 alpha color))
                           (incf penx (+ xadv letter-spacing))))))))
               (when (and underline (plusp alpha))
                 ;; underline to UNDERLINE-END-X when given (so a multi-word link's

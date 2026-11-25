@@ -5,7 +5,7 @@
 ;;;; exchange run over a seal TLS 1.3 stream (validated cert, :verify t) for
 ;;;; https:// — following 3xx redirects (http<->https) with a hop limit, then
 ;;;; strip Content-Encoding using the pure-CL codecs (brotli-pure, zstd-pure,
-;;;; chipz for gzip/deflate) and charset-decode the body with the weft.encoding
+;;;; cram for gzip/deflate) and charset-decode the body with the weft.encoding
 ;;;; decoders (Content-Type charset / BOM sniff / UTF-8 default).  No FFI: seal
 ;;;; + sb-bsd-sockets only.
 (defpackage #:weft.fetch
@@ -53,10 +53,11 @@
 (defun decode-one-encoding (token bytes)
   (cond
     ((member token '("gzip" "x-gzip") :test #'string-equal)
-     (chipz:decompress nil 'chipz:gzip bytes))
+     (values (cram:gzip-decompress bytes)))
     ((string-equal token "deflate")
-     (handler-case (chipz:decompress nil 'chipz:zlib bytes)
-       (error () (chipz:decompress nil 'chipz:deflate bytes))))
+     ;; "deflate" means zlib (RFC 1950), but servers send raw DEFLATE (1951) too
+     (handler-case (values (cram:zlib-decompress bytes))
+       (error () (values (cram:deflate-decompress bytes)))))
     ((string-equal token "br") (brotli-pure:decompress bytes))
     ((string-equal token "zstd") (zstd-pure:decompress bytes))
     ((or (string-equal token "identity") (string= token "")) bytes)

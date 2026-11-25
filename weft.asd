@@ -66,10 +66,10 @@
                                            (:file "tokenizer") (:file "parser") (:file "selector") (:file "style"))))))
   :in-order-to ((test-op (test-op "weft/test"))))
 
-;; The resource loader depends on the pure-CL codecs (sibling systems) + chipz
+;; The resource loader depends on the pure-CL codecs (sibling systems): cram, brotli-pure, zstd-pure
 ;; for gzip/deflate; kept separate so the core engine stays dependency-light.
 (defsystem "weft/fetch"
-  :depends-on ("weft" "seal" "brotli-pure" "zstd-pure" "chipz")
+  :depends-on ("weft" "seal" "brotli-pure" "zstd-pure" "cram")
   :components ((:module "src" :components ((:file "fetch")))))
 
 (defsystem "weft/render"
